@@ -1,0 +1,461 @@
+# Phase 2 — Booking & pricing · Plan
+
+**Goal:** "Bookings can be created and cancelled end-to-end with correct money
+maths". That is the §31.1 exit criterion, verbatim, and it is what every task
+below is measured against.
+
+## Where this phase starts from
+
+Already in place, from Phase 0 and Phase 1:
+
+- `services` with `pricing_type`, `base_price numeric(10,2)`, `unit_price`,
+  `unit_label`, and the `per_unit_needs_unit` check (0003).
+- `service_durations` with `price` (flat override) or `price_multiplier`, never
+  both, plus the `duration_pricing_defined` check (0004).
+- `service_areas` with `lead_minutes`, `slot_capacity` and
+  `is_serviceable()` (0004).
+- `professionals`, `professional_skills`, `professional_working_hours`,
+  `professional_time_off` (0005, 0006).
+- `addresses` with a frozen-shape row, `locality_id`, `location_precision`, and
+  `set_default_address()` in one RPC (0008).
+- The pure slot engine (`lib/availability.ts`), `resolveRequestLocality()`
+  (`lib/catalogueServer.ts`), and `resolveLocationForSave()`.
+- `audit_logs` and `idempotency_keys` with `claim_idempotency_key()` and
+  `complete_idempotency_key()` (0024) — the ledger Phase 2 needs is already
+  applied, ahead of its named phase, for the same reason 0024 itself documents.
+
+Not in place, and needed: `bookings` and its history, the transition trigger, the
+money types, coupons, the pricing engine, the booking endpoints, checkout, the
+customer booking list and detail, the invoice read model, and the tests.
+
+Three things Phase 1 deliberately left behind, landing here:
+
+| Deferred in Phase 1 | Why it waited | How it lands |
+|---|---|---|
+| `block_address_delete_with_future_bookings()` | Names `bookings`, which did not exist; a migration that names a missing table fails to apply | Task 4 |
+| Checkout and payment behind the service-detail CTA | `/customer/checkout` is this phase | Task 13 |
+| Service-level aggregate rating on catalogue cards | `ratings` rows are written when a booking is reviewed | Tasks 6 and 13 |
+
+The fourth Phase 1 deferral, the `professional_schedule` overlap term in slot
+availability, is recorded in `ROADMAP.md` as Phase 5 and stays there. The *table*
+lands here (Task 5) because a reschedule needs somewhere to move a window; the
+*availability term* stays Phase 5, because nothing reserves a window until
+Phase 5 assigns a professional.
+
+## Tasks
+
+### 1. `0009_booking_enum.sql`
+
+- `booking_type AS ENUM ('instant','scheduled','recurring')` and the 18-value
+  `booking_status` enum, exactly as §8.1 and §24.7 list them. Phase 2 creates
+  the whole enum even though it only reaches `payment_pending`, `cancelled` and
+  `refunded` today: an enum is not a menu of implemented transitions, and
+  shipping a partial one means a migration that later has to alter a type
+  thousands of rows depend on.
+- Migration numbers keep the spec's own (§23). `0009`–`0023` are unused, so
+  Phase 2 writes `0009`, `0010`, `0011`, `0013`, `0016` and `0017` and leaves
+  the gaps. Nothing is renumbered, which is what the document asks for when it
+  says section and migration numbers are stable.
+
+### 2. `0010_bookings.sql`
+
+`bookings` as §24.7, all 40-odd columns, with four decisions worth stating:
+
+- **Money columns are `numeric(12,2)`; rates are `numeric(5,4)`.** `0.1800` and
+  `0.2000` both fit `numeric(5,4)`, so `tax_rate` and `commission_pct` are
+  stored as rates, not as percentages that would have to be divided by 100 at
+  every read.
+- **`version int not null default 1`** is the optimistic lock (§28.1, §28.3).
+  Every mutation is `update … where id = $1 and version = $n`; zero rows
+  affected is `409 STALE_VERSION`, never a silent overwrite.
+- **`address_snapshot jsonb not null`** is frozen from `addresses` at creation.
+  It is the dispute evidence (§24.7) and it is what lets an address be renamed
+  or corrected later without rewriting history.
+- **`booking_number`** comes from one global `bigint` sequence rendered as
+  `SH-YYYYMMDD-NNNNN`. A per-day counter would need its own table and a lock to
+  make the suffix restart at 1 each morning; uniqueness is already guaranteed by
+  the `unique` constraint, and the number is a display label, so cosmetics do not
+  get a table.
+
+Plus the indexes from §24.7 that Phase 2 can already use: `idx_bookings_customer`,
+`idx_bookings_status`, `idx_bookings_upcoming`, `idx_bookings_number`.
+`idx_bookings_profession`, `idx_bookings_search_exp`, `idx_bookings_city_date`
+and the GiST index on `address_snapshot` are declared now too — an index is
+cheap and a later `create index` on a live bookings table is not.
+
+`booking_items` exactly as §24.7, including `service_name`, `unit_price`,
+`line_total` and `scope_snapshot` snapshots, and
+`UNIQUE (booking_id, service_id)`.
+
+`booking_status_history` exactly as §24.7: append-only, `from_status`,
+`to_status`, `actor_id`, `actor_role`, `note`, `ip`. The immutability trigger is
+the same shape as `audit_logs_are_immutable()` in 0024, because a history
+somebody can edit is not a history.
+
+`payment_purpose AS ENUM ('booking','extension','wallet_topup','penalty')` is
+declared here, as §24.7 puts it in `0010`, even though only Phase 3 uses it. The
+alternative is a second migration in Phase 3 that alters a type, and the
+document's own file layout is the better guide.
+
+### 3. `0011_booking_state_machine.sql`
+
+`enforce_booking_transition()` as §8.2, with two amendments, both flagged in
+the migration header:
+
+- The `allowed` array is built from `OLD.status` (legal predecessors of the new
+  state) rather than `NEW.status`, so the trigger reads as one question: "may
+  this booking be in `OLD.status` and is it now `NEW.status`?" Either direction
+  works; predecessors are the cheaper table to maintain because new states are
+  rarer than new transitions.
+- `app.transition_note` and `app.transition_actor` are read with
+  `current_setting(..., true)`, so a caller that sets neither does not raise.
+  The spec's trigger takes the actor from `auth.uid()` and
+  `auth.jwt() ->> 'role'`, which is null on every privileged write: this codebase
+  reaches the database through the service-role client from Route Handlers that
+  have already validated the caller, so there is no customer JWT inside Postgres
+  and the audit trail would be anonymous. The route sets both locals in the same
+  transaction, and the trigger falls back to `auth.uid()` when they are unset, so
+  the history row names the actor either way.
+
+Every legal transition is written to history by the trigger itself, so no route
+handler can forget. Anything outside the set raises `ILLEGAL_TRANSITION` with
+`errcode = 'check_violation'`, which PostgREST surfaces as a constraint error the
+route maps to `409 ILLEGAL_TRANSITION` (§25.2).
+
+The application guard in `lib/bookingServer.ts` is deliberately *not* the thing
+that makes this safe. It exists to produce a good error message; the trigger is
+what makes an illegal state unreachable.
+
+### 4. `block_address_delete_with_future_bookings()`
+
+Defined in `0010_bookings.sql`, because both `addresses` and `bookings` exist by
+that point and a migration naming a missing table fails to apply. SQL as §24.6,
+counting live bookings as the status set in the document. The trigger lands on
+`addresses`, and `0008_addresses.sql`'s deferral comment is updated to point at
+where the function went rather than left to rot.
+
+`DELETE /api/customers/me/addresses/[id]` stops being a plain delete: a
+`foreign_key_violation` with `ADDRESS_IN_USE` becomes a `409 ADDRESS_IN_USE`
+with the count and the next booking's date, because "This address is used by 2
+upcoming bookings" (§16, #18) is a message a person can act on and
+`foreign_key_violation` is not. The customer is offered the next step rather
+than being left guessing.
+
+### 5. `0013_professional_schedule.sql`
+
+The table and its GiST exclusion constraint from §24.8, shipped now because a
+reschedule has to move a window and Phase 2 owns the reschedule route. It ships
+empty. `assignment_status` and `booking_assignments` stay in `0012` and Phase 5;
+this table does not reference them.
+
+The exclusion constraint
+`EXCLUDE USING gist (professional_id WITH =, tstzrange(starts_at, ends_at, '[)') WITH &&) WHERE (status IN ('reserved','in_progress'))`
+is the structural guarantee that one professional cannot hold two overlapping
+bookings, and it needs a test in Task 15 rather than a comment.
+
+### 6. `0016_coupons.sql` and the `ratings` table from `0017`
+
+Coupons are in Phase 2's §31.1 scope ("coupons"), so `coupons` and
+`coupon_usage` land here with `UNIQUE NULLS NOT DISTINCT` semantics preserved,
+`uniq_coupons_code` on `upper(code)`, `percentage_needs_cap`, and
+`uniq_coupon_usage_booking` — one coupon per booking.
+
+`ratings` also lands, because the Phase 1 deferral was the catalogue card
+aggregate and an aggregate needs a table. `favourites` from the same spec file
+stays Phase 8; only the `ratings` half moves.
+
+### 7. Type mirror
+
+`lib/supabase.ts`: `booking_type`, `booking_status`, `discount_type`,
+`payment_purpose`, and the `Row` / `Insert` / `Update` triples for `bookings`,
+`booking_items`, `booking_status_history`, `professional_schedule`, `coupons`,
+`coupon_usage` and `ratings`, hand-maintained in the existing
+`Schema['Tables'][T]` shape with the `export type Booking = Tables<'bookings'>`
+aliases alongside the others. `npm run db:schema` rebuilds
+`supabase/schema.sql`.
+
+### 8. `lib/money.ts` — the one place arithmetic happens
+
+Money never touches a float, in TypeScript or in the database.
+
+- **In TypeScript, money is integer paise.** A branded `type Paise = number` over
+  `Math.round(x * 100)`, plus `fromRupees(n: number)`, `toDecimal(p: Paise)`
+  (always two places) and `fromDecimal(s: string)` which parses without going
+  through a float. `0.1 + 0.2` never enters a total, and `numeric` never
+  receives a value that has already lost its last paisa.
+- **In Postgres, money is `numeric(12,2)`.** The database is the authority and
+  the spec already fixed the column types in §24.7; this is not a re-decision,
+  it is a decision about the language on the other side of the wire.
+- Rounding is **half-up, at these points and no others**: `line_total` per item;
+  each multiplier's delta; `platform_fee`; `discount`; `tax`;
+  `professional_gross`. Everything downstream is exact addition of two-decimal
+  values, so `total` and `platform_revenue` need no rounding at all and cannot
+  drift.
+- `allocate(total: Paise, weights: Paise[])` for per-item proration, because §6.4
+  says cancellation refunds are prorated per item and a naive
+  `round(total * share)` per item does not sum to `total`. The last item absorbs
+  the remainder.
+- `assertNonNegative` and `assertMoneyShape` as cheap tripwires in tests.
+
+### 9. `lib/pricing.ts` — the engine (§7.1)
+
+Pure and server-only, exactly as §7.1 says. One entry point,
+`priceBooking(inputs, rules)` in paise, and it returns the full breakdown rather
+than a total, because the checkout screen renders the same lines (§20.5) and
+having one function produce both means they cannot disagree.
+
+Order of evaluation, fixed and documented in the file header:
+
+1. `line_total` per item — hourly `base_price × duration/60`, flat `base_price`,
+   per-unit `unit_price × quantity`, with the `service_durations` flat override
+   or `price_multiplier` taking precedence over the base price when a row
+   exists.
+2. Multipliers from `pricing_rules` of type `multiplier`, matched on
+   `days_of_week`, `start_time`/`end_time` and `scope_type`/`scope_id`,
+   lowest `priority` first, `stackable` respected, each clamped to its own
+   `max_factor`, and each emitted as its own itemised line with a `code`. The
+   `surge` rule type is read but never applied: `surge_enabled` is false by
+   default (§7.4) and surge is Phase 8, so Phase 2 returns `surge: []` from the
+   same code path rather than a second one.
+3. `subtotal` = sum of post-multiplier line totals.
+4. `platform_fee = max(platform_fee_min, subtotal × platform_fee_pct)`.
+5. `discount` = coupon value, capped by `max_discount`, by
+   `max_discount_pct_of_total`, and floor-guarded at `subtotal + platform_fee`.
+6. `taxable = subtotal + platform_fee − discount`; `tax = taxable × tax_pct`.
+7. `professional_gross = taxable × (1 − commission_pct)`, and
+   `commission_amount = taxable − professional_gross` stored rather than
+   recomputed. The two then reconcile to the last paisa by construction, which
+   is what §7.5's `taxable × commission_pct` cannot promise once rounding is in
+   the middle.
+8. `platform_revenue = total_amount − professional_gross`, so it is a derived
+   fact rather than a third independent sum that can disagree with the other
+   two.
+
+`commission_pct` comes from the professional's row when the booking already has
+one, and from `PLATFORM_DEFAULTS.commissionPct` when it does not — a booking
+created before assignment must still have a payout snapshot to compare against
+later.
+
+**Defaults the spec does not give.** §7.3 names `platform_fee_pct` and
+`platform_fee_min` but gives neither a value, and `lib/constants.ts` today has a
+single ambiguous `platformFee`. Phase 2 splits it into `platformFeePct: 0.04` and
+`platformFeeMin: 20` — rupees, because that is the unit `PLATFORM_DEFAULTS` is
+already in; `lib/money.ts` converts to paise at the boundary and never does
+arithmetic on the constant. The pair reproduces both worked examples in the
+document: §7.2's ₹20.00 fee on a ₹500.00 subtotal, and §20.5's ₹20.00 fee on a
+₹437.80 base where 4% would have given ₹17.51. Also added to `PLATFORM_DEFAULTS`:
+`maxBookingMinutes: 480` (§6.4), `maxSchedulingDaysAhead: 30` (§6.2),
+`instantMatchTargetSeconds: 120` (§6.1), `lateArrivalThresholdMin: 15` (§7.3).
+These are seed values, not rules: they exist because `platform_settings` is a
+Phase 6 table, and the file says so.
+
+`quoteToken` is HMAC-SHA256 over a canonical JSON of the pricing inputs plus the
+computed total, keyed by a server secret, packed as
+`base64url(payload).base64url(signature)` with a 15-minute `exp` (§7.2). The
+signature stops a client presenting a token that was never issued; it is not
+what enforces the price. §7.2's callout is the gate: **the server re-prices on
+every create and compares**, and a mismatch is `409 PRICE_CHANGED` with a fresh
+breakdown attached. A client-sent amount is never read.
+
+### 10. `lib/idempotency.ts` (§28.2)
+
+`withIdempotency(key, operation, actorProfileId, fn)` over the shipped 0024
+functions, not over the pseudo-code in §28.2 — see the report. The four
+outcomes are handled distinctly:
+
+- `claimed` — run `fn`, then `complete_idempotency_key` with the status and body
+  actually returned, so a replay is byte-identical.
+- `replay` — return the stored status and body with `Idempotent-Replay: true`.
+- `in_flight` — a duplicate arrived while the first is still running. Return
+  `409 IDEMPOTENCY_CONFLICT` with `details.reason = 'in_flight'` and
+  `Retry-After: 2`. It is a race, not a disagreement, and the two are told apart
+  in `details` even though the catalogue has one code for them.
+- `conflict` — same key, different body hash. `409 IDEMPOTENCY_CONFLICT`, and
+  this is the case the code is named for.
+
+The request hash is sha256 over the canonicalised body *after validation*, so
+whitespace and key order do not spend a customer's key, and so two payloads that
+differ only in a field the validator drops are not falsely "the same".
+
+### 11. `lib/bookingServer.ts`, `lib/cancellation.ts`, `lib/status.ts`
+
+- `lib/bookingServer.ts` — `requireCustomer` reuse from `addressServer.ts`,
+  `loadOwnedBooking(customerId, id)`, the transition guard, the version-guarded
+  update, `bookingView()`, and `auditBooking()` alongside the existing
+  `auditAddress()`.
+- `lib/cancellation.ts` — the §11.1 ladder as a pure function over
+  `cancellation_policies` rows, most-specific-first exactly as the §11.1 SQL
+  does, and `cancellationFee(amount, hoursBefore, arrived, rows)`. Every band is
+  a unit-tested branch (§29.2), including the overcharge guard where a `fixed`
+  fee exceeds the amount (`LEAST(fee_value, amount)` in §11.1) and the
+  professional-cancelled case, which waives the fee entirely (§11.2).
+- `lib/status.ts` — `booking_status → { label, variant, colour }` per §23, and
+  the customer-facing ladder for the live booking stepper. Never colour alone.
+
+### 12. Endpoints
+
+| Route | Method | Notes |
+|---|---|---|
+| `/api/bookings/quote` | POST | Pure, writes nothing, returns the §7.2 body and `quoteToken` |
+| `/api/bookings` | POST | `Idempotency-Key` required; `draft → payment_pending` in one transaction |
+| `/api/bookings` | GET | Customer's own, filter by status and date, paginated (§25.4) |
+| `/api/bookings/[id]` | GET | Status, timeline, items, breakdown, invoice flag |
+| `/api/bookings/[id]/cancel` | POST | Ladder fee, reason code, audit |
+| `/api/bookings/[id]/reschedule` | POST | `Idempotency-Key`; `version` required; re-runs the slot engine |
+| `/api/bookings/[id]/invoice` | GET | Read model only; no PDF |
+| `/api/bookings/[id]/review` | POST | Upsert on `booking_id`; `completed → closed` |
+
+`/api/bookings/[id]/track` is deferred with the professional app (Phase 4): its
+content is the professional's live location and ETA, and neither exists yet. The
+customer booking detail screen renders the status timeline without it.
+
+All mutating routes use the house shape from the address routes: `handle(req,
+'bookings.create', …)`, `validationError`, `ok` / `created`, `ApiHttpError`, and
+`audit()` with `redact()`.
+
+Behaviour decisions worth writing down:
+
+- **Create stops at `payment_pending`.** §25.6 says create is
+  `draft → payment_pending`, and payments are Phase 3, so the booking is born
+  `draft`, transitions to `payment_pending` in the same transaction so the
+  history shows both hops, and waits. When Phase 3 lands it inserts the
+  `payments` row in that same transaction. This is the honest reading of "created
+  and cancelled end-to-end" in a phase that does not take money — and
+  `payment_pending → cancelled` is a legal transition in §8.2, so the cancel
+  path is genuinely end-to-end from there.
+- **Cancel is idempotent in the friendly direction.** A second cancel of an
+  already-`cancelled` booking returns `200` with the current booking and no
+  second fee, because that is what a customer pressing Cancel twice means. A
+  cancel from a status where it is not legal is `409 ILLEGAL_TRANSITION`. The
+  fee is computed once and never re-derived.
+- **Cancel stops at `cancelled` and does not invent a refund.** §8.2 allows
+  `cancelled → refund_pending`, but a Phase 2 booking has captured nothing, so
+  there is nothing to refund and `cancelled` is terminal. `refund_pending` and
+  `refunded` become reachable in Phase 3, where `payments` exists. The refund
+  queue is where it belongs, and a fake refund row in Phase 2 would be a lie
+  with a status on it.
+- **Reschedule needs `version`.** The client sends the version it read; a
+  mismatch is `409 STALE_VERSION` with the fresh row attached so the screen can
+  re-render instead of guessing. Two devices rescheduling the same booking
+  produce one winner and one conflict, never two bookings.
+- **Reschedule on a booking with no professional** is the only path reachable
+  today, and it moves `scheduled_start_at` / `scheduled_end_at` and nothing else.
+  The `professional_schedule` branch is written and unit-tested against the
+  table but is unreachable until Phase 5 assigns somebody.
+- **Reschedule re-quotes.** A time change can cross a peak window, so
+  `pricing_snapshot` is rewritten and the breakdown returned is the new one. The
+  frozen price of a paid booking (§16, #19) is not retroactively applied to a
+  change the customer asked for; the fee for the reschedule itself is the §11.3
+  ladder and is returned before the confirmation.
+- **Availability is re-checked on create**, not only at quote time. In practice
+  this almost never fails, because nothing reserves capacity until Phase 5
+  assigns somebody, and the check is cheap. It stays because the day it matters
+  it is the difference between a promise and a booking.
+
+### 13. Checkout, components and pages
+
+- `/customer/checkout` (§20.5) — one scrollable stepper, sticky pay bar, four
+  collapsible sections, slot chips carrying the `reason` the Phase 1 engine
+  already returns for a disabled slot. Every address, time, duration and coupon
+  change re-quotes with a 300 ms debounce and the pay button is disabled while a
+  quote is in flight, which is what makes `PRICE_CHANGED` rare rather than
+  handled (§20.5).
+- The pay button reads **"Pay ₹481.20"** and calls the real endpoint. Phase 2
+  creates the booking and says what happens next, because there is no gateway
+  yet; the button is never a fake success and never a dead control.
+- `/customer/bookings` — the list, with four states and a filter by status.
+- `/customer/bookings/[id]` — the status stepper, the itemised breakdown, the
+  cancel dialog with the fee stated before the button, reschedule, and the
+  invoice view.
+- `components/catalogue/PriceBreakdown.tsx` — renders a `pricing_snapshot`
+  breakdown and nothing else. It has no arithmetic in it.
+- `components/catalogue/BookingStatusBadge.tsx`, `BookingTimeline.tsx`,
+  `CancelBookingDialog.tsx`, `ReschedulePanel.tsx`, `InvoiceView.tsx`,
+  `components/ui/EmptyState.tsx` — the same directory Phase 1 put
+  `BookingPanel.tsx`, `DurationPicker.tsx` and `SlotPicker.tsx` in, so booking
+  surfaces stay in one place rather than splitting across a new folder.
+- The service-detail CTA in `components/catalogue/BookingPanel.tsx` loses its
+  "Checkout arrives in Phase 2" title and routes to `/customer/checkout`. This
+  is the Phase 1 deferral, and a button that lies about what it will do is
+  worse than no button.
+- The catalogue card's rating now reads `ratings`, grouped by `service_id`
+  through the services a professional is skilled in. It will read "New" until
+  Phase 4 completes a job, and that is correct — a service has no rating before
+  anyone has had it.
+
+### 14. Roles
+
+`lib/roles.ts` grants `customer` an empty array today. §3.2 says a customer
+creates, cancels and reschedules their own booking, so Phase 2 adds
+`['booking.create', 'booking.cancel.own']` to that row, and
+`roles.test.ts` grows a case for it.
+
+Reschedule is guarded by `booking.create`, not by a new `booking.reschedule.own`
+capability. §3.2 covers create, cancel and reschedule in one row, so inventing a
+fourth capability string would put a grant in the table that the specification
+does not describe. The mapping is written down here so it is a decision rather
+than an omission.
+
+### 15. Tests
+
+- `test/pricing.test.ts` — hourly, flat and per-unit line totals; the duration
+  flat override and the multiplier override; stacked multipliers with priority
+  and `max_factor` clamping; the platform fee floor; the coupon cap and the
+  40%-of-total cap; tax on post-discount taxable; the `professional_gross +
+  commission_amount = taxable` invariant; proration summing back to the total;
+  half-up rounding at ₹0.005.
+- `test/cancellation.test.ts` — every §11.1 band, fee 0 above 24 h, the
+  `fixed`-fee-above-amount guard, the professional-cancelled waiver, and the
+  most-specific-policy-wins ordering.
+- `test/status.test.ts` — every legal transition in §8.2 allowed and the
+  representative illegal set (`draft → in_progress`, `completed → cancelled`,
+  `refunded → paid`) rejected, against the real trigger.
+- `test/routes.bookings.test.ts` — quote, create, list, get, cancel,
+  reschedule, invoice, review: one happy path and one failure path each.
+  Specifically: tampered price → `PRICE_CHANGED` and no booking row; ten
+  concurrent creates on one `Idempotency-Key` → one booking (§28.1, §29.4);
+  same key, different body → `IDEMPOTENCY_CONFLICT`; a second device
+  rescheduling → `STALE_VERSION`; a cancelled booking's address deleted →
+  `ADDRESS_IN_USE`; another customer's booking unreadable.
+- `test/db.rls.test.ts` — `bookings`, `booking_items`,
+  `booking_status_history`, `professional_schedule`, `coupons`, `coupon_usage`
+  and `ratings` isolation between two real customers.
+- `test/availability.test.ts` — unchanged; the slot engine does not move in this
+  phase.
+
+### 16. Seed, docs, verification
+
+- The seed grows one `paid` booking and one `in_progress` booking, written as
+  rows. They exist so the §11.1 ladder and the ops-cancellation branch of §8.2
+  are reachable in integration tests without a payment gateway and without
+  faking one. Seed data is the honest way to reach a state a later phase creates.
+- `docs/DATABASE.md`, `docs/API.md`, `docs/FEATURES.md` in the house style,
+  candid about what is a stub. `README.md` moves to "Phase 2 complete" with the
+  new endpoints and test counts.
+- `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`. Then, with
+  explicit approval, `npm run db:migrate`, `npm run db:seed`, `npm run test:db`.
+
+## Definition of Done
+
+Per §31.2, per feature: migration written and idempotent; RLS policies covered
+by an isolation test; Route Handler with validation, capability check, error
+envelope and audit log where privileged; client wired to the real endpoint with
+no placeholder buttons; loading, empty, error, success and retry states; unit
+tests for the money and the state machine plus integration tests for one happy
+and one failure path; human error copy; responsive at 390 / 768 / 1280 px,
+keyboard navigable, no colour-only status; documented in `docs/`.
+
+Plus, for this phase specifically: every money total in a test reconciles to the
+paisa, and no test asserts a total the pricing engine did not produce.
+
+## Out of scope
+
+Payments, refunds, the wallet and the gateway webhook (Phase 3). The
+professional app, offers, OTP, the timer, extensions and completion (Phase 4).
+Matching, candidate ranking, offer fan-out and the reassignment cascade, with
+`booking_assignments` and the `professional_schedule` availability term (Phase
+5). Admin screens for pricing rules, coupons and bookings (Phase 6). Realtime
+subscriptions and the notification dispatcher (Phase 7). Recurring, favourites,
+wallet top-up, surge, the invoice PDF and the PWA (Phase 8). `platform_settings`
+and `pricing_rules` as tables — Phase 2 reads `PLATFORM_DEFAULTS` and ships the
+schema for neither, exactly as Phase 1 did for `instant_lead_minutes`.

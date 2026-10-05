@@ -1,0 +1,4 @@
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+[90mstderr[2m | test/api.test.ts[2m > [22m[2mhandle[2m > [22m[2mturns an unexpected throw into a generic 500 with no internals leaked
+[22m[39m[c71fe9a5-cf95-43df-829f-b46bd1b6e505] test.route failed: connection string postgres://user:hunter2@db/prod blew up
+

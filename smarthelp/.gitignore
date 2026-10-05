@@ -1,0 +1,11 @@
+# Dependencies and build artifacts
+node_modules/
+.next/
+out/
+next-env.d.ts.bak
+devtest.log
+
+# Only real secrets are excluded. docs/ and test/ are intentionally tracked.
+.env
+.env*
+!.env.example

@@ -1,0 +1,43 @@
+
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90mC:/Users/arush/Downloads/smartpos-main/smarthelp[39m
+
+ [32m✓[39m test/addressClient.test.ts [2m([22m[2m19 tests[22m[2m)[22m[90m 43[2mms[22m[39m
+[90mstdout[2m | test/routes.auth.test.ts[2m > [22m[2mPOST /api/auth/send-otp[2m > [22m[2mprovisions the account, records the audit row and issues a code
+[22m[39m[smarthelp] OTP for +919876543210 (login) is 228477 — no SMS provider configured
+
+ [32m✓[39m test/routes.addresses.test.ts [2m([22m[2m25 tests[22m[2m)[22m[90m 144[2mms[22m[39m
+ [32m✓[39m test/availability.test.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 561[2mms[22m[39m
+ [32m✓[39m test/routes.auth.test.ts [2m([22m[2m28 tests[22m[2m)[22m[33m 875[2mms[22m[39m
+   [33m[2m✓[22m[39m POST /api/auth/send-otp[2m > [22mprovisions the account, records the audit row and issues a code [33m467[2mms[22m[39m
+ [32m✓[39m test/routes.password.test.ts [2m([22m[2m18 tests[22m[2m)[22m[33m 858[2mms[22m[39m
+   [33m[2m✓[22m[39m POST /api/auth/sign-in[2m > [22mreturns a session and the role the database holds [33m441[2mms[22m[39m
+ [32m✓[39m test/routes.catalogue.test.ts [2m([22m[2m28 tests[22m[2m)[22m[90m 268[2mms[22m[39m
+ [32m✓[39m test/routes.bookings.test.ts [2m([22m[2m40 tests[22m[2m)[22m[90m 164[2mms[22m[39m
+ [32m✓[39m test/validation.test.ts [2m([22m[2m37 tests[22m[2m)[22m[90m 66[2mms[22m[39m
+ [32m✓[39m test/cancellation.test.ts [2m([22m[2m24 tests[22m[2m)[22m[90m 32[2mms[22m[39m
+ [32m✓[39m test/geo.test.ts [2m([22m[2m21 tests[22m[2m)[22m[90m 24[2mms[22m[39m
+ [32m✓[39m test/bookingAvailability.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 26[2mms[22m[39m
+ [32m✓[39m test/bookingClient.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 32[2mms[22m[39m
+ [32m✓[39m test/quoteToken.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 20[2mms[22m[39m
+ [32m✓[39m test/roles.test.ts [2m([22m[2m15 tests[22m[2m)[22m[90m 27[2mms[22m[39m
+ [32m✓[39m test/money.test.ts [2m([22m[2m25 tests[22m[2m)[22m[90m 31[2mms[22m[39m
+ [32m✓[39m test/api.test.ts [2m([22m[2m16 tests[22m[2m)[22m[90m 77[2mms[22m[39m
+ [32m✓[39m test/catalogueClient.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 45[2mms[22m[39m
+ [32m✓[39m test/env-inlining.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 35[2mms[22m[39m
+ [32m✓[39m test/idempotency.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 45[2mms[22m[39m
+ [32m✓[39m test/supabaseConfig.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 217[2mms[22m[39m
+ [32m✓[39m test/owner.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 301[2mms[22m[39m
+ [32m✓[39m test/sessionHeaders.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 15[2mms[22m[39m
+[90mstdout[2m | test/otp.test.ts[2m > [22m[2mdeliverOtp with no provider configured[2m > [22m[2mfalls back to the console for SMS and says the code was not delivered
+[22m[39m[smarthelp] OTP for +919876543210 (login) is 123456 — no SMS provider configured
+
+[90mstdout[2m | test/otp.test.ts[2m > [22m[2mdeliverOtp with no provider configured[2m > [22m[2mfalls back to the console for email as well
+[22m[39m[smarthelp] OTP for a@b.com (staff_login) is 123456 — no SMTP configured
+
+ [32m✓[39m test/otp.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 92[2mms[22m[39m
+ [32m✓[39m test/pricing.test.ts [2m([22m[2m34 tests[22m[2m)[22m[33m 3321[2mms[22m[39m
+   [33m[2m✓[22m[39m priceQuote — the split balances[2m > [22mbalances across every combination of settings and coupons [33m3277[2mms[22m[39m
+ [32m✓[39m test/db.connection.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 4055[2mms[22m[39m
+   [33m[2m✓[22m[39m the shared database connection[2m > [22manswers normally while the socket is healthy [33m1189[2mms[22m[39m
+   [33m[2m✓[22m[39m the shared database connection[2m > [22mreconnects after the connection is dropped, so one dead socket does not fail the rest of the file [33m2552[2mms[22m[39m
+   [33m[2m✓[22m[39m the shared database connection[2m > [22mstill reports a rejected statement rather than retrying it [33m311[2mms[22m[39m
