@@ -2,18 +2,16 @@
 
 ## Current Phase
 
-Phase 3 — Payments, refunds & wallet. Plan:
+Phase 3 — Payments, refunds & wallet. **Complete.** B-GATE passed 2026-10-08:
+all nine steps green, `0015` applied to the live project (24 migrations applied,
+0 outstanding), unexcluded suite 655/38, `npm run test:db` 77/5, and §31.1's
+exit criteria hand-checked — money in, money out, webhook sole authority (zero
+client-reachable writers of `success`; only the webhook and the reconcile cron
+reach `confirm_booking_payment`), RLS on payments. `README.md` now says
+"at Phase 3" with the phase table updated. Plans:
 [`phases/03-payments/03-PLAN.md`](phases/03-payments/03-PLAN.md).
 
-**Wave A complete and gated** (typecheck/lint/build exit 0, pre-migration suite
-645/36 green, `0014` already applied live, CheckoutForm opens real Razorpay
-Checkout through `lib/paymentClient.ts`, `paid` reachable only from polled
-status, docs written). **Wave B on disk, pre-migration green:** `0015` schema,
-`lib/refundServer.ts`, `lib/walletServer.ts`, `POST/GET /api/refunds`, the
-`refund.processed` webhook event, the cancel-of-paid auto-refund, and both test
-files. What remains: 03-PLAN **Task B-GATE** (apply `0015`, unexcluded suite,
-`npm run test:db` across all five live files, §31.1 exit-criteria hand-check)
-and the `README.md` "Phase 3 complete" record.
+**Next:** Phase 4 (see [`ROADMAP.md`](ROADMAP.md)).
 
 Phase 2 — Booking & pricing. **Substantially complete.** Plan:
 [`phases/02-booking-pricing/02-PLAN.md`](phases/02-booking-pricing/02-PLAN.md).
@@ -27,6 +25,13 @@ read model.
   tracked; summarised in `README.md`.
 - Phase 1 — Catalogue & availability. Migration 0008, locality resolution, the
   slot engine, nine endpoints, three public pages, `docs/`.
+- Phase 2 — Booking & pricing. Migrations 0009–0013, 0016–0017, 0028, the pricing
+  engine, the booking endpoints and pages — see "Phase 2 progress" below.
+- Phase 3 — Payments, refunds & wallet. Migrations 0014–0015, Razorpay
+  order/verify/webhook/reconcile, `confirm_booking_payment` as the single writer
+  of `success`, the refund API with the ₹1500 limit, cancel-of-paid auto-refund,
+  the wallet ledger with `apply_wallet_delta`, and the §31.1 exit criteria.
+  Recorded 2026-10-08; plans and record in `phases/03-payments/`.
 
 ## Phase 2 progress
 
@@ -247,9 +252,10 @@ no.
   both say `SERVICE_UNAVAILABLE`. A client branching on `code` therefore sees a
   different code for the same 422 that an uncovered *service* produces. Left as
   is, and documented in `docs/API.md`.
-- **Nothing consumes `quoteToken` for payment.** It is issued, verified and stored
-  on `bookings.quote_token`, which is the whole of §7.2's requirement; Phase 3 has
-  to decide what a payment hand-off does with it.
+- ~~**Nothing consumes `quoteToken` for payment.**~~ — closed by Phase 3:
+  `create-order` asserts `bookings.quote_token IS NOT NULL` (presence gates
+  payment, freshness does not) and `confirm_booking_payment` nulls it, making
+  the token single-use across the payment lifecycle.
 - **There is no consolidated `bookingView`.** Detail pages assemble their payload
   from several queries. Correct, but more than one round trip per page.
 - **Dead code**: `noContent`, `requireCapability`/`requireStaff`/`requireAdmin`
@@ -266,7 +272,8 @@ no.
   coverage comment says thirteen localities and there are twelve; `seed.sql`'s
   header says four demo users and creates five, and misspells
   `SMARTHELP_OWNER_LOGIN`. None of these change behaviour; all are wrong.
-- **`vercel.json` declares eight cron paths** with no handlers behind them.
+- **`vercel.json` declares eight cron paths** — one (`/api/cron/reconcile-payments`)
+  now has a handler as of Phase 3; the other seven still have none.
 - **The migration ledger holds one filename that is not on disk** — `0009_bookings.sql`,
   from the legacy era. Harmless, because the ledger is only consulted for files
   that exist, but it is a record of a file nobody can read.
@@ -334,7 +341,8 @@ Both were in the harness, and both had been passing by luck.
 | 261003-03 | Atomic booking writes, quote token, seed data, docs | 2026-10-03 | (uncommitted) | [.planning/quick/261003-03-atomic-booking-writes](./quick/261003-03-atomic-booking-writes/) |
 | 261003-04 | Authenticated the browser client: `lib/sessionHeaders.ts` | 2026-10-03 | (uncommitted) | — |
 | 261004-gh9 | Address creation at checkout: `lib/addressClient.ts`, `AddressForm.tsx` | 2026-10-04 | 3cad3b1-353b0be | [.planning/quick/261004-gh9-fix-logged-in-customer-booking-flow-brow](./quick/261004-gh9-fix-logged-in-customer-booking-flow-brow/) |
-| 261007-vhn | Keep building smarthelp (Phase 3): Wave A finished and gated, Wave B schema/modules/routes/tests started | 2026-10-08 | (uncommitted) | [.planning/quick/261007-vhn-keep-building-smarthelp-phase](./quick/261007-vhn-keep-building-smarthelp-phase/) |
+| 261007-vhn | Keep building smarthelp (Phase 3): Wave A finished and gated, Wave B schema/modules/routes/tests started | 2026-10-08 | 5c44539 (docs) | [.planning/quick/261007-vhn-keep-building-smarthelp-phase](./quick/261007-vhn-keep-building-smarthelp-phase/) |
+| 261008-f2b | Phase 3 Task B-GATE: 0015 applied live, nine gate steps green, §31.1 exit criteria met, README Phase 3 record | 2026-10-08 | (docs commit) | [.planning/quick/261008-f2b-phase3-wave-b-gate](./quick/261008-f2b-phase3-wave-b-gate/) |
 
 
 ## Blockers/Concerns
@@ -357,7 +365,7 @@ Both were in the harness, and both had been passing by luck.
 
 ---
 
-Last activity: 2026-10-08 - Resumed and completed quick task 261007-vhn: Phase 3 Wave A finished (type mirror, CheckoutForm → paymentClient hand-off, Wave A docs) and gated — typecheck/lint/build exit 0, pre-migration suite 645 tests across 36 files (floor 629), `0014` confirmed already applied live so `db:migrate` was a no-op, unexcluded suite 635 and `test:db` 73 both green. Wave B started: `POST/GET /api/refunds` with the ₹1500 limit and server-side capability checks, the cancel-of-paid auto-refund closing the paid→cancelled money leak, `refund.processed` in the existing webhook, `test/routes.refunds.test.ts` (12 cases) and the live `test/db.wallet.test.ts`. `0015` deliberately NOT applied — that is 03-PLAN Task B-GATE, the next step. No git commits, no new dependencies, no refund UI (645 tests / 36 files green).
+Last activity: 2026-10-08 - Completed quick task 261008-f2b (03-PLAN Task B-GATE): all nine steps green — typecheck/lint/build exit 0, excluded suite 645/36, `0015` applied to the live project (24 applied, 0 outstanding), unexcluded suite 655/38, `npm run test:db` 77/5 including db.payments (6) and db.wallet (4) live for the first time, §31.1 exit criteria hand-checked (money in, money out, webhook sole authority with zero client-reachable writers of `success`, RLS on payments), no commits. README now says "at Phase 3" with the phase table split 3=done / 4-9=planned. One test-only fix along the way: `test/db.booking.test.ts`'s rollback assertion was global-count based and raced `db.payments` inserts under parallel file execution — now scoped to the test's own address (diagnosed by the executor; no product code touched). Phase 3 is complete.
 
 
 

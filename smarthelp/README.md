@@ -3,11 +3,11 @@
 A service marketplace for home services: customers book, professionals get
 jobs, and four staff roles run the platform.
 
-**This repository is at Phase 1.** The database schema, the sign-in flows for every
-role, the authorisation model, and the public catalogue are built and tested. What
-is not built is everything a booking touches: creating one, paying for one, and
-having a professional take one. The customer, professional and staff dashboards are
-still role-gated placeholder shells.
+**This repository is at Phase 3.** The database schema, the sign-in flows for every
+role, the authorisation model, the public catalogue, bookings and pricing, and the
+payments, refunds and wallet money paths are built and tested. What is not built is
+the professional app, the matching engine, and the admin and ops dashboards — they
+remain role-gated placeholder shells.
 
 The public surface is real and usable today — the landing page, `/services`, a
 service detail page with live slots, and saved addresses behind a session.
@@ -20,8 +20,9 @@ real over the anon key.
 |---|---|---|
 | 0 | Foundation — schema, auth, roles | done |
 | 1 | Catalogue & availability | done |
-| 2 | Booking & pricing | next |
-| 3–9 | Payments, professional app, matching, admin, realtime, growth, launch | planned |
+| 2 | Booking & pricing | done |
+| 3 | Payments | done |
+| 4–9 | Professional app, matching, admin, realtime, growth, launch | planned |
 
 `.planning/ROADMAP.md` is the full list with exit criteria.
 
