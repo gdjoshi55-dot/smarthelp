@@ -272,8 +272,10 @@ no.
   coverage comment says thirteen localities and there are twelve; `seed.sql`'s
   header says four demo users and creates five, and misspells
   `SMARTHELP_OWNER_LOGIN`. None of these change behaviour; all are wrong.
-- **`vercel.json` declares eight cron paths** — one (`/api/cron/reconcile-payments`)
-  now has a handler as of Phase 3; the other seven still have none.
+- ~~**`vercel.json` declares eight cron paths with no handlers**~~ — closed
+  2026-10-08: it declares exactly one (`/api/cron/reconcile-payments`, every 30
+  minutes, fail-closed on `CRON_SECRET`), and the other seven schedules live as
+  prose in `docs/ARCHITECTURE.md` §7 until their phases build handlers.
 - **The migration ledger holds one filename that is not on disk** — `0009_bookings.sql`,
   from the legacy era. Harmless, because the ledger is only consulted for files
   that exist, but it is a record of a file nobody can read.
@@ -365,7 +367,7 @@ Both were in the harness, and both had been passing by luck.
 
 ---
 
-Last activity: 2026-10-08 - Completed quick task 261008-f2b (03-PLAN Task B-GATE): all nine steps green — typecheck/lint/build exit 0, excluded suite 645/36, `0015` applied to the live project (24 applied, 0 outstanding), unexcluded suite 655/38, `npm run test:db` 77/5 including db.payments (6) and db.wallet (4) live for the first time, §31.1 exit criteria hand-checked (money in, money out, webhook sole authority with zero client-reachable writers of `success`, RLS on payments), no commits. README now says "at Phase 3" with the phase table split 3=done / 4-9=planned. One test-only fix along the way: `test/db.booking.test.ts`'s rollback assertion was global-count based and raced `db.payments` inserts under parallel file execution — now scoped to the test's own address (diagnosed by the executor; no product code touched). Phase 3 is complete.
+Last activity: 2026-10-08 - Closed the four Phase 3 record gaps after B-GATE: `vercel.json` reduced to exactly one cron (`/api/cron/reconcile-payments` — A6's requirement; the seven handlerless schedules from Phases 5/7/8 now live as prose in `docs/ARCHITECTURE.md` §7, and its stale known-issues entries were corrected), `phases/03-payments/03-SUMMARY.md` written (wave gates, 655/38 vs the 555 baseline, deviations with reasons), `ROADMAP.md` Phase 3 marked complete (and Phase 2's stale quote-token note dropped), STATE's vercel known-issue struck out. lint and build re-verified exit 0 after the vercel.json change. **Phase 3 is now fully complete.**
 
 
 

@@ -527,11 +527,13 @@ What remains unproven, and cannot be closed by this suite:
 
 `.planning/ROADMAP.md` holds the full phase table and the deferrals. In short:
 
-Phase 0 (foundation) is done — schema, auth, roles, OTP ledger. Phase 1
-(catalogue and availability) is in progress and is what the public pages and the
-six catalogue routes are. Phases 2 through 9 are planned and nothing exists for
-any of them: bookings, payments, the professional app, matching, the admin
-console, realtime, growth features and the launch hardening pass.
+Phases 0 through 3 are done — schema, auth, roles, OTP ledger, the catalogue and
+availability surface, bookings and pricing, and now payments, refunds and the
+wallet. The public pages and the catalogue routes are Phase 1's, the booking
+surface is Phase 2's, and the money paths (orders, webhook, reconciliation cron,
+refunds, wallet ledger) are Phase 3's. Phases 4 through 9 — the professional app,
+matching, the admin console, realtime, growth features and the launch hardening
+pass — are planned and have nothing built for them yet.
 
 Three architectural consequences are already visible and will only harden as the
 phases land:
@@ -542,9 +544,17 @@ phases land:
   does not need to know which is which, which is why the seam was left open.
 - **`platform_settings` replaces `PLATFORM_DEFAULTS`.** Values that are constants
   today are rows an admin can change without a deploy.
-- **The cron schedule in `vercel.json` has no handlers.** Eight paths are
-  declared and none of them exist yet; reconciliation and the search sweeper are
-  the first things that will need a worker.
+- **`vercel.json` declares exactly one cron: `/api/cron/reconcile-payments`,
+  every 30 minutes** — Phase 3's only worker (§25.11), guarded by the
+  three-channel `CRON_SECRET` check that answers 503 when the secret is unset.
+  The seven schedules that used to sit beside it have no handlers and belong to
+  Phases 5, 7 and 8; they are recorded here as prose so removing them from the
+  strict-JSON file loses nothing: `search-sweeper` (`*/2 * * * *`), `recurring-
+  generate` (`7 2 * * *`), `service-reminders` (`*/15 * * * *`), `demand-index`
+  (`*/5 * * * *`), `rating-reminders` (`13 19 * * *`), `payout-run`
+  (`23 3 * * 1`) and `wallet-expiry` (`41 2 * * *`). Each one re-enters
+  `vercel.json` with its own phase, beside the route that actually handles it —
+  a declared cron with no handler is a scheduled 404.
 
 ## 8. Discrepancies found while writing this
 
@@ -561,8 +571,10 @@ Six, five of them documentation or comments rather than behaviour.
    is **273 tests across 15 files, 30 of them against a database** — a full run
    passes. The database figure is the one that moved: `test/db.rls.test.ts` and
    `test/helpers/dbEnv.ts` gained the `sqlAsRole` work and are uncommitted.
-3. **`vercel.json` schedules eight cron paths that do not exist.** No
-   `app/api/cron/` directory, and `CRON_SECRET` in `.env.example` guards nothing.
+3. **`vercel.json` scheduled eight cron paths that did not exist.** Closed by
+   Phase 3: it now declares exactly one — `/api/cron/reconcile-payments`, whose
+   handler exists and fails closed when `CRON_SECRET` is unset. The other seven
+   schedules are prose in §7 until their phases build the handlers.
 4. **`lib/validation.ts` describes an import pattern the code does not use.** The
    header says client components import the same validators; none do, and the
    module imports `createServerClient`. `app/login/page.tsx:66` mirrors
