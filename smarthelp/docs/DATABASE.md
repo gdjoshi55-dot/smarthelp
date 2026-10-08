@@ -24,7 +24,7 @@ file says so rather than smoothing it over.
 
 ## 1. Inventory
 
-Twenty tables and one view. Every one of them has row-level security enabled;
+Thirty-one tables and one view. Every one of them has row-level security enabled;
 `npm run test:db` asserts exactly that against a live database and fails with the
 names of any table that does not.
 
@@ -48,6 +48,17 @@ names of any table that does not.
 | `professional_time_off` | Ad-hoc absence windows | `0005` | 0 |
 | `professional_skills` | Which professional is qualified for which service | `0006` | 0 |
 | `addresses` | A customer's saved addresses, with resolved locality | `0008` | 1 |
+| `bookings` | The booking: quote, price, status machine, window, OTP state | `0010` | 2 |
+| `booking_items` | The priced service lines frozen onto a booking | `0010` | 2 |
+| `booking_status_history` | One row per status move, with the actor that made it | `0010` | 2 |
+| `professional_schedule` | Reserved working windows held by a booking | `0013` | 5 |
+| `coupons` | Discount codes, their rules and their usage caps | `0016` | 2 |
+| `coupon_usage` | One row per redemption, per customer | `0016` | 2 |
+| `ratings` | One review per completed booking, five sub-scores | `0017` | 2 |
+| `payments` | One row per charge attempt: gateway ids, status, refundable remainder | `0014` | 3 |
+| `refunds` | One row per refund: amount, route, status, the gateway's id for it | `0015` | 3 |
+| `wallets` | One row per customer who has held credit: the balance, as a cache | `0015` | 3 |
+| `wallet_transactions` | The wallet ledger: append-only, `balance_after` on every row | `0015` | 3 |
 | `audit_logs` | Append-only privileged-write trail | `0024` | 0 |
 | `idempotency_keys` | One row per replayable privileged operation | `0024` | 0 |
 
@@ -65,7 +76,8 @@ localities, five categories and the catalogue, all as rows an admin can edit.
 
 Enums, for completeness: `user_role` and `user_status` (`0001`), `pricing_type`
 (`0003`), `verification_status`, `training_status` and `availability_status`
-(`0005`), `address_type` (`0008`).
+(`0005`), `address_type` (`0008`), `payment_purpose` (`0010`), `payment_status`
+and `payment_method` (`0014`), `refund_status` and `wallet_txn_type` (`0015`).
 
 ---
 
@@ -514,11 +526,235 @@ being renamed.
 
 ---
 
-## 7. Row-level security
+## 7. Payments, refunds and the wallet
+
+Money in, and the two ways it goes back out. `refunds` and the two wallet tables
+are `0015`; they exist because Phase 2's plan promised that `refund_pending` and
+`refunded` become reachable once `payments` does, and because §12.3's other half
+— a customer is never left with nothing — needs somewhere to put the money when
+the instrument will not take it.
+
+### `payments`
+
+The Phase 3 table, and the only one in the tree whose central column a browser is
+deliberately not allowed to write. One row per **charge attempt**, inserted before
+the gateway is asked for an order — an attempt nobody can see would otherwise be
+impossible: a gateway order with no row behind it is invisible to reconciliation
+and to a refund, while a row with no `gateway_order_id` is merely incomplete and
+is exactly what the cron looks for.
+
+- `booking_id uuid references public.bookings(id) on delete cascade` — nullable,
+  because §12.4's `wallet_topup` (Phase 8) has no booking to point at
+- `customer_id uuid not null references public.customers(id) on delete cascade`
+  — not null, which is why `POST /api/payments/create-order` calls
+  `requireCustomer` before anything else
+- `purpose public.payment_purpose not null default 'booking'`, with
+  `payments_booking_required` checking `purpose <> 'booking' or booking_id is not
+  null`: a booking charge with no booking is a row nobody can reconcile
+- `amount numeric(12,2) not null check (amount > 0)`, `currency char(3) not null
+  default 'INR'` — rupees to two places, like every money column here, and paise
+  arithmetic happens in `lib/money.ts` rather than in SQL
+- `gateway text not null default 'razorpay'`, `gateway_order_id text`,
+  `gateway_payment_id text`, `gateway_signature text`
+- `status public.payment_status not null default 'created'` — §12.1's six states,
+  `partially_refunded` included from the start for the same reason `0009` shipped
+  the whole `booking_status` enum: adding an enum value later is an `ALTER TYPE`
+  that rewrites the table under an `ACCESS EXCLUSIVE` lock
+- `method public.payment_method`
+- `refundable_amount numeric(12,2) not null default 0 check (refundable_amount >=
+  0 and refundable_amount <= amount)` — what is *left* of this charge to refund,
+  so the CHECK is the backstop that stops a double refund over-drawing the
+  original amount
+- `failure_reason text` — the gateway's own words, written before the create-order
+  route refuses with `402 PAYMENT_FAILED`, which is what lets the checkout screen
+  say what actually happened
+- `idempotency_key text` — the same value passed to `withIdempotency()`. The
+  ledger is pruned by the §25.11 wallet-expiry cron; this column is what keeps
+  "one booking, one payment" true after it is gone, so it carries its own unique
+  index
+- `captured_at`, `created_at`, `updated_at`
+
+Two partial unique indexes, both partial on purpose — a webhook-created or
+cron-created row has no order id and no idempotency key, and two `NULL`s must not
+collide in a table expected to hold exactly one such row per booking for a long
+time:
+
+| Index | On | Predicate |
+|---|---|---|
+| `uniq_payments_gateway_order` | `(gateway, gateway_order_id)` | `gateway_order_id is not null` |
+| `uniq_payments_idem` | `(idempotency_key)` | `idempotency_key is not null` |
+| `idx_payments_status` | `(status, created_at desc)` | — serves the cron's `status in ('created','pending') and created_at < now() - '10 minutes'` |
+| `idx_payments_booking` | `(booking_id)` | — |
+
+`trg_payments_touch` is the ordinary `touch_updated_at()` trigger.
+
+**`gateway_signature` is evidence, not a log field.** The column comment says
+`evidence for disputes; never logged` (§12.2), and `REDACTED_KEYS` in
+`lib/audit.ts` carries the same name so it cannot reach an audit row by being put
+in a metadata object by accident. It is passed to `confirm_booking_payment()` for
+storage and nowhere else — it is not in `GET /api/payments/[id]`'s projection.
+
+#### RLS
+
+| Policy | Verb | Using |
+|---|---|---|
+| `payments_select_own` | `select` | `customer_id = current_customer_id()` **or** `is_staff(['admin','super_admin','ops'])` |
+
+Plus `revoke all on public.payments from anon` and `grant select … to
+authenticated`.
+
+**There is no `insert` policy and no `update` policy at all**, and that is the
+point rather than an omission: a browser that could insert a payment could set
+`status = 'success'` directly. The `for select`-only shape is written out
+explicitly (rather than left as an absence) for the same reason the `*_no_delete`
+policies exist — so `pg_policies` shows a deliberate verb list. The service role
+is the only writer, which is why every route that reads a payment goes through
+`getPaymentForCaller()`: **RLS protects the browser and PostgREST, not the
+service-role path**, since every Route Handler reaches Postgres through
+`createServerClient()` and bypasses RLS entirely.
+
+The staff set is `['admin','super_admin','ops']` rather than the
+`['admin','super_admin']` every policy in `0001`–`0024` uses, because `ops` holds
+`refund.execute` and cannot exercise it against a row it may not read. `support`
+holds `refund.request` and is deliberately outside — a support agent can request a
+refund they cannot see. That is recorded as an open question rather than widened
+here.
+
+### `refunds`
+
+One row per refund, however it is paid back — to the gateway instrument or, when
+that instrument cannot take it, to the wallet. The row is written **before** the
+gateway is asked, the same ordering `payments` uses on the way in and for the
+same reason: a gateway refund with no row behind it is invisible to every screen
+in the product and it is created with money attached.
+
+- `payment_id`, `booking_id`, `customer_id` — all `not null`, all
+  `references … on delete cascade`. The customer and the currency are read from
+  the payment rather than supplied by the request, so a caller cannot name
+  somebody else's account.
+- `amount numeric(12,2) not null check (amount > 0)`, `currency char(3) not null
+  default 'INR'`
+- `status public.refund_status not null default 'requested'` — the whole ladder
+  ships (`requested`, `approved`, `rejected`, `completed`, `failed`), because
+  `approved`/`rejected` are Phase 6's approval console (§25.10) writing into a
+  table that already has a place for them, and adding an enum value later is an
+  `ALTER TYPE` that rewrites the table under an `ACCESS EXCLUSIVE` lock
+- `route text not null default 'gateway' check (route in ('gateway','wallet','mixed'))`
+  — which of the two ways the money went back. "The customer got their money"
+  is two different facts when a dispute is opened about it later.
+- `reason_code text not null`, `note text`
+- `gateway_refund_id text` — persisted **before** completion, so a process that
+  dies between the gateway's answer and `complete_booking_refund()` leaves a row
+  the `refund.processed` webhook can match on and finish
+- `requested_by`, `processed_by`, `approved_by` → `public.profiles(id)` on
+  delete set null
+- `requested_at`, `completed_at`, `created_at`, `updated_at`
+
+| Index | On | Predicate |
+|---|---|---|
+| `uniq_active_refund_per_payment` | `(payment_id)` | `status in ('requested','approved')` |
+| `idx_refunds_booking` | `(booking_id, created_at desc)` | — |
+| `idx_refunds_customer` | `(customer_id, created_at desc)` | — |
+| `idx_refunds_status` | `(status, created_at desc)` | — the staff list filters on this first |
+
+The unique index is partial on purpose: one *active* refund per payment, and a
+partial refund after a completed one is a legitimate second row, which
+`unique (payment_id)` would refuse. `trg_refunds_touch` is the ordinary
+`touch_updated_at()`.
+
+#### RLS
+
+| Policy | Verb | Using |
+|---|---|---|
+| `refunds_select_own` | `select` | `customer_id = current_customer_id()` **or** `is_staff(['admin','super_admin','ops'])` |
+
+Plus `revoke all on public.refunds from anon` and `grant select … to
+authenticated`, and — as on `payments` — **no insert and no update policy**: a
+browser that could insert a refund could set `status = 'completed'` and hand
+itself money.
+
+### `wallets`
+
+The balance, as a *cache*. `wallet_transactions` below is the truth; this row is
+what `apply_wallet_delta()` keeps in step with it.
+
+- `customer_id uuid not null unique references public.customers(id) on delete
+  cascade` — one wallet per customer, which is what makes `get_or_create_wallet()`
+  a single statement rather than a read and a write
+- `balance numeric(12,2) not null default 0 check (balance >= 0)`
+- `created_at`, `updated_at`
+- `customers.wallet_id uuid references public.wallets(id)` — the column shipped
+  in `0001` with a comment promising a foreign key that `0015` adds. Every
+  existing row was null, so the constraint could be added to a live table
+  without a backfill.
+
+There is deliberately **no touch trigger** here. `apply_wallet_delta()` is the
+only writer that changes a balance and it sets `updated_at` itself; a trigger
+would also fire on `get_or_create_wallet()`'s conflict clause, which writes
+nothing — an "updated" timestamp that moves when nothing moved is worse than one
+that only moves for money.
+
+#### RLS
+
+| Policy | Verb | Using |
+|---|---|---|
+| `wallets_select_own` | `select` | `customer_id = current_customer_id()` |
+
+Plus `revoke all on public.wallets from anon` and `grant select … to
+authenticated`. No insert policy, no update policy: the service role is the only
+writer, and a browser that could write its own balance could write itself money.
+
+### `wallet_transactions`
+
+The ledger, append-only, and the table §12.4's `apply_wallet_delta()` writes in
+the same statement as the balance. Every row is a positive movement plus the
+balance it produced, which is what makes the ledger auditable: a reader can
+re-run it and check it against `wallets.balance` without trusting either one.
+
+- `wallet_id uuid not null references public.wallets(id) on delete cascade`
+- `type public.wallet_txn_type not null` — `'credit'` or `'debit'` and nothing
+  else. Direction is the whole of what this column is for; *what* the movement
+  was for is `ref_type`/`ref_id`. A `'refund'` value would make direction
+  ambiguous at exactly the point where an ambiguous direction costs money.
+- `amount numeric(12,2) not null check (amount > 0)` — direction is never the
+  sign, so a negative amount is refused by the column rather than by a caller
+- `balance_after numeric(12,2) not null` — §12.4's own INSERT omits this column,
+  which is amendment (1) to the specification's function
+- `ref_type text not null`, `ref_id text` — `'refund'` / `<refunds.id>`, split on
+  the first colon, both halves kept because "a credit happened" without "for
+  which refund" is not evidence
+- `description text not null`, `created_at`
+- `idx_wallet_txn_wallet on (wallet_id, created_at desc)`
+
+#### RLS
+
+| Policy | Verb | Using |
+|---|---|---|
+| `wallet_txn_select_own` | `select` | `exists (select 1 from public.wallets w where w.id = wallet_id and w.customer_id = current_customer_id())` |
+| `wallet_txn_no_update` | `update` | `using (false)` — §12.4's outright block |
+| `wallet_txn_no_delete` | `delete` | `using (false)` — §12.4's outright block |
+
+Plus `revoke all on public.wallet_transactions from anon` and `grant select … to
+authenticated`. There is no insert policy either — `apply_wallet_delta()` is
+`security definer`, and a browser that could insert a row could forge a
+`balance_after`.
+
+What the two `using (false)` policies buy, precisely: `authenticated` holds only
+`select` on this table, so an update or delete is refused with
+`permission denied for table wallet_transactions` before row-level security is
+consulted at all. The policies are still written out, as they are on
+`audit_logs`, so that `pg_policies` shows a deliberate verb list rather than an
+absence — and so the refusal survives a grant being widened later. This is the
+one place where the "one policy per verb" convention of section 8 is spelled out
+as an explicit *no* rather than left out: §12.4 names both blocks.
+
+---
+
+## 8. Row-level security
 
 Every table in `public` has RLS enabled, and `test/db.rls.test.ts` proves that by
 querying `pg_class` for any `relrowsecurity = false` and failing with the names.
-What that test does **not** do is stated in section 9.
+What that test does **not** do is stated in section 10.
 
 ### The helper predicates
 
@@ -555,15 +791,18 @@ Every table carries one policy per verb, named `*_select_own`, `*_insert_own`,
 `*_update_own`, `*_delete_own` or `*_no_delete` / `*_no_insert`. There are no
 `for all` policies on identity tables — they are written out per verb so that a
 refusal is always a specific `using (false)` rather than an absence. The
-consequence you can see in `pg_policies` is 68 policies across the tables and
-storage objects, and the `for all` policies that do exist are all
-`*_admin_write` or `*_write_own` on catalogue and reference data.
+consequence you can see in `pg_policies` is 80 policies across the tables and
+storage objects — 69 on tables, 11 on `storage.objects` — and the `for all`
+policies that do exist are all `*_admin_write` or `*_write_own` on catalogue and
+reference data.
 
 Every policy is created inside a `do $$ … exception when duplicate_object then
 null; end $$;` block. That is what makes the migrations re-runnable against a
 live project, and it means a policy is never silently replaced — a re-run is a
 no-op, so changing a policy requires editing the body, not just the name. There
-are 64 policies in total across the twenty tables and `storage.objects`.
+are 80 policies in total across the thirty-one tables and `storage.objects`, and
+no `drop policy` statement anywhere — count them from `pg_policies`, not from
+this sentence.
 
 ### What is deliberately not readable
 
@@ -623,7 +862,7 @@ read `profiles` to evaluate it.
 
 ---
 
-## 8. Functions
+## 9. Functions
 
 | Function | Returns | EXECUTE |
 |---|---|---|
@@ -645,11 +884,16 @@ read `profiles` to evaluate it.
 | `create_booking(...)` | `bookings` | **revoked** from `public`, `anon`, `authenticated`; `service_role` only (`0028`) |
 | `cancel_booking(...)` | `bookings` | **revoked** from `public`, `anon`, `authenticated`; `service_role` only (`0028`) |
 | `transition_booking(...)` | `bookings` | **revoked** from `public`, `anon`, `authenticated`; `service_role` only (`0028`) |
+| `confirm_booking_payment(...)` | `payments` | **revoked** from `public`, `anon`, `authenticated`; `service_role` only (`0014`, body superseded by `0015`) |
+| `get_or_create_wallet(p_customer)` | `uuid` | **revoked** from `public`, `anon`, `authenticated`; `service_role` only (`0015`) |
+| `apply_wallet_delta(p_wallet, p_type, p_amount, p_ref, p_desc)` | `numeric` | **revoked** from `public`, `anon`, `authenticated`; `service_role` only (`0015`) |
+| `record_booking_refund(...)` | `refunds` | **revoked** from `public`, `anon`, `authenticated`; `service_role` only (`0015`) |
+| `complete_booking_refund(...)` | `refunds` | **revoked** from `public`, `anon`, `authenticated`; `service_role` only (`0015`) |
 
 The two rows are different in kind and the difference is the whole point. The
 predicate helpers keep Postgres's default `PUBLIC` EXECUTE grant, which is why the
 migrations bother with explicit `grant execute` on some of them and not others —
-the explicit ones are belt and braces. The eight ledger and write-path functions
+the explicit ones are belt and braces. The nine ledger and write-path functions
 are revoked from `public` and re-granted, so a browser cannot reach them at all.
 
 Four functions are **not** reachable through PostgREST regardless of their grant,
@@ -712,6 +956,7 @@ the catalogue directly.
 | `trg_prof_documents_guard` | `guard_professional_document_review()` | `before update on professional_documents` |
 | `trg_prof_skills_guard` | `guard_skill_verification()` | `before update on professional_skills` |
 | `trg_audit_logs_immutable` | `audit_logs_are_immutable()` | `before update or delete on audit_logs` |
+| `trg_payments_touch` | `touch_updated_at()` | `before update on payments` |
 
 `handle_new_user()` is the provisioning path, and it runs as the auth server so
 RLS does not apply. It will only ever grant `customer` or `professional` — a
@@ -807,6 +1052,89 @@ caller supplies, and it is inserted as given. The authority for a price is
 `buildQuote()` in `lib/bookingQuote.ts`, which reads the database; the function's
 job is to write a set of numbers atomically, not to decide what they are.
 
+### The payment write path (`0014`)
+
+`confirm_booking_payment(p_payment_id, p_gateway_order_id, p_booking_id,
+p_gateway_payment_id, p_gateway_signature, p_note) returns public.payments` sits
+beside `0028`'s three because it is the same answer to the same problem: moving
+`payments.status = 'success'` and `bookings.status = 'paid'` as two PostgREST
+requests reproduces exactly the partial-write bug `0028` exists to fix — a payment
+reading `success` against a booking still `payment_pending`, or the reverse.
+
+- **Two callers, one behaviour.** The Razorpay webhook and
+  `GET /api/cron/reconcile-payments` both funnel through it, because three writers
+  with three behaviours is how a booking ends up `paid` while its payment says
+  `pending`.
+- **The replay guard is in the `where` clause:** `status in ('created','pending')`.
+  A second call with the same arguments updates zero rows and returns `null`, so a
+  re-delivered webhook does nothing rather than re-confirming. The caller turns
+  `null` into `{ duplicate: true }`.
+- **The booking only moves if it is still waiting:** `where status =
+  'payment_pending'`. A booking cancelled while the charge was in flight stays
+  cancelled — the money did arrive, so the payment is `success` and it becomes a
+  refund somebody owes rather than a job that should start. `quote_token` is
+  nulled here, which is what makes the token single-use across the payment
+  lifecycle.
+- **`if not found` is checked before `v_payment` is touched**, because with no row
+  matched `into` leaves the record unassigned and a field reference on it raises
+  rather than returning null.
+- **The actor is deliberately empty.** The function sets
+  `app.transition_actor = ''` and `app.transition_actor_role = ''` — a webhook has
+  no profile to name, `booking_status_history.actor_id` is nullable, and
+  `public.user_role` has no `system` value (adding one would be an `ALTER TYPE` on
+  a table with a history row behind every row). The `p_note` carries the
+  provenance instead: `"payment confirmed by webhook (payment.captured, pay_…)"`,
+  or `"payment reconciled by cron (order order_… is paid)"`.
+- **Executes for `service_role` only**, same as `0028`'s three: `revoke all … from
+  public, anon, authenticated`, then `grant execute … to service_role`.
+
+It does **not** re-price and does **not** talk to Razorpay. Its job is to write a
+set of facts atomically.
+
+### The refund and wallet write paths (`0015`)
+
+Four functions, all `security definer`, all `service_role` only, all the same
+shape as `0028`'s: several rows that must agree, moved in one statement, by code
+that never talks to Razorpay.
+
+| Function | What it moves |
+|---|---|
+| `get_or_create_wallet(p_customer) returns uuid` | Creates the wallet if this is the customer's first credit and keeps `customers.wallet_id` pointing at it. One statement, because `wallets.customer_id` is `unique` *and* `customers.wallet_id` references it: two concurrent refunds that each read "no wallet yet" would produce two rows or leave the FK dangling. `on conflict … do update … returning` is the shape that returns the **existing** row — `do nothing` returns nothing, and a follow-up `select` can miss a row a concurrent transaction has not committed yet. |
+| `apply_wallet_delta(p_wallet, p_type, p_amount, p_ref, p_desc) returns numeric` | The balance and its ledger row, or neither. Both amendments below. |
+| `record_booking_refund(...) returns refunds` | Inserts the refund and hops the booking to `refund_pending` **only when its status is `paid` or `cancelled`** — the two legal predecessors `0011` allows. The conditional hop is the point: a request nobody has approved must not strand a paid booking in a state that says the money is going back, so the hop happens here and execution is what makes it real. It also refuses an amount above `payments.refundable_amount` before the row exists. |
+| `complete_booking_refund(...) returns refunds` | Refund → `completed` with `completed_at`, booking `refund_pending → refunded`, `payments.refundable_amount` down and `payments.status` → `partially_refunded` or `refunded`, in one transaction. **This is what makes §8.2's two refund states reachable**, which is what Phase 2's plan promised. The replay guard is `status in ('requested','approved')`: a re-delivered `refund.processed` webhook updates zero rows and returns `NULL` rather than refunding twice. |
+
+#### §12.4's `apply_wallet_delta`, with two amendments
+
+The specification's function does not run against the specification's schema, and
+both mismatches are in the migration header:
+
+1. **`balance_after` is written.** §24.9 declares the column `NOT NULL` and
+   §12.4's INSERT omits it, so as written the function raises `not-null
+   violation` on its first call.
+2. **The balance is read `FOR UPDATE` and checked before the write.** §12.4's
+   `RAISE WALLET_OVERDRAFT … using errcode = 'check_violation'` sits behind the
+   column's own non-deferred `CHECK (balance >= 0)`, which fires first and makes
+   the named error unreachable there.
+
+The column `CHECK` stays as the backstop for a path that writes `wallets`
+without going through the function — a redundant constraint that fires first is
+a feature in a codebase whose philosophy is that the database half is the one
+that matters. `p_amount` is strictly positive in the function and in the column
+alike: direction is `p_type`, never a negative amount.
+
+#### `confirm_booking_payment()`, superseded
+
+`0015` re-declares it with **one** extra assignment — `refundable_amount = amount`
+on the capture — and backfills `status = 'success' and refundable_amount = 0`.
+`0014`'s own comment says the refund path walks that column down, and nothing
+ever raised it: every captured payment carried a remainder of zero, which
+satisfies `refundable_amount <= amount` while being a remainder no refund could
+be drawn from. The body is therefore re-declared rather than edited into `0014`,
+because `0014` is already applied and a migration that changed under its own
+ledger would stop meaning what the ledger says it means. `refundablePaise()` in
+`lib/refundServer.ts` reads that column as the authority, in paise.
+
 ### The `search_path` convention
 
 Every function that calls `gen_random_bytes`, `digest`, `crypt` or `gen_salt`
@@ -823,7 +1151,7 @@ Today that means `issue_otp`, `consume_otp`, `seed.sql`'s `seed_demo_user`, and
 
 ---
 
-## 9. Storage buckets
+## 10. Storage buckets
 
 Six buckets, created by `0000` and policy-ed by `0025`. `docs/SETUP.md` has the
 setup view with size limits and MIME types; this is the access view, which is the
@@ -860,7 +1188,7 @@ convention.
 
 ---
 
-## 10. What is not here yet
+## 11. What is not here yet
 
 Everything in this section is deferred on purpose, and each deferral is recorded
 in `ROADMAP.md`, in `.planning/`, or in a comment in the migration that would
@@ -890,7 +1218,7 @@ The only names quoted are ones the repository itself already uses.
 
 | Phase | Scope it will add | What the schema has to make room for |
 |---|---|---|
-| 2 | Quote engine, booking create, cancel/reschedule, coupons, invoice stub, `bookings` state machine | **Delivered.** `bookings`, `booking_items`, `booking_status_history`, `booking_number_seq`, the price and quote-token snapshots, and the three write-path functions in §8. `block_address_delete_with_future_bookings()` and `ratings` land here |
+| 2 | Quote engine, booking create, cancel/reschedule, coupons, invoice stub, `bookings` state machine | **Delivered.** `bookings`, `booking_items`, `booking_status_history`, `booking_number_seq`, the price and quote-token snapshots, and the four write-path functions in §9. `block_address_delete_with_future_bookings()` and `ratings` land here |
 | 3 | Razorpay orders, webhook, verify, refunds, wallet ledger, reconciliation cron | The wallet that `customers.wallet_id` already points at. `0015_refunds_wallet.sql` is named in a comment in `0001` and does not exist |
 | 4 | KYC upload, verification workflow, working hours, offers inbox, accept/decline, arrive, OTP, complete | No new table is strictly required for the verdict: `professional_documents.status`, `rejection_reason`, `reviewed_by` and `reviewed_at` already carry it, and `idx_prof_doc_status` is already the queue's index. What is missing is the signed-URL route and the review screen |
 | 5 | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper | `professional_schedule`, the one availability input §9.1 asks for that Phase 1 cannot honour. `lib/availability.ts` isolates it behind a single input parameter |
@@ -924,7 +1252,7 @@ does not exist yet.
 
 ---
 
-## 11. What is verified, and what is not
+## 12. What is verified, and what is not
 
 `npm run test:db` runs 24 tests against a real database and skips loudly without
 one. It is not a substitute for reading the migrations, but it does prove some

@@ -41,6 +41,11 @@ const REDACTED_KEYS = new Set([
   'aadhaar_number',
   'pan_number',
   'account_number',
+  // §12.2: dispute evidence, "never logged". Two comments in this repository
+  // (the webhook route's header and `docs/DATABASE.md`'s `payments` section)
+  // already claimed this key was here and it was not, so a metadata object
+  // carrying it under its own name would have reached `audit_logs` intact.
+  'gateway_signature',
 ]);
 
 /** Strips anything that must not reach the trail, recursively. */

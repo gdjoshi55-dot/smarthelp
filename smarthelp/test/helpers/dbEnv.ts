@@ -234,3 +234,54 @@ export async function closeDb(): Promise<void> {
     client = undefined;
   }
 }
+
+/**
+ * The label prefix that marks an address as something a test wrote.
+ *
+ * A fixture address has to look like a real one to every constraint it passes
+ * through — `0010`'s trigger counts bookings against it, the detail page would
+ * render it — so the only way to tell it apart afterwards is its label. Anything
+ * a customer saved through the app can never carry this prefix, which is what
+ * makes the purge below safe to run against a live project.
+ */
+export const FIXTURE_LABEL_PREFIX = '__fixture__';
+
+/** Stamps a fixture label so `purgeTestFixtures()` can recognise it later. */
+export function fixtureLabel(label: string): string {
+  return `${FIXTURE_LABEL_PREFIX}${label}`;
+}
+
+/**
+ * Removes fixture addresses and their bookings left behind by an earlier run
+ * that died between `beforeAll` and `afterAll`.
+ *
+ * Ordering is the whole of it: `bookings.address_id` is `ON DELETE RESTRICT`
+ * (§24.7) and the address-use trigger counts every non-`closed` booking, so the
+ * bookings have to go first or every address refuses. Payments leave with their
+ * booking — `payments.booking_id` is `ON DELETE CASCADE` — so neither they nor
+ * the `booking_status_history` trail need naming: both are the cascade 0011
+ * deliberately allows.
+ *
+ * Returns what it removed so the caller can say so, rather than a silent wipe
+ * that looks like a clean run. Only prefixed labels are touched.
+ */
+export async function purgeTestFixtures(): Promise<{ bookings: number; addresses: number }> {
+  const found = await sql(
+    `select id from public.addresses where label like '${FIXTURE_LABEL_PREFIX}%';`
+  );
+  const ids = found ? found.split('\n') : [];
+  if (!ids.length) return { bookings: 0, addresses: 0 };
+
+  const list = ids.map((id) => `'${id}'`).join(', ');
+  const goneBookings = await sql(
+    `delete from public.bookings where address_id in (${list}) returning id;`
+  );
+  const goneAddresses = await sql(
+    `delete from public.addresses where id in (${list}) returning id;`
+  );
+
+  return {
+    bookings: goneBookings ? goneBookings.split('\n').length : 0,
+    addresses: goneAddresses ? goneAddresses.split('\n').length : 0,
+  };
+}

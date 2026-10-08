@@ -17,6 +17,14 @@ import {
   BookingApiError,
   type QuoteResult,
 } from '@/lib/bookingClient';
+import {
+  createPaymentOrder,
+  verifyPayment,
+  fetchPayment,
+  paymentDisplayState,
+  type CheckoutSignaturePayload,
+  type PaymentOrderResult,
+} from '@/lib/paymentClient';
 
 /**
  * Checkout (§20.5).
@@ -52,9 +60,105 @@ import {
  * place when that list is empty. It is rendered *only* then — somebody with saved
  * addresses has a question to answer, and a form in front of the picker would be
  * a second way to do what the picker already does.
+ *
+ * ## What happens after the booking exists (§12.1, §31.2)
+ *
+ * `POST /api/bookings` used to be the end of this screen: it created a row in
+ * `payment_pending` and navigated away, which meant the customer was shown
+ * "created" and the money was never asked for. The booking id is now held in a
+ * ref instead of being navigated on, and `createPaymentOrder` opens Razorpay
+ * Checkout over the order the server just built.
+ *
+ * Three rules govern the states below, and none of them is an aesthetic choice:
+ *
+ * 1. **The `handler` callback never renders `paid`.** It fires the instant the
+ *    gateway closes its window; the webhook that writes `payments.status` may
+ *    still be seconds away. The handler may only start `verifyPayment` (which
+ *    writes nothing) and begin polling `fetchPayment`. `paid` is reached solely
+ *    through `paymentDisplayState(polledStatus)`.
+ * 2. **A poll that never settles says so.** It stops after `POLL_ATTEMPTS` and
+ *    shows an honest "still confirming" state where pressing the button asks the
+ *    row again — it does not order a second charge. Spinning forever, or
+ *    guessing, would both be lies about money.
+ * 3. **Every refusal is surfaced in the server's own words.** `402
+ *    PAYMENT_FAILED` carries what the gateway said, because the server stored
+ *    `payments.failure_reason` before it refused; `409 PRICE_CHANGED` re-quotes.
+ *
+ * The idempotency key for the *order* follows the same policy as the one for the
+ * booking: it is reused when a request may have landed (`NETWORK_ERROR`) and
+ * regenerated when the server definitely refused or a poll reported `failed`.
  */
 
 const QUOTE_DEBOUNCE_MS = 300;
+
+/** Loaded on demand, never in the bundle — the gateway's own script. */
+const CHECKOUT_SCRIPT_SRC = 'https://checkout.razorpay.com/v1/checkout.js';
+
+/** ~30 seconds of polling: long enough for a webhook, bounded so it cannot spin. */
+const POLL_INTERVAL_MS = 2000;
+const POLL_ATTEMPTS = 15;
+
+/**
+ * The subset of Razorpay Checkout's options this screen uses.
+ *
+ * `amount` is passed as well as `order_id` (both derived from the same server
+ * response) rather than fetched from anywhere client-side: the figure the
+ * gateway charges is the order's, and this screen never computes one.
+ */
+interface RazorpayCheckoutOptions {
+  key: string;
+  order_id: string;
+  amount: number;
+  currency: string;
+  name?: string;
+  handler: (response: CheckoutSignaturePayload) => void;
+  modal?: { ondismiss?: () => void };
+}
+
+declare global {
+  interface Window {
+    /** Injected by `checkout.js`. Absent until the script has loaded. */
+    Razorpay?: new (options: RazorpayCheckoutOptions) => { open: () => void };
+  }
+}
+
+/**
+ * Where the screen is in the payment, in the only order it can happen in.
+ *
+ * `creating` is order-create, `checkout` the open gateway window, `confirming`
+ * the poll. `timeout` and `payment_failed` are both retryable and mean
+ * different things: the first says the row has not settled, the second that it
+ * settled as `failed`.
+ */
+type PayPhase = 'idle' | 'creating' | 'checkout' | 'confirming' | 'paid' | 'timeout' | 'payment_failed';
+
+/**
+ * `checkout.js` is on the gateway's CDN, so it may be slow, may be blocked and
+ * may already be on the page from an earlier attempt. Rejected rather than
+ * resolved on failure: opening `new window.Razorpay` without the constructor is
+ * a TypeError, and a customer deserves the sentence instead.
+ */
+function loadCheckoutScript(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.reject(new Error('no window'));
+  if (window.Razorpay) return Promise.resolve();
+
+  const existing = document.querySelector<HTMLScriptElement>(
+    `script[src="${CHECKOUT_SCRIPT_SRC}"]`
+  );
+
+  return new Promise((resolve, reject) => {
+    const fail = () => reject(new Error('The payment window could not be loaded.'));
+    const target = existing ?? document.createElement('script');
+    target.addEventListener('load', () => resolve(), { once: true });
+    target.addEventListener('error', fail, { once: true });
+    if (!existing) {
+      target.src = CHECKOUT_SCRIPT_SRC;
+      target.async = true;
+      document.body.appendChild(target);
+    }
+  });
+}
+
 
 export function CheckoutForm({
   serviceId,
@@ -62,6 +166,7 @@ export function CheckoutForm({
   durationMinutes,
   durations,
   slotStart,
+  bookingType: bookingTypeProp,
   slotForDurationMinutes,
 }: {
   serviceId: string;
@@ -70,6 +175,7 @@ export function CheckoutForm({
   /** The lengths the service actually offers, from its catalogue row. */
   durations: number[];
   slotStart: string | null;
+  bookingType?: 'instant' | 'scheduled' | null;
   /** The length the pre-chosen slot was picked for, if there is a slot. */
   slotForDurationMinutes: number | null;
 }) {
@@ -92,6 +198,20 @@ export function CheckoutForm({
   const [priceMoved, setPriceMoved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // The payment half. `payNote` is deliberately not an error: it carries the
+  // honest "still confirming" and "window closed" sentences, which are neither
+  // failures nor successes and would read as an alarm in `submitError`'s red box.
+  const [payPhase, setPayPhase] = useState<PayPhase>('idle');
+  const [payNote, setPayNote] = useState<string | null>(null);
+
+  // Read from inside Razorpay callbacks, which are closures created once when the
+  // window opens and so cannot see React state directly.
+  const phaseRef = useRef<PayPhase>('idle');
+  useEffect(() => {
+    phaseRef.current = payPhase;
+  }, [payPhase]);
+
 
   // The saved addresses, as the picker loaded them, plus the counter that re-reads
   // them. Both belong here because the picker is the component that already asks
@@ -120,6 +240,34 @@ export function CheckoutForm({
 
   // One key per attempt. See the note above.
   const idempotencyKey = useRef<string>(createIdempotencyKey());
+
+  // The booking, once it exists. Held rather than navigated on, because the
+  // booking is the thing the order is for — pressing Confirm again after a
+  // dismissed window must pay for *this* booking, not make a second one.
+  const createdBookingId = useRef<string | null>(null);
+  /** The total frozen on that booking, passed as `expectedTotal` to catch a stale screen. */
+  const createdBookingTotal = useRef<number | null>(null);
+  /** The order's own key. See the regeneration policy in `openCheckout`. */
+  const paymentKey = useRef<string>(createIdempotencyKey());
+  /** The payment to ask about again after a timeout. */
+  const paymentId = useRef<string | null>(null);
+
+  // Polling is cancelled by bumping the token: a stale loop that wakes up after
+  // a newer one started simply returns, so two loops can never both write state.
+  const pollToken = useRef(0);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    pollToken.current += 1;
+    if (pollTimer.current !== null) {
+      clearTimeout(pollTimer.current);
+      pollTimer.current = null;
+    }
+  }, []);
+
+  // Unmount (navigation away) must not leave a timer writing into a dead screen.
+  useEffect(() => stopPolling, [stopPolling]);
+
 
   const item = useMemo(
     () => [{ serviceId, durationMinutes: duration }],
@@ -158,56 +306,241 @@ export function CheckoutForm({
     return () => clearTimeout(timer);
   }, [requote]);
 
-  async function confirm() {
-    if (!addressId || !quote) return;
-    setBusy(true);
-    setSubmitError(null);
-    try {
-      const result = await createBooking(
-        {
-          addressId,
-          bookingType: slotStart ? 'scheduled' : 'instant',
-          scheduledStartAt: slotStart,
-          items: item,
-          couponCode: appliedCoupon || null,
-          notes: notes.trim() || null,
-          // The total the customer agreed to. The server refuses with the fresh
-          // breakdown if it has moved, rather than charging the new figure silently.
-          expectedTotal: quote.quote.total,
-          // The signed quote this figure came from, when the server issued one.
-          // Proof of provenance for the booking row; not what the price is held by.
-          quoteToken: quote.quoteToken ?? null,
-        },
-        idempotencyKey.current
-      );
-      router.push(`/customer/bookings/${result.booking.id}?created=1`);
-    } catch (e) {
-      if (e instanceof BookingApiError && e.code === 'PRICE_CHANGED') {
-        // Nothing was written. Show the new breakdown and let them decide.
-        setPriceMoved(true);
-        await requote();
-      } else if (e instanceof BookingApiError && e.code === 'STALE_VERSION') {
-        setSubmitError(e.message);
-        await requote();
-      } else if (e instanceof BookingApiError && (e.code === 'NETWORK_ERROR' || e.code === 'INTERNAL_ERROR')) {
-        // The request may or may not have landed, which is exactly what the key
-        // is for: retrying with the same key returns the one booking either way.
-        setSubmitError(
-          'We could not confirm that. Press the button again — you will not be charged twice.'
-        );
-      } else if (e instanceof BookingApiError) {
-        setSubmitError(e.message);
-        const field = e.fields?.addressId;
-        if (field) setSubmitError(field);
-      } else {
-        setSubmitError('We could not create this booking.');
+  /**
+   * One poll, then another, up to `POLL_ATTEMPTS`.
+   *
+   * A failed *read* is not a failed payment — a dropped connection while the
+   * webhook is still in flight must not tell a customer their money is gone —
+   * so it is swallowed and retried within the same bound. Only a status the
+   * server actually reports ends the loop, and only `paymentDisplayState` decides
+   * what that means.
+   */
+  async function pollPayment(id: string, token: number) {
+    for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
+      if (token !== pollToken.current) return;
+      if (attempt > 0) {
+        await new Promise<void>((resolve) => {
+          pollTimer.current = setTimeout(() => {
+            pollTimer.current = null;
+            resolve();
+          }, POLL_INTERVAL_MS);
+        });
+        if (token !== pollToken.current) return;
       }
-    } finally {
-      setBusy(false);
+
+      let status: string;
+      try {
+        status = (await fetchPayment(id)).payment.status;
+      } catch {
+        continue;
+      }
+      if (token !== pollToken.current) return;
+
+      const state = paymentDisplayState(status);
+      if (state === 'paid') {
+        setPayPhase('paid');
+        setPayNote(null);
+        return;
+      }
+      if (state === 'failed') {
+        // The attempt is over: nothing was captured, and a retry wants its own
+        // order rather than a replay of a spent one.
+        paymentKey.current = createIdempotencyKey();
+        setPayPhase('payment_failed');
+        setPayNote('The payment did not go through, and nothing was charged. You can try again.');
+        return;
+      }
+    }
+
+    // Bounded, and honest about it: the row has not settled, so the screen says
+    // so instead of claiming either outcome.
+    setPayPhase('timeout');
+    setPayNote(
+      'Still confirming your payment. Nothing is marked as paid until your bank says so — press the button to ask again.'
+    );
+  }
+
+  /** Cancel any loop in flight, then start a fresh one on `id`. */
+  function startPolling(id: string) {
+    stopPolling();
+    void pollPayment(id, pollToken.current);
+  }
+
+  /**
+   * Booking creation's refusals, extracted so `confirm` can hand a booking id
+   * straight to `openCheckout` without a nested catch.
+   */
+  async function handleBookingError(e: unknown): Promise<void> {
+    if (e instanceof BookingApiError && e.code === 'PRICE_CHANGED') {
+      // Nothing was written. Show the new breakdown and let them decide.
+      setPriceMoved(true);
+      await requote();
+    } else if (e instanceof BookingApiError && e.code === 'STALE_VERSION') {
+      setSubmitError(e.message);
+      await requote();
+    } else if (e instanceof BookingApiError && (e.code === 'NETWORK_ERROR' || e.code === 'INTERNAL_ERROR')) {
+      // The request may or may not have landed, which is exactly what the key
+      // is for: retrying with the same key returns the one booking either way.
+      setSubmitError(
+        'We could not confirm that. Press the button again — you will not be charged twice.'
+      );
+    } else if (e instanceof BookingApiError) {
+      setSubmitError(e.message);
+      const field = e.fields?.addressId;
+      if (field) setSubmitError(field);
+    } else {
+      setSubmitError('We could not create this booking.');
     }
   }
 
-  const ready = Boolean(addressId) && quote != null && !busy;
+  /**
+   * Order → script → window, for a booking that already exists.
+   *
+   * The order is the server's, so the amount and key on the window come from the
+   * response and are never computed here. Each way this can fail leaves the
+   * screen where the customer can press again: `idle` plus a sentence, never a
+   * dead button.
+   */
+  async function openCheckout(bookingId: string) {
+    setPayPhase('creating');
+    setPayNote(null);
+    setSubmitError(null);
+
+    let order: PaymentOrderResult;
+    try {
+      order = await createPaymentOrder(
+        { bookingId, expectedTotal: createdBookingTotal.current },
+        paymentKey.current
+      );
+    } catch (e) {
+      setPayPhase('idle');
+      if (e instanceof BookingApiError) {
+        // A network error may have landed, so that key must be reused — a second
+        // order on the same key replays the first. Anything the server *refused*
+        // wrote nothing for this attempt, so a fresh key is safe (and required
+        // once a poll has reported `failed`).
+        if (e.code !== 'NETWORK_ERROR') paymentKey.current = createIdempotencyKey();
+        // `402 PAYMENT_FAILED` carries the gateway's own words: the server
+        // stored `payments.failure_reason` before refusing, so this is not ours
+        // to soften into a generic sentence.
+        setSubmitError(e.message);
+      } else {
+        setSubmitError('We could not start the payment. Please try again.');
+      }
+      return;
+    }
+
+    paymentId.current = order.paymentId;
+
+    try {
+      await loadCheckoutScript();
+    } catch {
+      setPayPhase('idle');
+      setSubmitError('We could not load the payment window. Check your connection and try again.');
+      return;
+    }
+
+    setPayPhase('checkout');
+    const rzp = new window.Razorpay!({
+      key: order.keyId,
+      order_id: order.orderId,
+      amount: Math.round(order.amount * 100),
+      currency: order.currency,
+      name: 'SmartHelp',
+      handler: (response) => {
+        // §12.1's hard rule, in code: the handler may *start* work and must not
+        // conclude it. `confirming` is the strongest state it can ask for, and
+        // `paid` is reachable only from the polled row below.
+        stopPolling();
+        setPayPhase('confirming');
+        setPayNote('Checking your payment…');
+        // Reads only — a signature mismatch here changes nothing about the
+        // webhook's authority, and swallowing it leaves the poll to decide.
+        void verifyPayment(response).catch(() => {});
+        startPolling(order.paymentId);
+      },
+      modal: {
+        ondismiss: () => {
+          // Razorpay also closes after a successful payment, at which point the
+          // handler has already moved the phase on. Only an unanswered window
+          // puts the customer back at the start.
+          if (phaseRef.current !== 'checkout') return;
+          stopPolling();
+          setPayPhase('idle');
+          setPayNote(
+            'The payment window was closed. Your booking is saved — you can pay for it whenever you are ready.'
+          );
+        },
+      },
+    });
+    rzp.open();
+  }
+
+  async function confirm() {
+    if (!addressId || !quote) return;
+
+    // A timeout retries the *same* charge attempt: ask the row again rather than
+    // ordering a second one. The row is the only thing that can settle it.
+    if (payPhase === 'timeout' && paymentId.current) {
+      setPayPhase('confirming');
+      setPayNote('Still confirming your payment…');
+      startPolling(paymentId.current);
+      return;
+    }
+
+    let bookingId = createdBookingId.current;
+    if (!bookingId) {
+      setBusy(true);
+      setSubmitError(null);
+      setPayNote(null);
+      try {
+        const result = await createBooking(
+          {
+            addressId,
+            bookingType: slotStart ? 'scheduled' : 'instant',
+            scheduledStartAt: slotStart,
+            items: item,
+            couponCode: appliedCoupon || null,
+            notes: notes.trim() || null,
+            // The total the customer agreed to. The server refuses with the fresh
+            // breakdown if it has moved, rather than charging the new figure silently.
+            expectedTotal: quote.quote.total,
+            // The signed quote this figure came from, when the server issued one.
+            // Proof of provenance for the booking row; not what the price is held by.
+            quoteToken: quote.quoteToken ?? null,
+          },
+          idempotencyKey.current
+        );
+        bookingId = result.booking.id;
+        createdBookingId.current = bookingId;
+        createdBookingTotal.current = quote.quote.total;
+      } catch (e) {
+        await handleBookingError(e);
+        setBusy(false);
+        return;
+      }
+      setBusy(false);
+    }
+
+    await openCheckout(bookingId);
+  }
+
+  // `paying` covers the three states where a second press would be a second
+  // charge attempt or a second window; `paid` retires the button entirely rather
+  // than offering a retry that would refuse at the server.
+  const paying =
+    payPhase === 'creating' || payPhase === 'checkout' || payPhase === 'confirming';
+  const ready = Boolean(addressId) && quote != null && !busy && !paying && payPhase !== 'paid';
+
+  const buttonLabel = busy
+    ? 'Confirming…'
+    : paying
+      ? 'Processing payment…'
+      : payPhase === 'timeout'
+        ? 'Check again'
+        : payPhase === 'payment_failed'
+          ? 'Try again'
+          : 'Confirm booking';
 
   return (
     <div className="grid gap-6 lg:grid-cols-5">
@@ -353,24 +686,54 @@ export function CheckoutForm({
             </p>
           ) : null}
 
-          <button
-            type="button"
-            onClick={confirm}
-            disabled={!ready}
-            className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {busy ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                Confirming…
-              </>
-            ) : (
-              <>
-                <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                Confirm booking
-              </>
-            )}
-          </button>
+          {/* Amber, not red: "still confirming" and "window closed" are states, not
+              refusals. `payment_failed` is a refusal and gets the red the others do. */}
+          {payNote && !submitError ? (
+            <p
+              role={payPhase === 'payment_failed' ? 'alert' : 'status'}
+              className={`mt-4 rounded-lg px-3 py-2 text-sm ${
+                payPhase === 'payment_failed'
+                  ? 'bg-red-50 text-red-700'
+                  : 'bg-amber-50 text-amber-900'
+              }`}
+            >
+              {payNote}
+            </p>
+          ) : null}
+
+          {payPhase === 'paid' ? (
+            <div className="mt-4 rounded-lg bg-emerald-50 px-3 py-3 text-sm text-emerald-900">
+              <p className="font-semibold">Payment received — your booking is confirmed.</p>
+              <button
+                type="button"
+                onClick={() => router.push(`/customer/bookings/${createdBookingId.current}`)}
+                className="mt-2 rounded-lg border border-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
+              >
+                View booking
+              </button>
+            </div>
+          ) : null}
+
+          {payPhase === 'paid' ? null : (
+            <button
+              type="button"
+              onClick={confirm}
+              disabled={!ready}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {busy || paying ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  {buttonLabel}
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                  {buttonLabel}
+                </>
+              )}
+            </button>
+          )}
 
           <p className="mt-3 text-xs text-gray-500">
             Free cancellation up to 24 hours before the start time. The exact fee for your booking

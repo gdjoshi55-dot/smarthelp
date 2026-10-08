@@ -1,0 +1,134 @@
+﻿node.exe : [33mThe CJS build of Vite's Node API is deprecated. See 
+https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([33mThe CJS bu...e details.[39m:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90mC:/Users/arush/Desktop/smarthelp/smarthelp[39m
+
+[90mstdout[2m | test/routes.auth.test.ts[2m > [22m[2mPOST /api/auth/send-otp[2m > [22m[2mprovisions the account, records the audit row and issues a code
+[22m[39m[smarthelp] OTP for +919876543210 (login) is 367414 ΓÇö no SMS provider configured
+
+ [32mΓ£ô[39m test/routes.addresses.test.ts [2m([22m[2m25 tests[22m[2m)[22m[90m 69[2mms[22m[39m
+ [32mΓ£ô[39m test/routes.auth.test.ts [2m([22m[2m28 tests[22m[2m)[22m[33m 617[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m POST /api/auth/send-otp[2m > [22mprovisions the account, records the audit row and issues a code [33m340[2mms[22m[39m
+ [32mΓ£ô[39m test/routes.payments.test.ts [2m([22m[2m21 tests[22m[2m)[22m[90m 91[2mms[22m[39m
+ [32mΓ£ô[39m test/routes.refunds.test.ts [2m([22m[2m12 tests[22m[2m)[22m[90m 91[2mms[22m[39m
+ [32mΓ£ô[39m test/routes.catalogue.test.ts [2m([22m[2m28 tests[22m[2m)[22m[90m 249[2mms[22m[39m
+ [32mΓ£ô[39m test/routes.bookings.test.ts [2m([22m[2m40 tests[22m[2m)[22m[90m 153[2mms[22m[39m
+ [32mΓ£ô[39m test/routes.webhook.test.ts [2m([22m[2m17 tests[22m[2m)[22m[90m 76[2mms[22m[39m
+ [32mΓ£ô[39m test/addressClient.test.ts [2m([22m[2m19 tests[22m[2m)[22m[90m 41[2mms[22m[39m
+ [32mΓ£ô[39m test/routes.cron.test.ts [2m([22m[2m13 tests[22m[2m)[22m[90m 86[2mms[22m[39m
+ [32mΓ£ô[39m test/routes.password.test.ts [2m([22m[2m18 tests[22m[2m)[22m[33m 402[2mms[22m[39m
+ [32mΓ£ô[39m test/validation.test.ts [2m([22m[2m37 tests[22m[2m)[22m[90m 57[2mms[22m[39m
+ [32mΓ£ô[39m test/availability.test.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 445[2mms[22m[39m
+ [32mΓ£ô[39m test/cancellation.test.ts [2m([22m[2m24 tests[22m[2m)[22m[90m 32[2mms[22m[39m
+ [32mΓ£ô[39m test/geo.test.ts [2m([22m[2m21 tests[22m[2m)[22m[90m 21[2mms[22m[39m
+ [32mΓ£ô[39m test/gatewayClient.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 47[2mms[22m[39m
+ [32mΓ£ô[39m test/pricing.test.ts [2m([22m[2m34 tests[22m[2m)[22m[33m 2518[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m priceQuote ΓÇö the split balances[2m > [22mbalances across every combination of settings and coupons [33m2477[2mms[22m[39m
+ [32mΓ£ô[39m test/bookingClient.test.ts [2m([22m[2m11 tests[22m[2m)[22m[90m 28[2mms[22m[39m
+ [32mΓ£ô[39m test/savedAddressSelection.test.ts [2m([22m[2m20 tests[22m[2m)[22m[90m 15[2mms[22m[39m
+ [32mΓ£ô[39m test/bookingAvailability.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 27[2mms[22m[39m
+ [32mΓ£ô[39m test/razorpaySignature.test.ts [2m([22m[2m15 tests[22m[2m)[22m[90m 16[2mms[22m[39m
+ [32mΓ£ô[39m test/roles.test.ts [2m([22m[2m15 tests[22m[2m)[22m[90m 21[2mms[22m[39m
+ [32mΓ£ô[39m test/quoteToken.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 18[2mms[22m[39m
+ [32mΓ£ô[39m test/paymentClient.test.ts [2m([22m[2m12 tests[22m[2m)[22m[90m 21[2mms[22m[39m
+ [32mΓ£ô[39m test/money.test.ts [2m([22m[2m25 tests[22m[2m)[22m[90m 25[2mms[22m[39m
+ [32mΓ£ô[39m test/catalogueClient.test.ts [2m([22m[2m9 tests[22m[2m)[22m[90m 36[2mms[22m[39m
+[90mstderr[2m | test/api.test.ts[2m > [22m[2mhandle[2m > [22m[2mturns an unexpected throw into a generic 500 
+with no internals leaked
+[22m[39m[fe809ef5-393e-4748-b15c-735174f010af] test.route failed: connection string postgres://user:hunter2@db/prod 
+blew up
+
+ [32mΓ£ô[39m test/api.test.ts [2m([22m[2m16 tests[22m[2m)[22m[90m 50[2mms[22m[39m
+ [32mΓ£ô[39m test/env-inlining.test.ts [2m([22m[2m4 tests[22m[2m)[22m[90m 12[2mms[22m[39m
+ [32mΓ£ô[39m test/idempotency.test.ts [2m([22m[2m10 tests[22m[2m)[22m[90m 35[2mms[22m[39m
+ [32mΓ£ô[39m test/owner.test.ts [2m([22m[2m8 tests[22m[2m)[22m[90m 230[2mms[22m[39m
+ [32mΓ£ô[39m test/supabaseConfig.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 164[2mms[22m[39m
+ [32mΓ£ô[39m test/sessionHeaders.test.ts [2m([22m[2m5 tests[22m[2m)[22m[90m 12[2mms[22m[39m
+[90mstdout[2m | test/otp.test.ts[2m > [22m[2mdeliverOtp with no provider configured[2m > [22m[2mfalls back to the console for SMS and says the code was not delivered
+[22m[39m[smarthelp] OTP for +919876543210 (login) is 123456 ΓÇö no SMS provider configured
+
+[90mstdout[2m | test/otp.test.ts[2m > [22m[2mdeliverOtp with no provider configured[2m > [22m[2mfalls back to the console for email as well
+[22m[39m[smarthelp] OTP for a@b.com (staff_login) is 123456 ΓÇö no SMTP configured
+
+ [32mΓ£ô[39m test/otp.test.ts [2m([22m[2m7 tests[22m[2m)[22m[90m 34[2mms[22m[39m
+ [32mΓ£ô[39m test/db.connection.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 4273[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m the shared database connection[2m > [22manswers normally while the socket is healthy [33m1213[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m the shared database connection[2m > [22mreconnects after the connection is dropped, so one dead socket does not fail the rest of the file [33m2727[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m the shared database connection[2m > [22mstill reports a rejected statement rather than retrying it [33m331[2mms[22m[39m
+ [32mΓ£ô[39m test/db.wallet.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 9241[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the wallet ledger and its balance[2m > [22mcredits then debits, and the balance agrees with the ledger [33m2871[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the wallet ledger and its balance[2m > [22mrefuses an overdraft, leaving no ledger row and the balance untouched [33m1425[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the wallet ledger and its balance[2m > [22mserialises two concurrent credits so neither is lost [33m2878[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the wallet ledger and its balance[2m > [22mrefuses a zero or negative amount, named, with no ledger row [33m1204[2mms[22m[39m
+ [32mΓ£ô[39m test/db.payments.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 14018[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: confirm_booking_payment is the only writer of success[2m > [22mconfirms once, and returns null on a replay of the same arguments [33m1738[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: confirm_booking_payment is the only writer of success[2m > [22mrefuses a payment whose gateway order id does not match [33m1245[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: confirm_booking_payment is the only writer of success[2m > [22mleaves a cancelled booking cancelled when the money arrives anyway [33m1252[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: payments are private to their owner[2m > [22mshows a customer their own payment, another customer nothing, and a visitor nothing [33m7257[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: payments are private to their owner[2m > [22mrevokes anon outright rather than admitting it through a policy [33m339[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: payments are private to their owner[2m > [22mhas no write policy for a browser session to attempt [33m317[2mms[22m[39m
+ [32mΓ£ô[39m test/db.rls.test.ts [2m([22m[2m30 tests[22m[2m)[22m[33m 34380[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the schema is actually there[2m > [22mhas RLS enabled on every table in public [33m1145[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the OTP ledger[2m > [22mstores a salted hash, so the code is not recoverable from the row [33m318[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the OTP ledger[2m > [22msalts each code separately, so two equal codes hash differently [33m601[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the OTP ledger[2m > [22maccepts the right code and refuses a wrong one [33m524[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the OTP ledger[2m > [22mwill not accept the same code twice [33m437[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the OTP ledger[2m > [22mignores a code issued for a different purpose [33m324[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the OTP ledger[2m > [22mthrottles a resend inside the 60 second window [33m329[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the OTP ledger[2m > [22mkeeps only the newest code live [33m809[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the OTP ledger[2m > [22mlocks the target on the third wrong attempt, and says so on the fourth [33m758[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the OTP ledger[2m > [22mreports an expired code as expired rather than wrong [33m471[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: audit trail[2m > [22mrefuses to update or delete a row [33m646[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: idempotency ledger[2m > [22mclaims a key once, replays it after completion, and refuses a changed body [33m897[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: addresses are private to their owner[2m > [22mlets the owner read their own address and nobody else read it [33m3929[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: addresses are private to their owner[2m > [22mrefuses an insert that would give the row to somebody else [33m1613[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: addresses are private to their owner[2m > [22msilently refuses an update and a delete of somebody elseΓÇÖs address [33m3974[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: addresses are private to their owner[2m > [22mkeeps exactly one default address per customer [33m1432[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: addresses are private to their owner[2m > [22mrefuses set_default_address for somebody elseΓÇÖs address [33m1771[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: addresses are private to their owner[2m > [22mrejects a bad pincode and an impossible latitude at the database [33m647[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a new auth user is provisioned[2m > [22mcreates a profile with no phone rather than inventing one [33m1352[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a new auth user is provisioned[2m > [22mstores the name, marks the account active and records the address [33m1657[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a new auth user is provisioned[2m > [22mgives a customers row to a customer [33m1208[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a new auth user is provisioned[2m > [22mdoes not give a professional a customers row [33m1372[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a new auth user is provisioned[2m > [22mwill not let a signup grant itself a staff role [33m4492[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a new auth user is provisioned[2m > [22mdoes not take over a phone number that already belongs to someone [33m1183[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a new auth user is provisioned[2m > [22mkeeps two phone-less accounts distinct, since NULL is not a shared phone [33m1527[2mms[22m[39m
+ [32mΓ£ô[39m test/db.booking.test.ts [2m([22m[2m34 tests[22m[2m)[22m[33m 63079[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking is written whole or not at all (0028)[2m > [22mwrites the booking, its items and the payment_pending hop in one call [33m2921[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking is written whole or not at all (0028)[2m > [22mleaves nothing behind when one of the item lines is impossible [33m1301[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking is written whole or not at all (0028)[2m > [22mnames the actor who created the booking in its history [33m1108[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking is written whole or not at all (0028)[2m > [22mstill refuses an illegal move, because the trigger is what decides [33m1422[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking is written whole or not at all (0028)[2m > [22manswers a cancellation that lost its version with nothing, not with a row [33m1572[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking is written whole or not at all (0028)[2m > [22mcancels and records the fee and the actor in one statement [33m1673[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the booking state machine is the only way status moves[2m > [22mrefuses draft straight to paid, which is the transition that skips payment [33m1655[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the booking state machine is the only way status moves[2m > [22mrefuses cancelled straight back to in_progress, so a dead booking cannot be revived [33m3256[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the booking state machine is the only way status moves[2m > [22mwalks the legal path and writes one history row per hop [33m2003[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the booking state machine is the only way status moves[2m > [22mrecords the actor the caller declared, not an anonymous customer [33m2699[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the booking state machine is the only way status moves[2m > [22mbumps the version on a window change so two devices cannot both reschedule [33m1931[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: the booking state machine is the only way status moves[2m > [22mrefuses to edit or delete a history row [33m1875[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking cannot hold an impossible shape[2m > [22mrefuses an instant booking with a wall-clock start time [33m1116[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking cannot hold an impossible shape[2m > [22maccepts an instant booking with no window, which is the shape it should have [33m1439[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking cannot hold an impossible shape[2m > [22mrefuses a scheduled booking with no start time [33m1072[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking cannot hold an impossible shape[2m > [22mrefuses a tax rate written as 18 rather than 0.18, and says so in two ways [33m1259[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking cannot hold an impossible shape[2m > [22maccepts a rate stored as a fraction, and stores it as given [33m1419[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking cannot hold an impossible shape[2m > [22mrefuses a window that ends before it starts [33m1121[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a booking cannot hold an impossible shape[2m > [22mnumbers bookings from one sequence, so a same-day pair cannot collide [33m1793[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a professional cannot be booked twice at once[2m > [22mrefuses a second reserved window that overlaps the first [33m1937[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a professional cannot be booked twice at once[2m > [22mlets a completed window be rebooked, so the calendar is not permanently full [33m2071[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a professional cannot be booked twice at once[2m > [22mrefuses a reserved window with no booking behind it [33m476[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: an address with a live booking cannot be deleted[2m > [22mnames how many bookings are in the way, because a constraint name is not an answer [33m1691[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: an address with a live booking cannot be deleted[2m > [22mstill pins the address after cancellation, but with a message a person can read [33m3216[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: an address with a live booking cannot be deleted[2m > [22mreleases the address once the booking is closed [33m3353[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a review has to belong to a booking that actually happened[2m > [22mrefuses to rate a booking that has not finished [33m1768[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a review has to belong to a booking that actually happened[2m > [22mrefuses to rate a booking the customer was not part of [33m3159[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a review has to belong to a booking that actually happened[2m > [22mrefuses to credit a professional who did not do the work [33m3176[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a review has to belong to a booking that actually happened[2m > [22maccepts a review of a completed booking, and refuses a second one [33m3243[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a review has to belong to a booking that actually happened[2m > [22mlets moderation hide a review but not rewrite it [33m3561[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a coupon is spent once per booking, in the ledger[2m > [22mrefuses a second coupon on the same booking [33m1902[2mms[22m[39m
+   [33m[2mΓ£ô[22m[39m database: a coupon is spent once per booking, in the ledger[2m > [22mtreats SAVE20 and save20 as one coupon [33m437[2mms[22m[39m

@@ -536,11 +536,11 @@ rows are updated in place rather than deleted, so the sequence stays legible.
 
 | Feature | Lands in | Why it is not here |
 |---|---|---|
-| **Checkout and payment behind the service-detail CTA** — *user-visible* | Phase 2 | **Built.** `/customer/checkout` prices from the database, takes a saved address, and creates a booking in `payment_pending`. Payment itself is Phase 3: the flow stops at "pay next", which is why the CTA says so rather than pretending |
+| **Checkout and payment behind the service-detail CTA** — *user-visible* | Phase 2 | **Built.** `/customer/checkout` prices from the database, takes a saved address, creates a booking in `payment_pending` and then opens Razorpay Checkout over the order the server just made — see §4.3 |
 | **Service-level aggregate rating on catalogue cards** — *user-visible* | Phase 2 | `ratings` rows are written when a booking is reviewed. `ServiceSummary.rating` is `null` and every card and detail page reads "New". The reviews exist and are readable; the catalogue aggregate does not |
-| Booking creation, quote engine, cancel/reschedule, coupons, invoice stub, `bookings` state machine | Phase 2 | **Built** — see §4.1. Not built: nothing consumes `quoteToken` for payment, and there is no consolidated `bookingView` read model |
+| Booking creation, quote engine, cancel/reschedule, coupons, invoice stub, `bookings` state machine | Phase 2 | **Built** — see §4.2. `quoteToken` is now consumed by `POST /api/payments/create-order`, which asserts its presence. Still missing: there is no consolidated `bookingView` read model |
 | Tax, platform fee, surge and the commission split | Phase 2–3 | **Partly built.** Tax, platform fee and the commission split are in `buildQuote()` and stored on the booking. Surge is Phase 3, and `lib/catalogue.ts` still does line-price arithmetic only — which is fine, because nothing calls it for a total any more |
-| Razorpay orders, webhook, verify, refunds, wallet ledger, reconciliation | Phase 3 | Not started |
+| Razorpay orders, webhook, verify, reconciliation | Phase 3 | **Built** — see §4.3. Still open: refunds, the wallet ledger and the approval console on top of them |
 | Professional KYC upload and the verification workflow | Phase 4 | The `kyc-documents` bucket exists and is private. No form |
 | Professional working hours, offers inbox, accept/decline, arrive, on-site OTP, complete | Phase 4 | `/professional` is a shell |
 | Matching engine, candidate ranking, offer fan-out, advisory locks, reassignment cascade | Phase 5 | Not started |
@@ -561,7 +561,7 @@ rows are updated in place rather than deleted, so the sequence stays legible.
 ### 4.2 Booking, end to end (built)
 
 What a customer can do today, and the four places where the interesting decisions
-are. `docs/API.md` §4.4 has the wire format and `docs/DATABASE.md` §8 has the
+are. `docs/API.md` §4.4 has the wire format and `docs/DATABASE.md` §9 has the
 functions; this is the behaviour.
 
 **Price it, then keep the price honest.** The catalogue's instant estimate is not a
@@ -574,12 +574,12 @@ that was forged, or that belongs to a different cart, is refused before anything
 written. So is a client-supplied `basePrice`; it is rejected rather than ignored,
 because an engine fed a browser's price quotes whatever the browser says.
 
-**Paying is Phase 3, and the flow says so.** A created booking is
-`payment_pending`, and the detail page says what that state means — the booking is
-held, the slot is reserved, taking payment is the next release, nothing is needed
-from the customer yet. There is no payment step behind the button, and saying so is
-the honest alternative to a button that would go nowhere. A booking number is issued
-at create time so a customer can be told what to quote before any money moves.
+**A created booking is held, not charged.** The booking lands `payment_pending`
+with a slot reserved and a booking number, so a customer can be told what to quote
+before any money moves. Taking the money is §4.3 — it happens on the same screen,
+one step later, rather than inside `POST /api/bookings`, because a booking that
+exists without a payment is a normal state the cron reconciles and a payment that
+exists without a booking is a bug.
 
 **Reschedule is a server decision, not a button.** The booking detail page renders
 "Reschedule" only when the API's `reschedulable` flag says so. That flag comes from
@@ -596,10 +596,130 @@ audit problem rather than only a durability one: privileged writes carry no
 `system`. Each function now takes the actor as a parameter and sets it
 transaction-locally, so the history can name the customer who asked.
 
-Two things a reader should know are still missing: nothing consumes `quoteToken` for
-payment, and there is no consolidated `bookingView` — detail pages assemble their
-payload from several queries, which is correct but is more than one call's worth of
-work per page.
+One thing a reader should know is still missing: there is no consolidated
+`bookingView` — detail pages assemble their payload from several queries, which is
+correct but is more than one call's worth of work per page.
+
+---
+
+### 4.3 Paying, end to end (built)
+
+What the customer does, what the server does, what the webhook owns and what the
+cron owns. `docs/API.md` §4.5 has the wire format and `docs/DATABASE.md` §7 has the
+table and RLS; this is the behaviour.
+
+**The customer does three things.** Presses *Confirm booking* on the checkout
+screen, completes Razorpay's own window, and — if the window is closed without an
+answer — presses the button again. The booking is created first and held in the
+screen rather than navigated on, so a dismissed window pays for *that* booking
+rather than making a second one.
+
+**The server makes an order and a row, in that order.** `POST /api/payments/create-order`
+inserts the `payments` row *before* it asks Razorpay for an order: a gateway order
+with no row behind it would be invisible to reconciliation and to a refund, while a
+row with no `gateway_order_id` is merely incomplete and is exactly what the cron
+looks for. It refuses a booking that is not `payment_pending`, a booking with no
+`quoteToken`, a `expectedTotal` that no longer matches, and it requires an
+`Idempotency-Key` — so a double-tap on a slow connection creates one charge attempt.
+The amount comes from `bookings.total_amount`; a client's figure is never read.
+
+**The window opens with the key id the server returned**, from
+`https://checkout.razorpay.com/v1/checkout.js`, loaded on demand and never bundled.
+
+**The handler callback may start work and may not conclude it.** This is §12.1's
+hard rule and the one a payment UI gets wrong most often: Razorpay's `handler`
+fires the instant the window closes, while the webhook that owns the row may still
+be seconds away. So the callback does exactly two things — fires
+`POST /api/payments/verify` (which reads and writes nothing) and begins polling
+`GET /api/payments/[id]`. The display state is derived only from the polled
+`payments.status` through `paymentDisplayState()`, and `paid` is reachable only
+from `success` (or the refund states). A handler payload fed straight into that
+function yields `confirming`, and `test/paymentClient.test.ts` asserts it.
+
+**Loading, error, retry and an honest timeout are all real states.** A `402
+PAYMENT_FAILED` shows the gateway's own words, because the server stored them in
+`payments.failure_reason` before refusing. Polling gives up after ~30 seconds into
+a "still confirming" state where pressing the button asks the row *again* rather
+than ordering a second charge. Nothing anywhere claims success it has not read.
+
+**The webhook owns `paid`.** `POST /api/webhooks/razorpay` is the one
+unauthenticated route in the tree, and its credential is HMAC-SHA256 over the exact
+bytes it sent — read with `req.text()` before any parse, checked before
+`JSON.parse`, and refused with 400 if it does not match. `payment.captured` compares
+paise against paise and then calls `confirm_booking_payment()`, which moves
+`payments.status = 'success'` and `bookings.status = 'paid'` in one transaction.
+`payment.failed` marks the *payment* failed and leaves the booking
+`payment_pending`, because a declined card is a state the customer can leave by
+paying again. Every delivery writes an audit row; `gateway_signature` never reaches
+one.
+
+**The cron owns the gap.** A customer who paid while the webhook was down is
+invisible to every screen. `GET /api/cron/reconcile-payments` looks at payments
+still waiting past ten minutes, asks the gateway once per row, and writes through
+the *same* two places the webhook uses. Anything that is not a usable gateway
+answer is counted `unreachable` and left untouched — writing rows because the
+gateway answered 503 would confirm payments that never happened. It is guarded by
+`CRON_SECRET` over three channels and answers 503 when the variable is unset.
+
+**Live end-to-end verification is a documented manual step**, in `docs/SETUP.md`
+under *Razorpay keys, and the live check that is deliberately manual*. The suite
+performs no network call by design (03-CONTEXT decision 1: the signature verifier
+is pure and tested with synthetic signatures, the transport is mocked), so the one
+thing nobody can automate is a real card reaching the webhook and turning a booking
+`paid`.
+
+---
+
+### 4.4 Refunds and the wallet (built)
+
+What money does when it goes back. `docs/API.md` §4.6 has the wire format;
+`docs/DATABASE.md` has `refunds`, `wallets` and `wallet_transactions`. The rule
+this section describes is the one a support agent actually operates, and the
+surface is deliberately the API and nothing else (03-CONTEXT decision 3): there
+is no refund screen in this phase, because a console that executes money without
+Phase 6's approval workflow behind it would be the wrong half of the feature
+first.
+
+**A refund is one of two things, decided by size.** At or below the
+`supportRefundLimit` (₹1500 by default) it runs: the money is returned and the
+call answers `201`. Above it, the refund is *created and held* — `status:
+'requested'`, `202`, `heldForApproval: true` — and nothing moves. Phase 6's
+approval console (§25.10) is what executes it. The capability check and the
+limit are the same rule seen at two scales: `refund.request` lets support *ask*,
+and only amounts that cannot go wrong are allowed to *act*.
+
+**The money goes back the way it came.** A payment that carries a
+`gateway_payment_id` is refunded through Razorpay; one without is credited to the
+customer's wallet. When the gateway *refuses outright*, the amount falls back to
+a wallet credit, and the refund is recorded as `route: 'wallet'` with an ops
+ticket — the customer is not the one who should absorb a gateway's decision. A
+gateway that merely does not answer is left alone: the request may already have
+gone through, and crediting a wallet on top would pay twice.
+
+**A cancelled booking refunds itself.** `POST /api/bookings/[id]/cancel` looks
+for captured money, subtracts the cancellation fee and returns the rest — and it
+does so **without approval, at any size**. There is no human in that loop and
+there should not be one: a cancellation the customer initiated must not strand
+their money behind an approver. The one amount that matters for the disclosure at
+the point of cancellation is the fee, not the refund — the customer is told what
+the cancellation *costs* before they confirm, and the refund is the remainder.
+
+**The wallet is a ledger, not a number.** `apply_wallet_delta()` writes the
+balance and its `wallet_transactions` row together, in one transaction, and
+refuses an overdraft by name rather than letting the column's `CHECK` answer for
+it (`WALLET_OVERDRAFT`, SQLSTATE 23514). Direction is the entry's `type`, never
+the sign of the amount, so a credit of `-5` and a debit of `0` are both refused
+before anything is written. Two credits arriving at once serialise on the row and
+both land — `test/db.wallet.test.ts` asserts each of these against a live project,
+and only runs once 0015 is applied.
+
+**The webhook owns `completed`.** `refund.processed` finds the row by
+`gateway_refund_id` and finishes it through `complete_booking_refund()` — refund
+`completed`, booking `refunded`, `payments.refundable_amount` drawn down, all in
+one transaction. A re-delivery is a `{ duplicate: true }` and a refund id the
+gateway knows but this server never wrote is a `400` and a `refund.webhook.mismatch`
+audit row, because an unknown refund id is not something to guess about. As
+everywhere in §12.1, no `gateway_signature` is ever written to an audit row.
 
 ---
 

@@ -45,8 +45,8 @@ export function BookingTimeline({
   const currentStep = presentation.step;
 
   // A state that is not on the ladder at all — `cancelled` before the work
-  // started, `refunded` after it — has no step to mark, so the ladder is not
-  // rendered at all and the history below carries the story instead.
+  // started, or money sent back after it — has no step to mark, so the ladder is
+  // not rendered at all and the history below carries the story instead.
   if (currentStep == null) {
     return (
       <div>

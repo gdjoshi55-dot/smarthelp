@@ -33,6 +33,7 @@ export function BookingPanel({ service }: { service: ServiceSummary }) {
   const { hasLocation, area, lat, lng, summary } = usePublicLocation();
   const [duration, setDuration] = useState(service.durations[0] ?? service.minDurationMinutes);
   const [slot, setSlot] = useState<{ start: string; label: string } | null>(null);
+  const [mode, setMode] = useState<'instant' | 'scheduled'>('instant');
   const [eta, setEta] = useState<{ etaLabel: string; etaMinutes: number | null; pros: number } | null>(
     null
   );
@@ -82,6 +83,12 @@ export function BookingPanel({ service }: { service: ServiceSummary }) {
     };
   }, [service.id, duration, hasLocation, area, lat, lng]);
 
+  useEffect(() => {
+    if (mode === 'scheduled') {
+      setSlot(null);
+    }
+  }, [mode]);
+
   const price = priceForDuration(service, duration, null);
 
   return (
@@ -107,38 +114,58 @@ export function BookingPanel({ service }: { service: ServiceSummary }) {
         />
       </div>
 
-      <div className="mt-5 rounded-xl bg-gray-50 p-3.5">
-        <p className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-          <Zap className="h-4 w-4 text-amber-500" aria-hidden="true" />
-          As soon as possible
-        </p>
-        {etaLoading ? (
-          <p className="mt-1.5 flex items-center gap-2 text-sm text-gray-600">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-            Checking today&apos;s slots…
+      <div className="mt-5 space-y-3">
+        <div
+          className={`cursor-pointer rounded-xl border p-3.5 transition-colors ${
+            mode === 'instant'
+              ? 'border-blue-500 bg-blue-50/50'
+              : 'border-gray-200 bg-gray-50 hover:border-gray-300'
+          }`}
+          onClick={() => setMode('instant')}
+          role="radio"
+          aria-checked={mode === 'instant'}
+        >
+          <p className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+            <Zap className="h-4 w-4 text-amber-500" aria-hidden="true" />
+            As soon as possible
           </p>
-        ) : hasLocation ? (
-          <>
-            <p className="mt-1.5 text-sm text-gray-700">{eta?.etaLabel ?? 'Checking availability…'}</p>
-            {eta && eta.pros > 0 ? (
-              <p className="mt-1 text-xs text-gray-500">
-                {eta.pros} professional{eta.pros === 1 ? '' : 's'} free today
-              </p>
-            ) : null}
-          </>
-        ) : (
-          <p className="mt-1.5 text-sm text-gray-600">
-            Add your area to see how soon somebody can reach you.
-          </p>
-        )}
-      </div>
+          {etaLoading ? (
+            <p className="mt-1.5 flex items-center gap-2 text-sm text-gray-600">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              Checking today&apos;s slots.
+            </p>
+          ) : hasLocation ? (
+            <>
+              <p className="mt-1.5 text-sm text-gray-700">{eta?.etaLabel ?? 'Checking availability.'}</p>
+              {eta && eta.pros > 0 ? (
+                <p className="mt-1 text-xs text-gray-500">
+                  {eta.pros} professional{eta.pros === 1 ? '' : 's'} free today
+                </p>
+              ) : null}
+            </>
+          ) : (
+            <p className="mt-1.5 text-sm text-gray-600">
+              Add your area to see how soon somebody can reach you.
+            </p>
+          )}
+        </div>
 
-      <div className="mt-5">
-        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-gray-900">
-          <CalendarCheck className="h-4 w-4 text-gray-400" aria-hidden="true" />
-          Pick a time
-        </h3>
-        <SlotPicker service={service} durationMinutes={duration} onSelect={setSlot} selected={slot} />
+        <div
+          className={`cursor-pointer rounded-xl border p-3.5 transition-colors ${
+            mode === 'scheduled'
+              ? 'border-blue-500 bg-blue-50/50'
+              : 'border-gray-200 bg-white hover:border-gray-300'
+          }`}
+          onClick={() => setMode('scheduled')}
+          role="radio"
+          aria-checked={mode === 'scheduled'}
+        >
+          <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-gray-900">
+            <CalendarCheck className="h-4 w-4 text-gray-400" aria-hidden="true" />
+            Pick a time
+          </p>
+          <SlotPicker service={service} durationMinutes={duration} onSelect={setSlot} selected={slot} />
+        </div>
       </div>
 
       <div className="mt-5 flex items-center justify-between gap-3 border-t border-gray-100 pt-4">
@@ -163,26 +190,36 @@ export function BookingPanel({ service }: { service: ServiceSummary }) {
           // The service, duration and slot travel in the query string, not in
           // sessionStorage: checkout has to survive a refresh, a bookmark, and a
           // link pasted into another tab. The server re-prices all of it, so
-          // nothing here is trusted — it is a starting point, not a quote.
+          // nothing here is trusted - it is a starting point, not a quote.
           const params = new URLSearchParams({
             service: service.slug,
             duration: String(duration),
           });
-          if (slot) params.set('slot', slot.start);
+          if (mode === 'scheduled') {
+            if (slot) params.set('slot', slot.start);
+            params.set('bookingType', 'scheduled');
+          } else {
+            params.set('bookingType', 'instant');
+          }
           router.push(`/customer/checkout?${params.toString()}`);
         }}
-        disabled={!slot}
-        className={`mt-4 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold ${
-          slot
-            ? 'bg-blue-600 text-white hover:bg-blue-700'
-            : 'cursor-not-allowed bg-gray-200 text-gray-500'
-        }`}
+        disabled={(mode === 'scheduled' && !slot) || (mode === 'instant' && !hasLocation)}
+        className="mt-4 w-full rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
       >
-        <Clock className="h-4 w-4" aria-hidden="true" />
-        {slot ? `Continue with ${slot.label}` : 'Select a slot to continue'}
+        {mode === 'instant'
+          ? hasLocation
+            ? (eta?.etaLabel?.includes('No slots') ? 'No slots available' : 'Book now')
+            : 'Set location to book'
+          : slot
+          ? `Continue with ${slot.label}`
+          : 'Select a slot to continue'}
       </button>
       <p className="mt-2 text-center text-xs text-gray-500">
-        {slot
+        {mode === 'instant'
+          ? hasLocation
+            ? 'You will see the full price before anything is charged.'
+            : 'Set your location to proceed.'
+          : slot
           ? 'You will see the full price before anything is charged.'
           : 'Pick a time to carry it into checkout.'}
       </p>

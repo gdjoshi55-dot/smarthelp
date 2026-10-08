@@ -8,7 +8,7 @@ import type { ServiceTaskView } from '@/lib/catalogue';
  * "What's included" and "What's not" — the scope accordion of §20.3.
  *
  * Both lists come from `service_tasks`; nothing here is hardcoded, because a
- * scope list that disagrees with the database is a support ticket and a refund.
+ * scope list that disagrees with the database becomes a support ticket.
  * Included uses a green check, excluded a muted cross, and the two are never
  * mixed in one list: a reader who cannot tell which column they are in will read
  * the wrong one.

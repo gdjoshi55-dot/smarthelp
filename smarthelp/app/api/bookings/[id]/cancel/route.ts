@@ -6,7 +6,11 @@ import { getBookingForCaller, requireBookingCustomer } from '@/lib/bookingServer
 import { quoteCancellation } from '@/lib/cancellation'
 import { isCancellationReason } from '@/lib/status'
 import { createServerClient } from '@/lib/supabaseServer'
-import { parseNumeric } from '@/lib/money'
+import { paymentAmountPaise } from '@/lib/paymentServer'
+import { executeRefund } from '@/lib/refundServer'
+import { clientIp } from '@/lib/audit'
+import { parseNumeric, toPaise } from '@/lib/money'
+import type { Payment } from '@/lib/supabase'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -92,15 +96,76 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     // and the free text goes into the history note, so nothing is lost.
     const result = cancelled
 
+    // §11.1's refund, actually paid out. `quoteCancellation` says what the fee
+    // is and what would be owed back; when money was truly captured, "would be
+    // owed" has to become a refund rather than a number in a JSON body. The
+    // automatic refund is never held for approval — `executeRefund` runs
+    // `planRefund({ auto: true })` — because there is no human asking for it and
+    // a cancelled booking must not be stranded waiting for one.
+    const autoRefund = await refundIfPaid(supabase, id, fee.fee, req)
+
     return ok({
       booking: result,
       cancellationFee: fee.fee,
       refund: fee.refund,
       band: fee.band,
       waived: fee.waived,
+      autoRefund,
     })
   } catch (e: any) {
     if (e.code) return err(e.code, e.message, e.status)
     return err('INTERNAL_ERROR', e.message || 'Failed to cancel booking', 500)
+  }
+}
+
+/**
+ * Give back what a paid-then-cancelled booking is owed, or nothing.
+ *
+ * A booking with no captured payment (the common Phase 2 case, and every
+ * unpaid one) has nothing to refund, so this returns `null` and the response
+ * carries `autoRefund: null`. When money *was* captured, the refundable part is
+ * the captured amount less §11.1's fee, computed in paise — never re-derived in
+ * floats at the boundary, where a ₹306.80 fee could land a paisa off.
+ *
+ * The `assertRefundable()` inside `executeRefund()` is the second line of
+ * defence against refunding more than remains; the `> 0` here is what stops a
+ * zero-value ledger row when the fee equals the captured amount exactly.
+ */
+async function refundIfPaid(
+  supabase: ReturnType<typeof createServerClient>,
+  bookingId: string,
+  feeRupees: number,
+  req: NextRequest
+) {
+  const { data, error } = await supabase
+    .from('payments')
+    .select('*')
+    .eq('booking_id', bookingId)
+    .eq('status', 'success')
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return null
+
+  const payment = data as Payment
+  const amountPaise = paymentAmountPaise(payment) - toPaise(feeRupees)
+  if (amountPaise <= 0) return null
+
+  const refund = await executeRefund({
+    supabase,
+    payment,
+    amountPaise,
+    reasonCode: 'booking_cancelled',
+    note: `automatic refund on cancellation of booking ${bookingId}`,
+    auto: true,
+    requestedBy: null,
+    ipAddress: clientIp(req),
+  })
+
+  return {
+    id: refund.id,
+    amount: parseNumeric(refund.amount),
+    currency: refund.currency,
+    status: refund.status,
+    route: refund.route,
   }
 }

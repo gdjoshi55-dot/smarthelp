@@ -71,6 +71,39 @@ With no SMTP configured at all the code is written to the server log and returne
 as `devCode` in the response, which is how the flow is run on a laptop. It is
 never echoed once a real provider is set.
 
+### Razorpay keys, and the live check that is deliberately manual
+
+Payments take three more variables, and the suite never reads them:
+
+| Variable | Where to get it |
+|---|---|
+| `RAZORPAY_KEY_ID` (or `NEXT_PUBLIC_RAZORPAY_KEY_ID`) | Razorpay Dashboard → Settings → API keys |
+| `RAZORPAY_KEY_SECRET` | same page — **server only** |
+| `RAZORPAY_WEBHOOK_SECRET` | Dashboard → Settings → Webhooks → the secret for the endpoint pointing at `/api/webhooks/razorpay` |
+
+Leave all three unset and everything still passes: `vitest.config.ts` inlines only
+the four Supabase variables, no test performs a network call, and every route
+that needs one of them reads it at request time behind a guard that fails closed
+(`SERVICE_UNAVAILABLE`, never a 500 out of `timingSafeEqual`). That is CONTEXT
+decision 1 — **the signature verifier is a pure module tested with synthetic
+signatures, and the transport is mocked, not the logic** — and its accepted
+consequence is that the part nobody can verify automatically is this:
+
+> **Manual step, every deployment:** configure the three keys, point a Razorpay
+> webhook at `POST /api/webhooks/razorpay` for `payment.captured`,
+> `payment.failed` and `refund.processed`, then complete one real checkout and
+> confirm the booking reaches `paid` from the *webhook* — not from the checkout
+> window. A card that succeeds in the browser while the booking stays
+> `payment_pending` means the webhook secret or the endpoint URL is wrong, and no
+> amount of green tests would have caught it.
+
+Two environment-level knobs are worth knowing here. `CRON_SECRET` is required by
+`GET /api/cron/reconcile-payments`: the route answers 503 when it is unset rather
+than running unauthenticated, so a deployment that wants the reconciliation pass
+has to set it. Both are read from the environment rather than from
+`platform_settings`, in the same pattern as `instant_lead_minutes` and
+`maxBookingMinutes`.
+
 ## 3. The database
 
 ```bash

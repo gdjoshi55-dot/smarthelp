@@ -1,12 +1,5 @@
 {
   "crons": [
-    { "path": "/api/cron/search-sweeper", "schedule": "*/2 * * * *" },
-    { "path": "/api/cron/recurring-generate", "schedule": "7 2 * * *" },
-    { "path": "/api/cron/service-reminders", "schedule": "*/15 * * * *" },
-    { "path": "/api/cron/demand-index", "schedule": "*/5 * * * *" },
-    { "path": "/api/cron/rating-reminders", "schedule": "13 19 * * *" },
-    { "path": "/api/cron/payout-run", "schedule": "23 3 * * 1" },
-    { "path": "/api/cron/wallet-expiry", "schedule": "41 2 * * *" },
     { "path": "/api/cron/reconcile-payments", "schedule": "*/30 * * * *" }
   ]
 }

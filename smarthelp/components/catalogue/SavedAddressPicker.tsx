@@ -1,8 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Home } from 'lucide-react';
 import { usePublicLocation } from './PublicLocationContext';
+import {
+  addressToApply,
+  selectedAddressId,
+  shouldClearAddress,
+  type AddressSelectionState,
+} from './savedAddressSelection';
 import { fetchAddresses, type AddressListResult, type SavedAddress } from '@/lib/addressClient';
 
 /**
@@ -27,7 +33,12 @@ import { fetchAddresses, type AddressListResult, type SavedAddress } from '@/lib
  *   for, since this component renders nothing precisely when there is nothing to
  *   pick.
  * - **Signed in with at least one.** Renders the select, pre-selected to their
- *   default, because the default is what they meant last time.
+ *   default, because the default is what they meant last time — and writes that
+ *   same address into the location context, because a control that shows one
+ *   answer while the page uses another is worse than no control at all. Which
+ *   address that is, and when it may be overwritten, is decided by
+ *   `savedAddressSelection.ts` (pure, and tested there); this component only
+ *   runs the decision and renders the `<select>` it names.
  *
  * An address outside the service area is selectable rather than hidden, and
  * marked as not yet available. Hiding it would leave somebody who knows their
@@ -42,6 +53,18 @@ import { fetchAddresses, type AddressListResult, type SavedAddress } from '@/lib
  */
 
 const OTHER = '__other__';
+
+/**
+ * `useLayoutEffect` where there is a DOM, `useEffect` on the server.
+ *
+ * The decision made below has to land in the same commit that rendered the list
+ * provoking it, *before the browser paints*. `CheckoutForm` hears the list
+ * through `onLoaded` and renders "Pick a saved address to continue." whenever
+ * the location holds no id — a frame of that notice over the address this effect
+ * is about to apply is a flicker nobody should see, and React warns about
+ * `useLayoutEffect` during server rendering, so the server keeps the passive one.
+ */
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
 export function SavedAddressPicker({
   className = '',
@@ -68,7 +91,7 @@ export function SavedAddressPicker({
    */
   refreshToken?: number;
 }) {
-  const { addressId, selectAddress, setArea, area } = usePublicLocation();
+  const { addressId, selectAddress, setArea, area, hasLocation, clear } = usePublicLocation();
   const [options, setOptions] = useState<SavedAddress[] | null>(null);
   const [defaultId, setDefaultId] = useState<string | null>(null);
 
@@ -98,11 +121,49 @@ export function SavedAddressPicker({
     return () => controller.abort();
   }, [load, refreshToken]);
 
+  // One decision per list that arrives: a refresh after saving an address is a
+  // new list, and so a new decision. The guard is the module's `settled` latch —
+  // once a list has been answered, later changes to the context (picking another
+  // row, typing an area, clearing) are the customer's own and are never
+  // re-answered with the default.
+  const decidedFor = useRef<SavedAddress[] | null>(null);
+
+  useIsomorphicLayoutEffect(() => {
+    if (options === null || decidedFor.current === options) return;
+    decidedFor.current = options;
+    const state: AddressSelectionState = {
+      hasLocation,
+      addressId: addressId ?? null,
+      optionIds: options.map((option) => option.id),
+      defaultId,
+      settled: false,
+      loaded: true,
+    };
+    // A dead id with nothing to replace it with has to go: while it is held,
+    // checkout shows no form and no notice and enables Confirm for a row that
+    // no longer exists (the module's `shouldClearAddress` note is the story).
+    if (shouldClearAddress(state)) {
+      clear();
+      return;
+    }
+    const next = addressToApply(state);
+    if (next) selectAddress(next);
+  }, [options, hasLocation, addressId, defaultId, clear, selectAddress]);
+
   if (!options || options.length === 0) return null;
 
-  // A stored address that has since been deleted would otherwise pin the whole
-  // page to a 404. Fall back to the default, or to the typed-area control.
-  const selected = addressId && options.some((o) => o.id === addressId) ? addressId : (defaultId ?? OTHER);
+  // The value shown is the value the location will hold once this component's
+  // effect above has run — one decision, two renderings of it. `null` from the
+  // module is the typed-area answer, which is this select's "somewhere else".
+  const selected =
+    selectedAddressId({
+      hasLocation,
+      addressId: addressId ?? null,
+      optionIds: options.map((option) => option.id),
+      defaultId,
+      settled: false,
+      loaded: true,
+    }) ?? OTHER;
 
   return (
     <div className={className}>

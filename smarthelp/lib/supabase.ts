@@ -148,6 +148,40 @@ export type DiscountType = 'percentage' | 'fixed';
 export type PaymentPurpose = 'booking' | 'extension' | 'wallet_topup' | 'penalty';
 export type ScheduleStatus = 'reserved' | 'in_progress' | 'completed' | 'released';
 
+// 0014. The six states of §12.1. `partially_refunded` ships with the table for
+// the reason 0009 shipped the whole `booking_status`: an `ALTER TYPE` later is a
+// rewrite under an ACCESS EXCLUSIVE lock on the table.
+export type PaymentStatus =
+  | 'created'
+  | 'pending'
+  | 'success'
+  | 'failed'
+  | 'refunded'
+  | 'partially_refunded';
+
+export type PaymentMethod = 'card' | 'upi' | 'netbanking' | 'wallet' | 'emi' | 'cod';
+
+// 0015. Five states of §12.3, shipped whole for the reason 0014 shipped all six
+// of `payment_status`: `approved`/`rejected` are Phase 6's approval console
+// (§25.10) writing into a table that already has a place for them, and adding a
+// value later is an `ALTER TYPE` that rewrites `refunds` under an ACCESS
+// EXCLUSIVE lock.
+export type RefundStatus = 'requested' | 'approved' | 'rejected' | 'completed' | 'failed';
+
+/**
+ * 0015. Two values, not five.
+ *
+ * Direction is the whole of what this column is for — `apply_wallet_delta()`
+ * reads it as `credit` or "not credit" — and *what* the movement was for is
+ * carried by `ref_type`/`ref_id` on the ledger row instead. A `refund` value
+ * would make direction ambiguous at exactly the point where an ambiguous
+ * direction costs somebody money.
+ */
+export type WalletTxnType = 'credit' | 'debit';
+
+/** Which of the two ways money goes back: the gateway instrument or the wallet. */
+export type RefundRoute = 'gateway' | 'wallet' | 'mixed';
+
 /** The three states `claim_idempotency_key` can return — it has four outcomes. */
 export interface IdempotencyClaim {
   outcome: 'claimed' | 'replay' | 'in_flight' | 'conflict';
@@ -896,6 +930,196 @@ type RawTables = {
           comment?: string | null;
         };
       };
+
+      // ── Phase 3: the charge attempt ──────────────────────────────────
+      //
+      // One row per charge attempt (0014), written *before* the gateway is
+      // asked for an order. Every money column is `Numeric` — see the note on
+      // that alias. `gateway_signature` is dispute evidence under §12.2 and is
+      // redacted from audit metadata by `lib/audit.ts`; it never appears in a
+      // browser response either.
+      //
+      // There is deliberately no INSERT/UPDATE policy on this table: the
+      // service role is the only writer, and a browser that could insert a row
+      // could set `status = 'success'` itself. RLS protects the browser and
+      // PostgREST only — Route Handlers bypass it, which is why
+      // `getPaymentForCaller()` exists.
+      payments: {
+        Row: {
+          id: string;
+          booking_id: string | null;
+          customer_id: string;
+          purpose: PaymentPurpose;
+          amount: Numeric;
+          currency: string;
+          gateway: string;
+          gateway_order_id: string | null;
+          gateway_payment_id: string | null;
+          gateway_signature: string | null;
+          status: PaymentStatus;
+          method: PaymentMethod | null;
+          refundable_amount: Numeric;
+          failure_reason: string | null;
+          idempotency_key: string | null;
+          captured_at: Timestamptz | null;
+          created_at: Timestamptz;
+          updated_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          booking_id?: string | null;
+          customer_id: string;
+          purpose?: PaymentPurpose;
+          amount: Numeric;
+          currency?: string;
+          gateway?: string;
+          gateway_order_id?: string | null;
+          gateway_payment_id?: string | null;
+          gateway_signature?: string | null;
+          status?: PaymentStatus;
+          method?: PaymentMethod | null;
+          refundable_amount?: Numeric;
+          failure_reason?: string | null;
+          idempotency_key?: string | null;
+          captured_at?: Timestamptz | null;
+        };
+        Update: {
+          booking_id?: string | null;
+          gateway_order_id?: string | null;
+          gateway_payment_id?: string | null;
+          gateway_signature?: string | null;
+          status?: PaymentStatus;
+          method?: PaymentMethod | null;
+          refundable_amount?: Numeric;
+          failure_reason?: string | null;
+          captured_at?: Timestamptz | null;
+        };
+      };
+
+      // ── Phase 3: money going back out ────────────────────────────────
+      //
+      // 0015. The refund record, the wallet and its ledger. Three tables that
+      // exist because "the customer got their money back" has to be checkable
+      // months later — which is why `route` distinguishes the two ways it can
+      // happen, why `gateway_refund_id` is written as soon as the gateway
+      // answers, and why there is no INSERT/UPDATE policy on any of them: the
+      // service role is the only writer, and a browser that could insert a
+      // refund could set `status = 'completed'` and hand itself money.
+      refunds: {
+        Row: {
+          id: string;
+          payment_id: string;
+          booking_id: string;
+          customer_id: string;
+          amount: Numeric;
+          currency: string;
+          status: RefundStatus;
+          route: RefundRoute;
+          reason_code: string;
+          note: string | null;
+          gateway_refund_id: string | null;
+          requested_by: string | null;
+          processed_by: string | null;
+          approved_by: string | null;
+          requested_at: Timestamptz;
+          completed_at: Timestamptz | null;
+          created_at: Timestamptz;
+          updated_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          payment_id: string;
+          booking_id: string;
+          customer_id: string;
+          amount: Numeric;
+          currency?: string;
+          status?: RefundStatus;
+          route?: RefundRoute;
+          reason_code: string;
+          note?: string | null;
+          gateway_refund_id?: string | null;
+          requested_by?: string | null;
+          processed_by?: string | null;
+          approved_by?: string | null;
+          requested_at?: Timestamptz;
+          completed_at?: Timestamptz | null;
+        };
+        Update: {
+          status?: RefundStatus;
+          route?: RefundRoute;
+          reason_code?: string;
+          note?: string | null;
+          gateway_refund_id?: string | null;
+          processed_by?: string | null;
+          approved_by?: string | null;
+          completed_at?: Timestamptz | null;
+        };
+      };
+
+      // The balance is a cache of `wallet_transactions`; the ledger is what is
+      // actually trusted. Hence `balance >= 0` as a column CHECK *and* as a
+      // pre-write guard inside `apply_wallet_delta()`, and hence no touch
+      // trigger: the function is the only writer and sets `updated_at` itself.
+      wallets: {
+        Row: {
+          id: string;
+          customer_id: string;
+          balance: Numeric;
+          created_at: Timestamptz;
+          updated_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          customer_id: string;
+          balance?: Numeric;
+        };
+        // There is deliberately no Update block worth having: no UPDATE policy
+        // admits anybody, and `apply_wallet_delta()` runs as `security definer`.
+        Update: {
+          balance?: Numeric;
+        };
+      };
+
+      // Append-only. `balance_after` is written by `apply_wallet_delta()` because
+      // §12.4's own INSERT forgot it and §24.9 declares it NOT NULL — a reader can
+      // re-run the ledger and check it against `wallets.balance` without trusting
+      // either one. The two `wallet_txn_no_*` policies refuse an UPDATE and a
+      // DELETE outright (§12.4).
+      wallet_transactions: {
+        Row: {
+          id: string;
+          wallet_id: string;
+          type: WalletTxnType;
+          amount: Numeric;
+          balance_after: Numeric;
+          ref_type: string;
+          ref_id: string | null;
+          description: string;
+          created_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          wallet_id: string;
+          type: WalletTxnType;
+          amount: Numeric;
+          balance_after: Numeric;
+          ref_type: string;
+          ref_id?: string | null;
+          description: string;
+        };
+        Update: {
+          // Mirrored for completeness only: no UPDATE policy admits anybody and
+          // `authenticated` holds no UPDATE grant, so this shape is not
+          // reachable from a client. The append-only property is enforced below
+          // the type system, in 0015's two `wallet_txn_no_*` policies.
+          type?: WalletTxnType;
+          amount?: Numeric;
+          balance_after?: Numeric;
+          ref_type?: string;
+          ref_id?: string | null;
+          description?: string;
+        };
+      };
 };
 
 type RawViews = {
@@ -1064,6 +1288,108 @@ export type Database = {
         };
         Returns: Database['public']['Tables']['bookings']['Row'];
       };
+
+      /**
+       * 0014. The single writer of `payments.status = 'success'`. Moves the
+       * payment and the booking in one transaction, and returns **null** when
+       * the replay guard matched no row — the webhook and the reconcile cron
+       * both branch on that to log a duplicate instead of re-confirming.
+       *
+       * The two ids the WHERE clause matches on are non-null here: a payment id
+       * or order id of null can only match nothing, so accepting one would turn
+       * a caller's bug into a silent "duplicate" answer. The two evidence fields
+       * are nullable because the reconcile cron legitimately has neither — an
+       * order fetch cannot see a payment id or its signature, and the webhook is
+       * what stores both.
+       */
+      confirm_booking_payment: {
+        Args: {
+          p_payment_id: string;
+          p_gateway_order_id: string;
+          p_booking_id: string;
+          p_gateway_payment_id: string | null;
+          p_gateway_signature: string | null;
+          p_note: string;
+        };
+        Returns: Database['public']['Tables']['payments']['Row'];
+      };
+
+      // ── Phase 3: the refund's four statements ─────────────────────────
+      //
+      // 0015. All four are `security definer`, all four are revoked from PUBLIC
+      // and granted to `service_role` only, and every caller is a Route
+      // Handler. The move is always two rows in one transaction — the refund
+      // and the booking, or the balance and the ledger — so a half-refunded
+      // payment is not a state this schema can reach.
+
+      /** Returns the customer's wallet, creating it on first credit. One statement, because read-then-write on a UNIQUE is a race. */
+      get_or_create_wallet: {
+        Args: { p_customer: string };
+        Returns: string;
+      };
+
+      /**
+       * Moves a balance and writes its ledger row, or raises `WALLET_OVERDRAFT`
+       * (SQLSTATE 23514 — the same code the column CHECK gives) *before* either
+       * write. `p_amount` is always positive: direction is `p_type`. Returns the
+       * new balance.
+       *
+       * `p_amount` is typed `Numeric` — a string — where the generated type
+       * would say `number`. Every other money figure in this codebase enters
+       * Postgres as an exact decimal string (`payments.amount = numericLiteral(…)`)
+       * for the reason `lib/money.ts` gives: a JSON float is not a `numeric`.
+       * PostgREST coerces a string argument to `numeric` (probed against the live
+       * project), so this hand-maintained mirror keeps the invariant rather than
+       * the generated shape.
+       */
+      apply_wallet_delta: {
+        Args: {
+          p_wallet: string;
+          p_type: WalletTxnType;
+          p_amount: Numeric;
+          p_ref: string;
+          p_desc: string;
+        };
+        Returns: number;
+      };
+
+      /**
+       * Inserts the refund and hops the booking to `refund_pending` — but only
+       * from `paid` or `cancelled`, so a request that is never executed cannot
+       * strand a booking. Refuses an amount above `payments.refundable_amount`
+       * before the row exists.
+       *
+       * `p_amount` is a string for the same reason as `apply_wallet_delta`'s.
+       */
+      record_booking_refund: {
+        Args: {
+          p_payment_id: string;
+          p_booking_id: string;
+          p_amount: Numeric;
+          p_reason_code: string;
+          p_route: string;
+          p_note: string | null;
+          p_requested_by: string | null;
+        };
+        Returns: Database['public']['Tables']['refunds']['Row'];
+      };
+
+      /**
+       * Completes the refund, hops the booking to `refunded` and draws the
+       * payment's remainder down in one transaction. Returns **null** when the
+       * refund was already completed — the replay guard the `refund.processed`
+       * webhook branches on, so a re-delivered event refunds nothing twice.
+       */
+      complete_booking_refund: {
+        Args: {
+          p_refund_id: string;
+          p_gateway_refund_id: string | null;
+          p_route: string | null;
+          p_note: string | null;
+          p_processed_by: string | null;
+        };
+        Returns: Database['public']['Tables']['refunds']['Row'] | null;
+      };
     };
 
     Enums: {
@@ -1078,6 +1404,10 @@ export type Database = {
       booking_status: BookingStatus;
       discount_type: DiscountType;
       payment_purpose: PaymentPurpose;
+      payment_status: PaymentStatus;
+      payment_method: PaymentMethod;
+      refund_status: RefundStatus;
+      wallet_txn_type: WalletTxnType;
       schedule_status: ScheduleStatus;
     };
   };
@@ -1105,3 +1435,7 @@ export type ProfessionalSchedule = Tables<'professional_schedule'>;
 export type Coupon = Tables<'coupons'>;
 export type CouponUsage = Tables<'coupon_usage'>;
 export type Rating = Tables<'ratings'>;
+export type Payment = Tables<'payments'>;
+export type Refund = Tables<'refunds'>;
+export type Wallet = Tables<'wallets'>;
+export type WalletTransaction = Tables<'wallet_transactions'>;

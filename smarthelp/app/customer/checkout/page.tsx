@@ -29,6 +29,7 @@ function CheckoutInner() {
   const params = useSearchParams();
   const slug = params.get('service');
   const durationParam = Number(params.get('duration'));
+  const bookingType = params.get('bookingType') as 'instant' | 'scheduled' | null;
   const slot = params.get('slot');
   // The slot came from a picker that was showing this length. Kept apart from the
   // length the form starts on so the form can say when the customer has changed it
@@ -89,6 +90,7 @@ function CheckoutInner() {
             durationMinutes={duration}
             durations={service.durations}
             slotStart={slot}
+            bookingType={bookingType}
             slotForDurationMinutes={slot ? slotForDuration : null}
           />
         </PublicLocationProvider>

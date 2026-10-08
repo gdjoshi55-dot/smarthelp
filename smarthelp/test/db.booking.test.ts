@@ -236,7 +236,6 @@ describeDb(
     const serviceId = await sql(
       `select id from public.services where is_active order by sort_order limit 1;`
     );
-    const before = await sql(`select count(*) from public.bookings;`);
 
     // Two lines for one service: `uniq_booking_service` refuses the second, and
     // the refusal has to take the booking with it. Three separate requests would
@@ -264,7 +263,20 @@ describeDb(
       )
     ).rejects.toThrow(/uniq_booking_service|duplicate key/i);
 
-    expect(await sql(`select count(*) from public.bookings;`)).toBe(before);
+    // Scoped to this test's own address, not a global count: other live-db
+    // files (db.payments) insert bookings in parallel and a global invariant
+    // drifts under them — the rollback itself is proven by the absence of any
+    // booking on the address this attempt used.
+    expect(
+      await sql(`select count(*) from public.bookings where address_id = '${address}';`)
+    ).toBe('0');
+    expect(
+      await sql(
+        `select count(*) from public.booking_items i
+           join public.bookings b on b.id = i.booking_id
+          where b.address_id = '${address}';`
+      )
+    ).toBe('0');
     await sql(`delete from public.addresses where id = '${address}';`);
   });
 

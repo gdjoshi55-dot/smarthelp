@@ -110,6 +110,18 @@ export const PLATFORM_DEFAULTS = {
   lateArrivalThresholdMin: Number(process.env.DEFAULT_LATE_ARRIVAL_THRESHOLD_MIN || 15),
   /** §11.2. After this with no OTP, the job may be marked a no-show. */
   noShowAfterMin: Number(process.env.DEFAULT_NO_SHOW_AFTER_MIN || 45),
+  /**
+   * §12.3. At or below this, a support agent may request a refund that is
+   * executed immediately; above it the request is created and left `requested`
+   * for an approver.
+   *
+   * Rupees, like every other money figure here — `lib/money.ts` converts at the
+   * boundary. The environment variable is a **fallback**, not the source of
+   * truth: `platform_settings` is a Phase 6 table, so until it lands the rule
+   * reads from here. The exact pattern Phase 1 used for `instant_lead_minutes`
+   * and Phase 2 for `maxBookingMinutes`.
+   */
+  supportRefundLimit: Number(process.env.DEFAULT_SUPPORT_REFUND_LIMIT || 1500),
 } as const;
 
 /** Default duration ladder offered when an admin has not overridden it (§4.3). */

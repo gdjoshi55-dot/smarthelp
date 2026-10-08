@@ -1116,7 +1116,7 @@ somebody else's address id with a row the caller then cannot read anyway.
 
 Phase 2. Every write here goes through a `security definer` function in the
 database rather than through a sequence of PostgREST requests — `docs/DATABASE.md`
-§8 has why, and the short version is that a booking, its item lines and its first
+§9 has why, and the short version is that a booking, its item lines and its first
 status change have to land together or not at all.
 
 ### `POST /api/bookings/quote`
@@ -1216,9 +1216,255 @@ the current value makes the check agree with itself and proves nothing.
 
 ---
 
+## 4.5 Payments
+
+Phase 3 (§25). Four routes plus a webhook and a cron, and one rule that all six
+obey: **no client-reachable path writes `payments.status = 'success'`.** The
+webhook and the reconciliation cron are the only writers, both go through
+`confirm_booking_payment()` (0014), and everything a browser can reach is a read
+or an attempt.
+
+`docs/DATABASE.md` has the table, its RLS and the two functions this section's
+routes call.
+
+### `POST /api/payments/create-order`
+
+Authenticated as a customer. **Requires `Idempotency-Key`** — `readIdempotencyKey`
+refuses a missing one before anything is looked up, and `withIdempotency(…
+required: true)` refuses it again at the ledger.
+
+Body: `{ "bookingId": "<uuid>", "expectedTotal": 613.59 }`. `expectedTotal` is
+optional; the amount charged is **never** read from it.
+
+**201** — `{ "paymentId": "…", "orderId": "order_…", "keyId": "rzp_live_…",
+"amount": 613.59, "currency": "INR" }`.
+
+The order of the checks is the same discipline as `POST /api/bookings`, because
+a refund-able row must not exist for a request that was going to be refused:
+
+1. `requireCustomer` — `payments.customer_id` is a `customers.id` and is not
+   null, so a professional or an admin with no customer row is refused outright.
+2. **Ownership** — `getBookingForCaller`. The service role bypasses RLS, so a
+   booking id would otherwise be a number a caller simply chooses.
+3. **State** — `payment_pending` only. A paid or cancelled booking answers
+   `409 INVALID_STATE` naming which one it is, so no booking ever gets a second
+   order.
+4. **`quote_token IS NOT NULL` — presence, not freshness.** A null token answers
+   `409 INVALID_STATE` telling the customer to re-quote. Freshness is
+   deliberately *not* checked: the token's 15-minute `exp` would either reject a
+   `payment.captured` arriving late (breaking "the webhook is the sole
+   authority") or force a re-quote that charges a total the customer did not
+   agree to. What is asserted is Phase 2's attestation — *this booking was
+   priced by our engine from a signed quote*. The webhook nulls the token inside
+   `confirm_booking_payment`, which makes it single-use across the payment
+   lifecycle; this route never clears it, because a retry after an abandoned
+   checkout has to find it still there.
+5. **`expectedTotal`, if present, must equal `bookings.total_amount` in paise** —
+   `409 PRICE_CHANGED` with `{ previousTotal, currentTotal }`. The booking's own
+   figure wins; a client's figure is never stored and never charged.
+6. `createBookingOrder()` — insert the row, ask the gateway for an order, store
+   its id, write one audit row.
+
+Steps 2–5 are read-only and deliberately happen *before* the ledger claim:
+`claim_idempotency_key()` marks a key claimed the moment it is spent, so a
+refusal inside `run()` would leave `completed_at` null and every later retry on
+that key answering `in_flight`.
+
+**Failures** — `VALIDATION_ERROR` 400 (bad `bookingId`/`expectedTotal`, missing
+key); `UNAUTHENTICATED` 401; `FORBIDDEN` 403 (someone else's booking);
+`INVALID_STATE` 409; `PRICE_CHANGED` 409; `PAYMENT_FAILED` **402** when the
+gateway refused the order — the message is the gateway's own words, stored in
+`payments.failure_reason` before the route refuses, so the checkout screen can
+show what actually happened; `SERVICE_UNAVAILABLE` 422 when `RAZORPAY_KEY_ID`
+or `RAZORPAY_KEY_SECRET` is unset (no row is written — that is a configuration
+refusal, not a failed charge); `INTERNAL_ERROR` 500 when the order id could not
+be stored (the row stays `created` for the cron to reconcile).
+
+### `POST /api/payments/verify`
+
+Authenticated as a customer. Body: `{ razorpay_order_id, razorpay_payment_id,
+razorpay_signature }`.
+
+**200** — `{ "verified": true, "status": "created", "paymentId": "…" }`.
+
+**Reads only, writes nothing.** It does not store `gateway_payment_id`, does not
+nudge `pending` to `success`, does not call `confirm_booking_payment` — a test in
+`test/routes.payments.test.ts` asserts `payments.status` and `bookings.status`
+are byte-identical before and after a valid call. `status` is whatever the
+**webhook** put there, which is exactly why the checkout screen can render it:
+the `handler` fires within a second of the customer paying and the webhook may
+take a few more, so this route answers "verified, and the row still says
+`created`" rather than guessing.
+
+The signature here is HMAC-SHA256 over `order_id + '|' + payment_id` with the
+**key** secret — a different message and a different key from the webhook's
+header signature. Both live in `lib/razorpaySignature.ts`.
+
+Verified is not authorised: a correct signature proves Razorpay issued the pair,
+not that the caller owns it, so the row still goes through
+`getPaymentForCaller`.
+
+**Failures** — `VALIDATION_ERROR` 400; `UNAUTHENTICATED` 401; `FORBIDDEN` 403;
+`NOT_FOUND` 404; `PAYMENT_NOT_VERIFIED` **402** on a signature mismatch;
+`SERVICE_UNAVAILABLE` 422 when `RAZORPAY_KEY_SECRET` is unset.
+
+### `GET /api/payments/[id]`
+
+Authenticated as a customer. **200** — `{ "payment": { id, bookingId, status,
+amount, currency, method, failureReason, capturedAt, createdAt, updatedAt } }`.
+
+This is what the checkout screen polls, so it is one query, one ownership check
+and nothing else: no booking join, no child rows, no gateway call. The ownership
+check is required even though `payments` has a select-own RLS policy, because
+every Route Handler reaches Postgres through the service role and the service
+role bypasses RLS — without it, a payment id a caller chose would read any
+payment in the table.
+
+The payload is a projection. `gateway_signature` is dispute evidence under
+§12.2 and belongs in the database and (redacted) in the audit trail, not in a
+browser response; `idempotency_key` is server state. `amount` is rupees, like
+every other money figure this API returns.
+
+**Failures** — `VALIDATION_ERROR` 400; `UNAUTHENTICATED` 401; `FORBIDDEN` 403;
+`NOT_FOUND` 404.
+
+### `POST /api/webhooks/razorpay` — unauthenticated, signature-authenticated
+
+The sole authority on whether money arrived (§12.1, §30.1). Razorpay sends no
+bearer token, so the credential is the HMAC over the bytes it sent, and the
+order of operations is the whole defence:
+
+1. `await req.text()` — **the first thing that touches the body.**
+2. read `x-razorpay-signature`; missing ⇒ `400 VALIDATION_ERROR`.
+3. read `RAZORPAY_WEBHOOK_SECRET` at request time; unset or still the
+   `.env.example` placeholder ⇒ `422 SERVICE_UNAVAILABLE`. It fails closed: a
+   deployment that *looks* configured and silently accepts every delivery is
+   worse than one that says it is not.
+4. `verifyRazorpaySignature(rawBody, secret, signature)`; false ⇒ `400`.
+5. **Only then** `JSON.parse(rawBody)`.
+
+| Event | Effect |
+|---|---|
+| `payment.captured` | amount/currency/order checked **paise against paise**, then `confirm_booking_payment()` — `payments.status='success'` and `bookings.status='paid'` in one transaction. A re-delivered webhook hits the function's `status in ('created','pending')` guard, updates zero rows and answers `{ duplicate: true }`. |
+| `payment.failed` | `payments.status='failed'` with the gateway's `error_description`. **The booking stays `payment_pending` with its quote intact** — a declined card is a state the customer can leave by paying again. |
+| `refund.processed` | the row is found by `refunds.gateway_refund_id` and finished through `complete_booking_refund()` — refund `completed`, booking `refunded`, `payments.refundable_amount` drawn down, in one transaction. A re-delivery hits the function's `status in ('requested','approved')` guard and answers `{ duplicate: true }`; an id we never wrote answers `400` with a `refund.webhook.mismatch` audit row. |
+| anything else | `{ ignored: true }`, so the gateway stops re-delivering an event nothing handles. |
+
+Two refusals worth naming: an order we never created and an amount that does
+not match the row both answer `400` with **zero writes** plus a
+`payment.webhook.mismatch` audit row, because neither is something a delivery
+should be able to decide. `p_gateway_signature` is passed to the RPC and stored
+on the row; it never reaches an audit row (`REDACTED_KEYS` in `lib/audit.ts`
+carries it).
+
+Every path writes one audit row with `actorProfileId: null` — a webhook has no
+profile to name.
+
+### `GET /api/cron/reconcile-payments`
+
+The phase's only cron (§25.11). A customer who paid while the webhook was down
+is invisible to every route and every screen: the booking sits
+`payment_pending` and no human inside the product can tell "paid but unreported"
+from "never paid". This pass looks at payments still waiting more than 10
+minutes and asks the gateway, once per row, what happened.
+
+**Guard — three channels, in precedence, and it fails closed:** `Authorization:
+Bearer …`, then `x-cron-secret`, then `?secret=`. `CRON_SECRET` unset ⇒ **503
+`SERVICE_UNAVAILABLE`** (a deliberate deviation from the usual `if (secret)`
+pattern, which runs unauthenticated when the variable is missing); mismatch ⇒
+401.
+
+| Gateway says | Write |
+|---|---|
+| order `paid` | `confirm_booking_payment`, audit `payment.reconciled` |
+| order `expired` | `payments.status='failed'`, audit `payment.failed`; the booking stays `payment_pending` so the customer can pay again |
+| still `created` / `attempted` / `partially_paid` | **no write**, counted `stillPending` |
+| unreachable / 5xx / rate-limited / unreadable | **no write**, counted `unreachable` |
+
+The fourth row is the load-bearing one: writing rows because the gateway
+answered 503 would *confirm payments that never happened*.
+
+**200** — `{ resolved, failed, stillPending, unreachable }`, or all zeros when
+nothing is waiting.
+
+**Both alert conditions** are a `payment.reconcile.alert` audit row plus a
+`console.warn` — `lib/audit.ts` is this phase's loud channel and inventing a
+notification pathway is out of scope:
+
+1. `unreachable > 0` for the pass.
+2. a `stillPending` row older than **60 minutes** (`RECONCILE_STALE_MINUTES`),
+   a second threshold above the 10-minute scan window so a customer who simply
+   has not paid yet never alerts while a payment stuck for an hour does.
+
+Only bookings still `payment_pending` are in scope — a cancelled booking's
+stuck payment is an operator problem, not a confirmation machine. The reconcile
+call has no `gateway_payment_id` or signature to store (an order fetch does not
+see the payment), so both are null and the note names the order id.
+
+**Failures** — 503 (unset); `UNAUTHENTICATED` 401 (mismatch).
+
+---
+
+## 4.6 Refunds and the wallet
+
+Phase 3's other half (§12.3, §12.4, §25.10). The rules live in
+`lib/refundServer.ts`; the routes are doorways onto them. `docs/DATABASE.md` has
+`refunds`, `wallets` and `wallet_transactions`, and the four functions these
+routes call (0015).
+
+### `POST /api/refunds`
+
+Authenticated as staff. **Requires the `refund.request` capability** — `support`,
+`admin` and `super_admin` hold it; `customer` and `professional` do not.
+
+Body: `{ "paymentId": "<uuid>", "amount": 1500, "reasonCode": "goodwill", "note": "…" }`.
+`amount` is **rupees**; it is converted to paise exactly once, in
+`lib/refundServer.ts`.
+
+**201** — the refund executed and the money moved:
+`{ "refund": { id, status: "completed", route, amount, gatewayRefundId, … } }`.
+
+**202** — a refund above `supportRefundLimit` (default ₹1500) is **created,
+`requested`, and not executed**: `{ "refund": { status: "requested", … },
+"heldForApproval": true }`. Phase 6's approval console (§25.10) is what executes
+it; nothing in this phase does. That is the line that makes the capability check
+meaningful, and `202` versus `201` is how a client tells "money moved" from
+"queued" without parsing a sentence.
+
+**Route follows the payment.** A payment with a `gateway_payment_id` refunds
+through Razorpay (`route: "gateway"`); one without refunds to the customer's
+wallet (`route: "wallet"`). If the gateway *definitively refuses*, the same
+amount is credited to the wallet and the refund completes as `route: "wallet"`
+with a `refund.ops_ticket` audit row — §12.3's "a customer is never left with
+nothing". An *unreachable* gateway is not treated the same way: the request may
+already have been processed, so nothing is credited and the row waits for a
+human.
+
+**Failures** — `VALIDATION_ERROR` 400 (bad amount, more than the payment can
+still cover); `UNAUTHENTICATED` 401; `FORBIDDEN` 403 (no `refund.request`);
+`NOT_FOUND` 404; `INVALID_STATE` 409 (payment not attached to a booking).
+
+### `GET /api/refunds`
+
+Authenticated. Staff see the table, optionally narrowed by `?customerId=` and
+`?status=`; a customer sees only their own, and a `customerId` they pass is
+ignored in favour of the one resolved from their session. **200** —
+`{ "refunds": [ … ] }`. The projection carries no `gateway_signature`.
+
+### Cancelling a paid booking
+
+`POST /api/bookings/[id]/cancel` refunds automatically when money was actually
+captured: the captured amount less §11.1's cancellation fee goes back. An
+automatic refund is **never held for approval, at any size** (`planRefund({ auto:
+true })`) — there is no human asking for it, and a cancelled booking must not be
+stranded waiting for an approver. The response carries `autoRefund`, or `null`
+when nothing was captured.
+
+---
+
 ## 5. Idempotency
 
-**Used by `POST /api/bookings` only** (as of Phase 2).
+**Used by `POST /api/bookings` and `POST /api/payments/create-order`.**
 
 The machinery is all there. Migration `0024_audit_idempotency.sql` creates
 `idempotency_keys` with one row per `(key, operation, actor_profile_id)`, a
@@ -1260,7 +1506,8 @@ precise:
   `set_default_address` is a transaction, not because a key stops the second call.
 
 Idempotency keys belong to booking creation and payment, which is where a
-duplicate costs real money. Those land in Phase 2 and Phase 3.
+duplicate costs real money: `POST /api/bookings` in Phase 2 and
+`POST /api/payments/create-order` in Phase 3 both require one.
 
 ---
 
@@ -1319,8 +1566,8 @@ longer than the route table.
 
 | Phase | Not built | Error codes reserved for it |
 |---|---|---|
-| 2 — Booking & pricing | **Delivered**: quote, create, list, detail, cancel, reschedule, invoice stub, coupons and the `bookings` state machine. Still open: §7.2's `quoteToken` is issued and verified but nothing consumes it for payment, and there is no `bookingView` consolidated read model | `INVALID_STATE`, `ILLEGAL_TRANSITION`, `STALE_VERSION`, `ADDRESS_IN_USE` — `PRICE_CHANGED` is now in use |
-| 3 — Payments | Razorpay order create, webhook, verify, refunds, wallet ledger, reconciliation | `PAYMENT_FAILED`, `PAYMENT_NOT_VERIFIED` |
+| 2 — Booking & pricing | **Delivered**: quote, create, list, detail, cancel, reschedule, invoice stub, coupons and the `bookings` state machine. Still open: there is no `bookingView` consolidated read model | `INVALID_STATE`, `ILLEGAL_TRANSITION`, `STALE_VERSION`, `ADDRESS_IN_USE` — `PRICE_CHANGED` is now in use |
+| 3 — Payments | **Delivered**: order create, webhook, verify, `GET /api/payments/[id]`, the reconcile cron (§4.5). Still open: refunds, the wallet ledger and the approval console on top of them | `PAYMENT_FAILED`, `PAYMENT_NOT_VERIFIED` |
 | 4 — Professional app | KYC upload, verification workflow, working-hours editing, offers inbox, accept/decline, arrive, service OTP, complete | `PROFESSIONAL_UNAVAILABLE` |
 | 5 — Matching engine | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper, `professional_schedule` reservations | `ASSIGNMENT_TAKEN`, `PROFESSIONAL_UNAVAILABLE` |
 | 6 — Admin console | Everything under `/admin`: dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, analytics, notifications, settings, audit | — |
