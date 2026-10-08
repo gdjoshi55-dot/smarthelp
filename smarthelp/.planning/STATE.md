@@ -2,13 +2,23 @@
 
 ## Current Phase
 
+Phase 3 — Payments, refunds & wallet. Plan:
+[`phases/03-payments/03-PLAN.md`](phases/03-payments/03-PLAN.md).
+
+**Wave A complete and gated** (typecheck/lint/build exit 0, pre-migration suite
+645/36 green, `0014` already applied live, CheckoutForm opens real Razorpay
+Checkout through `lib/paymentClient.ts`, `paid` reachable only from polled
+status, docs written). **Wave B on disk, pre-migration green:** `0015` schema,
+`lib/refundServer.ts`, `lib/walletServer.ts`, `POST/GET /api/refunds`, the
+`refund.processed` webhook event, the cancel-of-paid auto-refund, and both test
+files. What remains: 03-PLAN **Task B-GATE** (apply `0015`, unexcluded suite,
+`npm run test:db` across all five live files, §31.1 exit-criteria hand-check)
+and the `README.md` "Phase 3 complete" record.
+
 Phase 2 — Booking & pricing. **Substantially complete.** Plan:
 [`phases/02-booking-pricing/02-PLAN.md`](phases/02-booking-pricing/02-PLAN.md).
-
-The database, the pricing engine, the endpoints, the customer pages and the demo
-data are all in. What remains is the payment hand-off (Phase 3), the catalogue
-rating aggregate, and one deliberate deferral: there is no consolidated
-`bookingView` read model.
+One deliberate deferral carried forward: there is no consolidated `bookingView`
+read model.
 
 ## Phases Completed
 
@@ -324,6 +334,7 @@ Both were in the harness, and both had been passing by luck.
 | 261003-03 | Atomic booking writes, quote token, seed data, docs | 2026-10-03 | (uncommitted) | [.planning/quick/261003-03-atomic-booking-writes](./quick/261003-03-atomic-booking-writes/) |
 | 261003-04 | Authenticated the browser client: `lib/sessionHeaders.ts` | 2026-10-03 | (uncommitted) | — |
 | 261004-gh9 | Address creation at checkout: `lib/addressClient.ts`, `AddressForm.tsx` | 2026-10-04 | 3cad3b1-353b0be | [.planning/quick/261004-gh9-fix-logged-in-customer-booking-flow-brow](./quick/261004-gh9-fix-logged-in-customer-booking-flow-brow/) |
+| 261007-vhn | Keep building smarthelp (Phase 3): Wave A finished and gated, Wave B schema/modules/routes/tests started | 2026-10-08 | (uncommitted) | [.planning/quick/261007-vhn-keep-building-smarthelp-phase](./quick/261007-vhn-keep-building-smarthelp-phase/) |
 
 
 ## Blockers/Concerns
@@ -346,7 +357,7 @@ Both were in the harness, and both had been passing by luck.
 
 ---
 
-Last activity: 2026-10-04 - Completed quick task 261004-gh9: a signed-in customer with no saved address could reach checkout and not finish, because no page anywhere called POST /api/customers/me/addresses. Added lib/addressClient.ts, components/catalogue/AddressForm.tsx, wired both into CheckoutForm via SavedAddressPicker's loaded list, and covered the transport with 19 tests (524 in 28 files pass).
+Last activity: 2026-10-08 - Resumed and completed quick task 261007-vhn: Phase 3 Wave A finished (type mirror, CheckoutForm → paymentClient hand-off, Wave A docs) and gated — typecheck/lint/build exit 0, pre-migration suite 645 tests across 36 files (floor 629), `0014` confirmed already applied live so `db:migrate` was a no-op, unexcluded suite 635 and `test:db` 73 both green. Wave B started: `POST/GET /api/refunds` with the ₹1500 limit and server-side capability checks, the cancel-of-paid auto-refund closing the paid→cancelled money leak, `refund.processed` in the existing webhook, `test/routes.refunds.test.ts` (12 cases) and the live `test/db.wallet.test.ts`. `0015` deliberately NOT applied — that is 03-PLAN Task B-GATE, the next step. No git commits, no new dependencies, no refund UI (645 tests / 36 files green).
 
 
 
