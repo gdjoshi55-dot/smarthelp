@@ -240,13 +240,16 @@ no.
 
 ### Still open
 
-- **A `localStorage` `addressId` naming a deleted row pins checkout to a 404.**
-  Found while fixing the case beside it (quick task 261004-gh9, which gave a
-  customer with *no* addresses a form and left this one alone). With the list
-  empty and `addressId` still truthy, neither the new form nor the amber notice
-  renders and Confirm stays enabled — `SavedAddressPicker` falls back to the
-  default for display only, and never clears the selection. Pre-existing;
-  unchanged. The fix reaches `BookingPanel` and `localStorage`.
+- ~~**A `localStorage` `addressId` naming a deleted row pins checkout to a 404.**~~
+  — closed 2026-10-08: the picker now runs the pure decision in
+  `components/catalogue/savedAddressSelection.ts` (20 cases in
+  `test/savedAddressSelection.test.ts`) instead of its old display-only fallback.
+  The same wiring fixes the report that found it — an address shown as selected
+  while checkout said "Pick a saved address to continue." and kept Confirm off,
+  because the location context never held the id the control displayed. The
+  decision lands in a layout effect on the commit that delivers the list, so the
+  amber notice never paints over an address about to be applied; `BookingPanel`
+  is fixed by the same code path.
 - **`GET /api/availability` answers `VALIDATION_ERROR` (with a 422 status
   override) for an unresolvable locality**, where its own docstring and the plan
   both say `SERVICE_UNAVAILABLE`. A client branching on `code` therefore sees a
