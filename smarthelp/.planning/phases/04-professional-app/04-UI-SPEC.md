@@ -57,8 +57,8 @@ Tailwind's default scale as used across the existing app — all values are mult
 
 | Token | Value | Usage (observed in repo) |
 |-------|-------|--------------------------|
-| xs | 4px | Icon gaps (`gap-1.5`≈6px is the only sub-4 optical nudge allowed, already in use), inline padding |
-| sm | 8px | Compact element spacing (`gap-2`), badge padding (`px-2.5 py-0.5`) |
+| xs | 4px | Inline padding, icon gaps |
+| sm | 8px | Compact element spacing (`gap-2`), badge padding |
 | md | 16px | Default element spacing (`gap-4`, `space-y-4`), card inner rhythm (`mt-4`) |
 | lg | 24px | Section padding (`p-6` cards), grid gaps (`gap-6`) |
 | xl | 32px | Layout gaps (`gap-8` shell columns) |
@@ -68,9 +68,10 @@ Tailwind's default scale as used across the existing app — all values are mult
 Card convention: `rounded-xl border border-gray-200 bg-white p-6` (observed on every `app/professional/page.tsx` section and catalogue card). Buttons: `rounded-lg px-4 py-2 text-sm font-semibold`.
 
 **Exceptions:**
-- **Touch targets (phone-first job flow):** primary job-execution controls — Accept / Decline / Confirm arrival / Start job / Complete job — must be `min-h-11` (44px) even where the padding pattern would yield ~36px. Icon-only controls: 44×44px hit area minimum.
+- **Touch targets (phone-first job flow):** primary job-execution controls — Accept / Decline / Confirm arrival / Start job / Complete job — must be `min-h-11` (44px) even where the padding pattern would yield ~36px. Icon-only controls: 44×44px hit area minimum **and** an accessible name — `aria-label` (plus tooltip on hover/focus); never an icon alone.
 - **OTP slots** keep `input-otp`'s `h-10 w-10` (40px) boxes; the wrapping control gets the 44px target.
-- No other exceptions. No 2px/6px/10px/12px custom spacing values.
+- **Frozen sub-4 component internals (not part of the scale):** `gap-1.5` (≈6px icon gaps) and `px-2.5 py-0.5` (badge padding) are pre-existing Tailwind/shadcn component internals already shipped in the repo — grandfathered as-is, never extended. They are exempt from the rule below; they do not license new sub-4 values.
+- No other exceptions. No **new** 2px/6px/10px/12px custom spacing values.
 
 ---
 
@@ -87,7 +88,7 @@ Inter (existing). Four sizes, two weights:
 
 Weights: exactly **400 and 600**. Pre-existing deviation noted: RoleShell's h1 ships `font-bold` (700) today — Phase 4 does not restyle the shared shell (regression risk for customer/admin screens); all **new** headings use 600.
 
-**Numeric display exception:** countdown timers, the 4-digit OTP code, and earnings/rating figures use `text-3xl (30px) font-semibold tabular-nums` with `font-variant-numeric: tabular-nums` (`tabular-nums` class — already used in `PriceBreakdown`). This is the only size above the four-role scale, and it is reserved for large numerals — never prose.
+**Numeric display (no size exception):** countdown timers, the 4-digit OTP code, and earnings/rating figures render at `text-2xl (24px) font-semibold tabular-nums` — the existing heading size with `font-variant-numeric: tabular-nums` (`tabular-nums` class — already used in `PriceBreakdown`). The declared scale is exactly **12 / 14 / 16 / 24** with weights **400 / 600**; `tabular-nums` does the heavy lifting for large numerals. Numerals are never prose.
 
 Emphasis inside body copy: `font-semibold` only. Never italic, never underline except links.
 
@@ -129,7 +130,7 @@ Voice: plain, second-person, sentence case, Indian English (`₹`, "verification
 
 | Screen | Primary CTA | Notes |
 |--------|-------------|-------|
-| Offers inbox | **Accept offer** | Secondary: **Decline** (ghost/outline, not red) |
+| Offers inbox | **Accept offer** | Secondary: **Decline offer** (ghost/outline, not red) |
 | Job detail → on_the_way | **Confirm arrival** | Geofence pass OR manual override (override requires reason) |
 | Job detail → arrived | **Start job** (after OTP entry) | Disabled until 4 digits entered |
 | Job detail → in_progress | **Complete job** | Enabled at timer 0 or early with confirmation |
@@ -175,8 +176,8 @@ All use the existing `components/ui/ConfirmationDialog`. Nothing destructive exe
 |--------|------|-------------------|
 | **Decline offer** | warning | *Decline this job?* — You will not be offered this job again. This is recorded on your response history. `[Keep offer]` `[Decline job]` |
 | **Cancel / no-show a job** (pro-initiated) | danger | *Cancel this job?* — The customer will be notified and this is recorded against your account. A reason is **required** (select before confirm enables). `[Go back]` `[Cancel job]` |
-| **Replace a KYC document** | warning | *Replace this document?* — Verification restarts from the beginning for all documents. `[Keep document]` `[Replace]` |
-| **Delete time-off day** | info | *Remove time off on {date}?* — Offers may be sent for that day again. `[Remove]` |
+| **Replace a KYC document** | warning | *Replace this document?* — Verification restarts from the beginning for all documents. `[Keep document]` `[Replace document]` |
+| **Delete time-off day** | info | *Remove time off on {date}?* — Offers may be sent for that day again. `[Remove day]` |
 
 No refund action, no refund copy, no payment-amount edit controls anywhere in this phase.
 
@@ -193,7 +194,7 @@ No refund action, no refund copy, no payment-amount edit controls anywhere in th
 | 5 | **Status rendering is single-sourced.** Every status label/chip/timeline comes from `lib/status.ts` `statusPresentation`. The job stepper derives from `CUSTOMER_LADDER`/`step` — the UI may not offer an action the state machine forbids (same pattern as `isReschedulableStatus`). |
 | 6 | **Privacy gates in the UI.** Offer cards show locality-level info only (no phone, no full address, no customer name detail beyond first name) until accept — then the job detail reveals address + navigate link. `otp_hash` never exists in any client payload (enforced server-side; UI asserts nothing about it). |
 | 7 | **OTP entry:** 4-digit `InputOTP`, auto-submit on 4th digit, `inputMode="numeric"`, `autocomplete="one-time-code"` off (it's the *customer's* code, not SMS). Wrong code clears the slots and focuses the first slot. Never prefill, never log. |
-| 8 | **Customer OTP display:** shown only when `status === 'arrived'` (mint-at-arrived), 30px tabular numerals + `Expires in mm:ss` countdown; on expiry → Get a new code (cap 3 → helper text `New code limit reached — ask support.`). |
+| 8 | **Customer OTP display:** shown only when `status === 'arrived'` (mint-at-arrived), 24px tabular numerals (`text-2xl font-semibold tabular-nums`) + `Expires in mm:ss` countdown; on expiry → Get a new code (cap 3 → helper text `New code limit reached — ask support.`). |
 | 9 | **KYC upload:** file picker → client-side pre-check (≤5MB, MIME allow-list) → signed-URL upload with progress → `status='submitted'` row. Per-document status chip from VERIFICATION_COPY. Stepper shows the three steps (Identity / Address / Selfie) with per-step state; never show internal reviewer notes (§20.10). |
 | 10 | **Toasts** for one-shot success/failure feedback (top-center, existing Toaster); inline banners for persistent state (KYC gate amber banner pattern already shipped — reuse it verbatim for `submitted`/`rejected` gates on every professional page that requires verification). |
 | 11 | **Verification gate:** unverified professionals see the amber banner + KYC CTA and cannot access job-execution actions (buttons disabled with explanatory helper text, not hidden). |
@@ -214,6 +215,10 @@ No refund action, no refund copy, no payment-amount edit controls anywhere in th
 | `/customer/bookings/[id]` | **Extend existing:** OtpDisplay card at `arrived` (+ countdown, regenerate), live status/tracking ladder from track endpoint, `serverNow` timer while `in_progress` | RoleShell (existing) |
 
 Empty/loading/error copy for every screen is specified in the Copywriting Contract above — no screen may render a bare "No data" or a raw error code.
+
+**Focal points (one per primary screen):**
+- `/professional/jobs`: the OfferCard's **Accept offer** CTA is the visual anchor; the countdown is second in hierarchy (meta line, never competing with the CTA).
+- `/professional/jobs/[id]`: the current-state primary CTA (**Confirm arrival** / **Start job** / **Complete job**) is the anchor; `ServiceTimer` is second.
 
 ---
 
