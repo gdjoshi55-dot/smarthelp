@@ -24,7 +24,7 @@ file says so rather than smoothing it over.
 
 ## 1. Inventory
 
-Thirty-one tables and one view. Every one of them has row-level security enabled;
+Thirty-three tables and one view. Every one of them has row-level security enabled;
 `npm run test:db` asserts exactly that against a live database and fails with the
 names of any table that does not.
 
@@ -51,7 +51,9 @@ names of any table that does not.
 | `bookings` | The booking: quote, price, status machine, window, OTP state | `0010` | 2 |
 | `booking_items` | The priced service lines frozen onto a booking | `0010` | 2 |
 | `booking_status_history` | One row per status move, with the actor that made it | `0010` | 2 |
-| `professional_schedule` | Reserved working windows held by a booking | `0013` | 5 |
+| `booking_assignments` | The offer ledger: one booking handed to one professional, its TTL and its fate | `0012` | 4 |
+| `professional_schedule` | Reserved working windows held by a booking | `0013` | 4–5 |
+| `professional_earnings` | The per-completion earnings read model; one row per completed booking | `0021` | 4 (partial 8) |
 | `coupons` | Discount codes, their rules and their usage caps | `0016` | 2 |
 | `coupon_usage` | One row per redemption, per customer | `0016` | 2 |
 | `ratings` | One review per completed booking, five sub-scores | `0017` | 2 |
@@ -74,10 +76,20 @@ an audit row; its two tables reference no Phase 1–8 table, so it needed no edi
 and `profiles.phone`. `0007` is data, not schema: the launch city, its twelve
 localities, five categories and the catalogue, all as rows an admin can edit.
 
+Two Phase 4 files reach ahead of their number by design. `0012` was written for
+Phase 5's assignment lifecycle and was reclaimed whole when Phase 4's exit
+criterion — accept an offer, run the job — turned out to be unreachable without an
+assignment row to take (D1); Phase 5 replaces the producer, not the table. `0021`
+ships the `professional_earnings` read model early as a partial Phase 8 (D4):
+`complete_job` writes a pending row; the payout run, the `payouts` table and the
+cron stay in Phase 8.
+
 Enums, for completeness: `user_role` and `user_status` (`0001`), `pricing_type`
 (`0003`), `verification_status`, `training_status` and `availability_status`
-(`0005`), `address_type` (`0008`), `payment_purpose` (`0010`), `payment_status`
-and `payment_method` (`0014`), `refund_status` and `wallet_txn_type` (`0015`).
+(`0005`), `address_type` (`0008`), `booking_type` (`0009`), `payment_purpose`
+(`0010`), `assignment_status` (`0012`), `payment_status` and `payment_method`
+(`0014`), `refund_status` and `wallet_txn_type` (`0015`), `earning_status`
+(`0021`).
 
 ---
 
@@ -1061,14 +1073,18 @@ beside `0028`'s three because it is the same answer to the same problem: moving
 requests reproduces exactly the partial-write bug `0028` exists to fix — a payment
 reading `success` against a booking still `payment_pending`, or the reverse.
 
-- **Two callers, one behaviour.** The Razorpay webhook and
-  `GET /api/cron/reconcile-payments` both funnel through it, because three writers
-  with three behaviours is how a booking ends up `paid` while its payment says
-  `pending`.
+- **Three callers, one behaviour.** `POST /api/webhooks/razorpay`,
+  `GET /api/cron/reconcile-payments` and `POST /api/payments/verify` all funnel
+  through it, because three writers with three behaviours is how a booking ends
+  up `paid` while its payment says `pending`. The webhook and the cron prove
+  gateway truth with the webhook header signature; the verify route proves it
+  with the Checkout `handler`'s `order_id|payment_id` signature under the
+  server-only key secret (see `docs/API.md` §4.5).
 - **The replay guard is in the `where` clause:** `status in ('created','pending')`.
   A second call with the same arguments updates zero rows and returns `null`, so a
-  re-delivered webhook does nothing rather than re-confirming. The caller turns
-  `null` into `{ duplicate: true }`.
+  re-delivered webhook — or a webhook arriving at the same time as the verify
+  route — does nothing rather than re-confirming. The webhook turns `null` into
+  `{ duplicate: true }`; the verify route re-reads the row for its real status.
 - **The booking only moves if it is still waiting:** `where status =
   'payment_pending'`. A booking cancelled while the charge was in flight stays
   cancelled — the money did arrive, so the payment is `success` and it becomes a
@@ -1084,7 +1100,10 @@ reading `success` against a booking still `payment_pending`, or the reverse.
   `public.user_role` has no `system` value (adding one would be an `ALTER TYPE` on
   a table with a history row behind every row). The `p_note` carries the
   provenance instead: `"payment confirmed by webhook (payment.captured, pay_…)"`,
-  or `"payment reconciled by cron (order order_… is paid)"`.
+  `"payment confirmed by checkout callback (pay_…)"`, or
+  `"payment reconciled by cron (order order_… is paid)"`. (The signature a caller
+  passes to `p_gateway_signature` is stored on the row as dispute evidence; it
+  never reaches an audit row.)
 - **Executes for `service_role` only**, same as `0028`'s three: `revoke all … from
   public, anon, authenticated`, then `grant execute … to service_role`.
 
@@ -1145,9 +1164,17 @@ database where the migration applied without complaint. Naming a schema that doe
 not exist is harmless on a plain Postgres, which is why the same files work in
 both places. `docs/SETUP.md` has the fuller note.
 
-Today that means `issue_otp`, `consume_otp`, `seed.sql`'s `seed_demo_user`, and
-`supabase/seed.sql`'s own `set search_path`. Every other function uses
-`set search_path = public`.
+Today that means `issue_otp`, `consume_otp`, `verify_service_otp`, `seed.sql`'s
+`seed_demo_user`, and `supabase/seed.sql`'s own `set search_path`. Every other
+function uses `set search_path = public`.
+
+`verify_service_otp` is the convention's cautionary tale. `0029` created it with
+`set search_path = public`, and it called `digest()`; the migration applied
+cleanly and the function compiled, then failed at call time on a live database
+with `function digest(text, unknown) does not exist` — because `digest` lives in
+`extensions`. `0030` re-declares the function with `public, extensions`. This is
+exactly the failure the `search_path` rule above exists to prevent, and it is why
+the rule is a rule and not a preference.
 
 ---
 
@@ -1188,7 +1215,156 @@ convention.
 
 ---
 
-## 11. What is not here yet
+## 11. The professional job flow (Phase 4)
+
+Phase 4's write path is two migrations and a fix. `0012` is the offer ledger —
+the row that makes "accept" a thing that can be recorded. `0029` is the job
+execution: the lockout column, the six `service_role`-only functions that move a
+booking from `on_the_way` to `completed`, and the column re-grant that closes the
+`otp_hash` hole. `0030` corrects two mistakes in `0029` (below). Every function is
+`security definer`, single-statement or near it, in the `0028` style: the state
+machine (`0011`) is the only thing that decides legality, and `booking_status_history`
+records the actor. As in Phase 3, **`write_audit` is not called from these
+functions** — the Route Handler writes the audit row, because the reason and the
+request context live there.
+
+### `booking_assignments` (`0012`)
+
+One row per offer made to one professional. The row *is* the record of the
+compare-and-set: a decline and an expiry are both tombstones (`rejected` /
+`expired`), never rows picked up again.
+
+- `id uuid primary key default gen_random_uuid()`
+- `booking_id uuid not null references bookings(id) on delete cascade`
+- `professional_id uuid not null references professionals(id) on delete cascade`
+- `status assignment_status not null` (`offered`, `accepted`, `rejected`,
+  `expired`, `withdrawn`)
+- `offered_at timestamptz not null default now()`, `expires_at timestamptz not null`,
+  `responded_at timestamptz`, `decline_reason text`
+- `attempt_no int not null default 1`, `round_no int not null default 1`,
+  `distance_km numeric(12,2)` — `attempt_no`/`round_no`/`distance_km` are
+  Phase 5's ranking inputs, defaulted now so the column list never changes.
+
+Two indexes carry the invariants. `uniq_active_assignment_per_booking` is a
+**partial** unique index on `booking_id` **where `status in ('offered','accepted')`**:
+a booking may have at most one live offer or acceptance, and a second live row is
+unwritable — the database, not a route check, is what makes double-accept
+impossible. `uniq_prof_booking_offer` on `(professional_id, booking_id)` stops the
+same professional being offered the same booking twice. `idx_assign_prof` on
+`(professional_id, status, expires_at)` is the inbox read. RLS is forced; a
+professional reads only their own rows via `current_professional_id()` (staff
+`admin`/`super_admin`/`ops` read all); the browser holds `select` only.
+
+### `professional_earnings` (`0021`)
+
+The per-completion read model. One row per completed booking, written by
+`complete_job` (`0029`) — **no route and no browser writes it**.
+
+- `id uuid primary key default gen_random_uuid()`
+- `professional_id uuid not null references professionals(id) on delete cascade`
+- `booking_id uuid not null unique references bookings(id) on delete cascade`
+  — the `unique` is the idempotency key: a re-complete cannot add a second row.
+- `gross_amount`, `commission_pct`, `commission_amount`, `net_amount`,
+  `bonus_amount (default 0)` — all `numeric`, frozen from the booking's
+  `professional_gross` at completion, not re-derived later.
+- `status earning_status not null default 'pending'` (`pending`, `available`,
+  `paid`, `reversed`)
+- `available_at timestamptz not null` — `completed_at + earnings_hold_hours` (24,
+  from `PLATFORM_DEFAULTS`, hardcoded here).
+- `payout_id uuid` — a **bare** `uuid` with **no foreign key**, because the
+  `payouts` table it would point at is Phase 8. This is deliberate and commented,
+  the same pattern as `customers.wallet_id`.
+
+`idx_earnings_ready` (partial, `where status = 'available'`) is the Phase 8 payout
+run's work list. RLS is forced; owner and staff read via
+`current_professional_id()`, and `authenticated` holds `select` only.
+
+### `bookings` additions
+
+`0029` adds `otp_locked_until timestamptz` — the only state of the D3 timed
+lockout. `NULL` means not locked. It is set when `otp_attempts` reaches the cap and
+refuses verification until it passes.
+
+**The `otp_hash` column re-grant.** `authenticated` held blanket `SELECT` on
+`bookings`, so a signed-in customer querying their own booking through PostgREST
+could ask for `otp_hash`. `0029` revokes `select on public.bookings from
+authenticated` and re-grants **every column except `otp_hash`**, via a loop over
+`information_schema.columns` so the list cannot drift from the schema. The
+consequence is deliberate and total: a well-formed PostgREST request for
+`otp_hash` now returns a column-permission error, and every Route Handler reads
+`bookings` through the service role, so nothing the app does is affected. If a
+live Postgres ever refuses column-level grants, the fallback is route-layer
+stripping (already in `lib/professionalServer.ts`) plus a loud note — never a
+silent hole.
+
+### The job-execution functions
+
+All six are `security definer`, `service_role`-only, and named in the grant block
+at the foot of `0029`. The first three live in `0012`.
+
+| Function | Signature | Transition it walks |
+|---|---|---|
+| `accept_offer` | `(uuid booking, uuid professional)` | `assigned → accepted → on_the_way` (+ reserved schedule window) |
+| `decline_offer` | `(uuid, uuid, text reason)` | `offered → rejected` (tombstone) |
+| `sweep_new_bookings` | `()` | makes the one Phase 4 offer |
+| `arrive_job` | `(uuid booking, uuid professional, int expected_version)` | `on_the_way → arrived` |
+| `issue_service_otp` | `(uuid booking, text code, int ttl_seconds)` | stores a digest, no status move |
+| `verify_service_otp` | `(uuid booking, text code, int)` | `arrived → otp_verified → in_progress` |
+| `complete_job` | `(uuid booking, uuid professional, int expected_version)` | `in_progress → completed` |
+| `no_show_job` | `(uuid booking, uuid professional, text reason)` | `accepted … in_progress → no_show` |
+| `kyc_document_decision` | `(uuid doc, verification_status verdict, uuid reviewer)` | rolls up the professional's status |
+
+Notes that matter when reading the SQL:
+
+- **`accept_offer` is the compare-and-set.** It updates the assignment `where id =
+  p_id and status = 'offered'` and affects zero rows for a second tap, an expired
+  offer or a stale id; it then writes the `reserved` `professional_schedule`
+  window, whose GiST exclusion constraint is what vetoes an overlap with another
+  accepted job (`23P01`, surfaced as `PROFESSIONAL_UNAVAILABLE`).
+- **`arrive_job` trusts the route.** The geofence (D7) is decided in the handler;
+  the function stays a single versioned `UPDATE`. Zero rows means the version
+  moved; the `0011` trigger raises `ILLEGAL_TRANSITION` for a wrong state.
+- **`verify_service_otp` does the comparison in SQL** against
+  `bookings.otp_hash`, in constant time, and stamps `otp_verified_at`,
+  `started_at` and `ends_at` from the **server clock** in the same statement. A
+  wrong, expired or locked attempt is indistinguishable in the response; only the
+  log knows which. Its `digest()` call needs `set search_path = public, extensions`
+  — see §9.
+- **`complete_job` is multi-effect and idempotent.** One call moves the status,
+  stamps `ended_at`/`actual_duration_minutes`, closes the schedule window, bumps
+  `professionals.completed_jobs`, and inserts exactly one `professional_earnings`
+  row (guarded by the `booking_id unique`). `0030` adds the `status <> 'completed'`
+  guard so a retry cannot double-count.
+- **`no_show_job` touches no refund and no wallet.** The `where` clause and the
+  absence of any `refunds`/`wallets`/`wallet_transactions` write is the hard rule;
+  the live-DB test asserts the absence.
+- **`kyc_document_decision` rolls up in one place**: any required document
+  `rejected` ⇒ professional `rejected`; all required documents `verified` ⇒
+  `verified` + `kyc_verified_at`; otherwise `submitted`. The admin's free-text note
+  is written by the route, not the function.
+
+### What `0030` fixes
+
+Two things `0029` got wrong, both caught by the live suite rather than by reading:
+
+1. **`verify_service_otp` had the wrong `search_path`.** `0029` created it with
+   `set search_path = public`, but it calls `digest()`, which lives in
+   `extensions`. The migration applied cleanly and the function compiled, then
+   failed at call time with `function digest(text, unknown) does not exist`. `0030`
+   re-declares it with `set search_path = public, extensions`. (This is the failure
+   §9's convention exists to prevent.)
+2. **`complete_job` had no same-status guard.** `0011`'s trigger returns early on a
+   same-status update, so a second `complete_job` slipped past it and double-counted
+   `professionals.completed_jobs` while rewriting `ended_at`. `0030` guards the
+   update with `status <> 'completed'`.
+
+Both fixes are in a new file rather than edits to `0029`, because `0029` is
+already recorded in the applied-migrations ledger and a migration that changed
+under its own ledger would stop meaning what the ledger says it means.
+
+---
+
+## 12. What is not here yet
 
 Everything in this section is deferred on purpose, and each deferral is recorded
 in `ROADMAP.md`, in `.planning/`, or in a comment in the migration that would
@@ -1199,7 +1375,7 @@ otherwise have carried it. Nothing here is an oversight.
 | Deferred | Why | Lands in |
 |---|---|---|
 | `block_address_delete_with_future_bookings()` | It references `bookings`, which does not exist, and a migration naming a table that does not exist fails to apply. Reachable data loss window: none, since nothing references an address yet | Phase 2 |
-| `professional_schedule` as an input to slot availability | §9.1 lists "not already reserved" as an input; the table is created with `bookings` | Phase 5 |
+| `professional_schedule` as an input to the customer's slot picker | §9.1 lists "not already reserved" as an input. Phase 4 writes the table's first rows — `accept_offer` inserts a `reserved` window and `sweep_new_bookings` reads it — so the *offer* path honours reservations; the customer-facing slot list (`lib/availability.ts`) still ignores the table, so it can still show a slot the professional is already booked for | Phase 5 |
 | Service-level aggregate rating on catalogue cards | `ratings` rows are written when a booking is reviewed | Phase 2 |
 | Checkout behind the service-detail CTA | `/customer/checkout` is Phase 2; the CTA routes somewhere real rather than being a dead button | Phase 2 |
 | `platform_settings` rows (`instant_lead_minutes`, `max_booking_minutes`) | Read from `lib/constants.ts` defaults until the table lands | Phase 6 |
@@ -1220,43 +1396,48 @@ The only names quoted are ones the repository itself already uses.
 |---|---|---|
 | 2 | Quote engine, booking create, cancel/reschedule, coupons, invoice stub, `bookings` state machine | **Delivered.** `bookings`, `booking_items`, `booking_status_history`, `booking_number_seq`, the price and quote-token snapshots, and the four write-path functions in §9. `block_address_delete_with_future_bookings()` and `ratings` land here |
 | 3 | Razorpay orders, webhook, verify, refunds, wallet ledger, reconciliation cron | The wallet that `customers.wallet_id` already points at. `0015_refunds_wallet.sql` is named in a comment in `0001` and does not exist |
-| 4 | KYC upload, verification workflow, working hours, offers inbox, accept/decline, arrive, OTP, complete | No new table is strictly required for the verdict: `professional_documents.status`, `rejection_reason`, `reviewed_by` and `reviewed_at` already carry it, and `idx_prof_doc_status` is already the queue's index. What is missing is the signed-URL route and the review screen |
-| 5 | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper | `professional_schedule`, the one availability input §9.1 asks for that Phase 1 cannot honour. `lib/availability.ts` isolates it behind a single input parameter |
+| 4 | KYC upload, verification workflow, working hours, offers inbox, accept/decline, arrive, OTP, complete | **Delivered.** `0012` (offer ledger + `accept_offer`/`decline_offer`/`sweep_new_bookings`), `0021` (`professional_earnings`), `0029` (`otp_locked_until`, the six job functions, the `otp_hash` column re-grant) and `0030` (two fixes) — see §11. The KYC verdict needed no new table: `professional_documents.status`, `rejection_reason`, `reviewed_by`, `reviewed_at` and `idx_prof_doc_status` already carried it |
+| 5 | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper, the full `professional_schedule` producer | `professional_schedule`, the one availability input §9.1 asks for that `lib/availability.ts` still cannot honour. Phase 4 ships only `sweep_new_bookings` (one offer, no ranking) |
 | 6 | Dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, audit, settings | `platform_settings`, whose `instant_lead_minutes` and `max_booking_minutes` are read from `lib/constants.ts` defaults until the table lands |
 | 7 | Channels, presence, chat, notification dispatcher, templates, reminders | Notification and chat state. The `chat-media` bucket has no client policy at all, on the stated grounds that the phase which owns it writes participant-scoped policies first |
 | 8 | Recurring, wallet top-up, referrals, favourites, surge, invoices/PDF, PWA | Recurring schedules and an invoice record. The `invoices` bucket exists and is private with no policy |
 | 9 | Security review, RLS audit, load test, accessibility pass, legal pages, runbook | Nothing new |
 
-Two gaps are visible *today*, in columns that are live but point at nothing:
+One gap is still visible *today*, in a column that is live but points at nothing:
 `customers.wallet_id` is a bare `uuid` whose comment names a migration that was
-never written, and the `customers` / `professionals` counter columns
+never written. The `customers` / `professionals` counter columns
 (`total_bookings`, `completed_bookings`, `cancelled_bookings`, `lifetime_value`,
 `total_offers`, `accepted_offers`, `completed_jobs`, `cancelled_jobs`,
-`no_shows`) all default to zero and are meant to move only as a side effect of a
-real booking. They are readable as though the tables behind them existed; they do
-not, and the service role is the only thing that can write them today.
+`no_shows`) used to be in this list; Phase 2 began moving them and Phase 4 moves
+the professional's (`sweep_new_bookings` bumps `total_offers`, `accept_offer`
+bumps `accepted_offers`, `complete_job` bumps `completed_jobs`, `no_show_job`
+bumps `no_shows`). They are written only by the service role, as a side effect of
+a real state move.
 
 `audit_logs.action` and `entity_type` are free text, and their column comments use
 `'booking.create'`, `'refund.execute'`, `'bookings'` and `'payments'` as examples.
-Those are notation, not an allow-list, and every one of them names a table that
-does not exist yet.
+Those are notation, not an allow-list.
 
 ### Other things the migrations reference but do not contain
 
-- `0015_refunds_wallet.sql`, `0019_support.sql`, `0019` / `0020_chat_notifications.sql`,
-  `0012`, `0021` — future migrations named in comments in `0000` and `0001`.
-- `0009`–`0023` and `0028` do not exist. `ROADMAP.md` says why: the numbering is
-  not contiguous because these were developed alongside the reference SmartPOS
-  project, and nothing is missing between `0007` and `0024`.
-- `professional_schedule`, `ratings`, `platform_settings`, `bookings` — see above.
+- `0019_support.sql` and `0020_chat_notifications.sql` are named in comments in
+  `0000` and `0001` and are still unwritten. `0015_refunds_wallet.sql` landed in
+  Phase 3; `0012_assignment_integrity.sql` and `0021_earnings.sql` landed in
+  Phase 4.
+- `0018`, `0019`, `0020`, `0022` and `0023` do not exist. `ROADMAP.md` says why:
+  the numbering is not contiguous because these were developed alongside the
+  reference SmartPOS project, and nothing is missing between `0008` and `0024`
+  that the plan put there.
+- `platform_settings` — see above. `professional_schedule`, `ratings` and
+  `bookings` now exist.
 
 ---
 
-## 12. What is verified, and what is not
+## 13. What is verified, and what is not
 
-`npm run test:db` runs 24 tests against a real database and skips loudly without
-one. It is not a substitute for reading the migrations, but it does prove some
-things nothing else can.
+`npm run test:db` runs 96 tests across seven files against a real database and
+skips loudly without one. It is not a substitute for reading the migrations, but
+it does prove some things nothing else can.
 
 ### Proven by `npm run test:db`
 
@@ -1278,6 +1459,18 @@ things nothing else can.
 - `audit_logs` refuses both `UPDATE` and `DELETE` with `AUDIT_LOG_IMMUTABLE`.
 - `idempotency_keys` claims once, returns `in_flight` while running, `conflict` on
   a changed body, and `replay` after completion.
+- The offer ledger (`0012`): `uniq_active_assignment_per_booking` makes a second
+  live offer unwritable; **fifty concurrent `accept_offer` calls on one booking
+  produce exactly one winner** and the rest affect zero rows; `decline_offer` leaves
+  a `rejected` tombstone.
+- The job functions (`0029`/`0030`): `verify_service_otp` accepts the right digest,
+  refuses a wrong one, refuses an expired one, and locks after the attempt cap;
+  `complete_job` is idempotent (a second call adds no second `professional_earnings`
+  row and does not double-count `completed_jobs`); `no_show_job` writes **no**
+  `refunds`, `wallets` or `wallet_transactions` row.
+- `bookings.otp_hash` is **invisible to the `authenticated` role** after the `0029`
+  column re-grant: a query naming it raises a permission error, while every other
+  column is still readable.
 - A new auth user created through `admin.createUser` comes out with a usable
   profile: `phone` is `NULL` rather than fabricated, the name and status are right,
   a `customer` gets a `customers` row, a `professional` does not, a signup cannot
@@ -1368,6 +1561,8 @@ Four, all of them documentation rather than schema:
    script.
 
 Separately, the test counts in `README.md` and `docs/SETUP.md` were behind the code.
-The suite is now **273 tests**: 243 that need nothing beyond the code, and 30 that run
-against a real database. The database count went from 24 to 30 when the `addresses`
-isolation tests above were added.
+Those were the Phase 1 numbers. With Phases 2–4 the suite is now **798 tests
+across 46 files: 702 mocked, and 96 across seven `test/db.*` files against a real
+database**. `README.md` and this file carry the current figures; `docs/SETUP.md`
+and `docs/ARCHITECTURE.md` still quote the older ones and were out of scope for the
+Phase 4 documentation pass.

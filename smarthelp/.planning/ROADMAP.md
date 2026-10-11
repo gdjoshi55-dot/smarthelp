@@ -17,7 +17,7 @@ to completion. Professionals take jobs. Staff run the marketplace.
 | 1 | Catalogue & availability | Public landing, catalogue, service detail, `GET /api/availability`, addresses, geolocation | Customer can find a bookable service at their address and see real slots | done |
 | 2 | Booking & pricing | Quote engine, booking create, cancel/reschedule, coupons, invoice stub, `bookings` state machine | Bookings can be created and cancelled end-to-end with correct money maths | done |
 | 3 | Payments | Razorpay orders, webhook, verify, refunds, wallet ledger, reconciliation cron | Real money in, real money out; the webhook is the sole authority; RLS on payments | **complete** (03-SUMMARY.md records the gates) |
-| 4 | Professional app | KYC upload, verification workflow, working hours, offers inbox, accept/decline, arrive, OTP, complete | A verified professional can take and complete a job | planned |
+| 4 | Professional app | KYC upload, verification workflow, working hours, offers inbox, accept/decline, arrive, OTP, complete | A verified professional can take and complete a job | **complete** (04-SUMMARY.md records the gates) |
 | 5 | Matching engine | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper | No double assignment under concurrency; exhausted search auto-refunds | planned |
 | 6 | Admin console | Dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, audit, settings | Ops can run the marketplace without a database console | planned |
 | 7 | Realtime & notifications | Channels, presence, chat, notification dispatcher, templates, reminders | Status updates land in under a second; every catalogue notification fires | planned |

@@ -133,7 +133,7 @@ belong to phases that have not been built.
 | `ADDRESS_IN_USE` | 409 | A referenced address was deleted. Deferred to Phase 2, when `bookings.address_id` exists. |
 | `ACCOUNT_EXISTS` | 409 | The email is already registered. Sign-up only. |
 | `PAYMENT_FAILED` | 402 | The gateway declined. Phase 3. |
-| `PAYMENT_NOT_VERIFIED` | 402 | An order exists but the webhook has not verified it. Phase 3. |
+| `PAYMENT_NOT_VERIFIED` | 402 | A checkout's `order_id|payment_id` signature did not verify. Phase 3. |
 | `SERVICE_UNAVAILABLE` | 422 | The locality is covered but this service does not run there. |
 | `NO_SLOT_AVAILABLE` | 422 | Nothing bookable on the requested day. Not raised today: `/api/availability` answers 200 with `slots: []` instead. |
 | `PROFESSIONAL_UNAVAILABLE` | 422 | A named professional cannot take the job. Phase 5. |
@@ -1218,11 +1218,15 @@ the current value makes the check agree with itself and proves nothing.
 
 ## 4.5 Payments
 
-Phase 3 (§25). Four routes plus a webhook and a cron, and one rule that all six
-obey: **no client-reachable path writes `payments.status = 'success'`.** The
-webhook and the reconciliation cron are the only writers, both go through
-`confirm_booking_payment()` (0014), and everything a browser can reach is a read
-or an attempt.
+Phase 3 (§25). Four routes plus a webhook and a cron. **Every path that writes
+`payments.status = 'success'` goes through `confirm_booking_payment()` (0014)**
+— the webhook, the reconciliation cron, and now `POST /api/payments/verify`.
+The webhook and the cron prove gateway truth with the webhook header signature;
+verify proves it with the Checkout `handler`'s `order_id|payment_id` signature,
+which is HMAC-SHA256 under the same server-only key secret. No route trusts a
+status a client can choose — the signature is the gate — and the function's
+`status in ('created','pending')` guard means any two of them racing still make
+one write.
 
 `docs/DATABASE.md` has the table, its RLS and the two functions this section's
 routes call.
@@ -1252,13 +1256,12 @@ a refund-able row must not exist for a request that was going to be refused:
 4. **`quote_token IS NOT NULL` — presence, not freshness.** A null token answers
    `409 INVALID_STATE` telling the customer to re-quote. Freshness is
    deliberately *not* checked: the token's 15-minute `exp` would either reject a
-   `payment.captured` arriving late (breaking "the webhook is the sole
-   authority") or force a re-quote that charges a total the customer did not
-   agree to. What is asserted is Phase 2's attestation — *this booking was
-   priced by our engine from a signed quote*. The webhook nulls the token inside
-   `confirm_booking_payment`, which makes it single-use across the payment
-   lifecycle; this route never clears it, because a retry after an abandoned
-   checkout has to find it still there.
+   `payment.captured` arriving late or force a re-quote that charges a total the
+   customer did not agree to. What is asserted is Phase 2's attestation — *this
+   booking was priced by our engine from a signed quote*. The payment nulls the
+   token inside `confirm_booking_payment`, which makes it single-use across the
+   payment lifecycle; this route never clears it, because a retry after an
+   abandoned checkout has to find it still there.
 5. **`expectedTotal`, if present, must equal `bookings.total_amount` in paise** —
    `409 PRICE_CHANGED` with `{ previousTotal, currentTotal }`. The booking's own
    figure wins; a client's figure is never stored and never charged.
@@ -1285,24 +1288,31 @@ be stored (the row stays `created` for the cron to reconcile).
 Authenticated as a customer. Body: `{ razorpay_order_id, razorpay_payment_id,
 razorpay_signature }`.
 
-**200** — `{ "verified": true, "status": "created", "paymentId": "…" }`.
+**200** — `{ "verified": true, "status": "success", "paymentId": "…" }`.
 
-**Reads only, writes nothing.** It does not store `gateway_payment_id`, does not
-nudge `pending` to `success`, does not call `confirm_booking_payment` — a test in
-`test/routes.payments.test.ts` asserts `payments.status` and `bookings.status`
-are byte-identical before and after a valid call. `status` is whatever the
-**webhook** put there, which is exactly why the checkout screen can render it:
-the `handler` fires within a second of the customer paying and the webhook may
-take a few more, so this route answers "verified, and the row still says
-`created`" rather than guessing.
+**This is the confirmation path a browser can reach, and it is safe because the
+signature is the gate.** The `handler` payload carries a signature over
+`order_id + '|' + payment_id` made with the **key** secret — a server-only value
+— so a signature that verifies proves Razorpay issued the pair for this
+checkout; a successful Checkout only reaches the `handler` after authorisation.
+The route verifies that signature, looks the row up, and runs it through
+`getPaymentForCaller` (the signature is not ownership). If the row is still
+`created`/`pending` and has a booking, it calls `confirm_booking_payment()` —
+the **same single writer** the webhook and the cron use — which moves the
+payment to `success` and the booking to `paid` in one transaction, and writes a
+`payment.callback.confirmed` audit row with the customer as the actor. A `null`
+return is the function's replay guard: a concurrent webhook won, so the row is
+re-read for its real status. A row already `success` is left alone and reported.
 
 The signature here is HMAC-SHA256 over `order_id + '|' + payment_id` with the
 **key** secret — a different message and a different key from the webhook's
 header signature. Both live in `lib/razorpaySignature.ts`.
 
-Verified is not authorised: a correct signature proves Razorpay issued the pair,
-not that the caller owns it, so the row still goes through
-`getPaymentForCaller`.
+This closes the loop the pre-write version could not: on a deployment Razorpay's
+webhook cannot reach (a laptop, a preview) and with `CRON_SECRET` unset, no
+writer ever ran and the screen sat at "Confirming payment…" forever. Now the
+browser's subsequent `GET /api/payments/[id]` poll reads `success` and the
+screen reaches `paid`.
 
 **Failures** — `VALIDATION_ERROR` 400; `UNAUTHENTICATED` 401; `FORBIDDEN` 403;
 `NOT_FOUND` 404; `PAYMENT_NOT_VERIFIED` **402** on a signature mismatch;
@@ -1330,7 +1340,9 @@ every other money figure this API returns.
 
 ### `POST /api/webhooks/razorpay` — unauthenticated, signature-authenticated
 
-The sole authority on whether money arrived (§12.1, §30.1). Razorpay sends no
+The primary authority on whether money arrived (§12.1, §30.1). It is the path
+Razorpay calls; when it cannot reach this deployment, `POST /api/payments/verify`
+confirms the same checkout through the same writer. Razorpay sends no
 bearer token, so the credential is the HMAC over the bytes it sent, and the
 order of operations is the whole defence:
 
@@ -1462,6 +1474,295 @@ when nothing was captured.
 
 ---
 
+## 4.7 The professional app
+
+Phase 4. Every route below authenticates through `requireProfessional` or its
+verified twin `requireVerifiedProfessional` — the caller's `professionals` row is
+resolved from `profile_id`. A signed-in account with no `professionals` row gets
+403 `FORBIDDEN` `'This action belongs to a professional account. This account does
+not have one.'`; an **unverified** professional calling any job route gets 403
+`FORBIDDEN` `'Your identity is not verified yet. Upload your documents to start
+taking jobs.'` with `details.verificationStatus`. The unverified gate applies to
+the inbox and every job verb; the availability, KYC and location routes use the
+plain professional gate.
+
+Two rules hold across the whole section. **Ownership is re-checked in the route**,
+because the service role bypasses RLS — a cross-professional id is a 404 with zero
+writes, never a 403 that confirms the row exists. And **one function shapes every
+booking payload**: `stripProBooking` removes `otp_hash`, the OTP counters and
+`otp_verified_at` at every stage, and hides the exact address, notes and customer
+name until the job is accepted (§14.3). So `JSON.stringify(body)` for any of these
+routes contains neither `otp_hash` nor a plaintext code (P4-10).
+
+### `GET` / `PUT /api/professionals/me/working-hours`
+
+| | |
+|---|---|
+| Auth | Required — professional |
+| Action | `professionals.working_hours.list` / `professionals.working_hours.replace` |
+
+`PUT` **replaces the whole week** in one call. **Body** — `{ hours: [ { weekday,
+startTime, endTime } ] }`, `weekday` `0`–`6` (0 = Sunday), times `HH:MM` (optionally
+`:SS`) within `00:00–24:00`. **200** — `{ "hours": [ { id, weekday, startTime,
+endTime, isActive } ] }`, read back from the database rather than echoed.
+
+The two rules a column check cannot express are enforced here as field errors
+(`VALIDATION_ERROR` 400): a window may not fall outside `00:00–24:00`, and two
+windows on the same weekday may not overlap. A raw `23P01` never reaches the
+client — a database integrity error becomes `PROFESSIONAL_UNAVAILABLE` 422
+`'Those hours clash with something already on your calendar…'`. Plus the
+professional `FORBIDDEN` 403 and 401.
+
+### Time off
+
+All three filter by the caller's `professionals.id`, so professional A can never
+read, delete or edit professional B's time off.
+
+| Method | Path | Action |
+|---|---|---|
+| `GET` | `/api/professionals/me/time-off` | `professionals.time_off.list` |
+| `POST` | `/api/professionals/me/time-off` | `professionals.time_off.create` |
+| `DELETE` | `/api/professionals/me/time-off?entryId=` | `professionals.time_off.delete` |
+
+`POST` body — `{ startsAt, endsAt, reason? }` (`reason` ≤200 chars). Times are
+normalised to UTC so two callers cannot disagree. **201** — `{ "timeOff": { id,
+startsAt, endsAt, reason } }`. An overlapping block is refused **before** the
+insert with 409 `INVALID_STATE` `'You already have time off that overlaps those
+dates.'`; a database integrity error becomes `PROFESSIONAL_UNAVAILABLE` 422.
+`DELETE` answers 404 `NOT_FOUND` `'That time off was not found on your account.'`
+for both a missing id and one that is not yours, and **200** `{ "removed": true }`
+otherwise.
+
+### `GET` / `POST /api/professionals/me/availability`
+
+| | |
+|---|---|
+| Auth | Required — professional |
+| Action | `professionals.availability.get` / `professionals.availability.set` |
+
+**GET 200** — `{ "availabilityStatus": "online" \| "offline" \| "busy" \| "break",
+"isAvailableToday": boolean }`. **POST body** — `{ online: boolean }`; the browser
+may say only "online" or "offline", never name a status, so `busy` and `break`
+(which the matching engine sets) cannot be forged. **200** echoes the stored
+values. Missing `online` ⇒ `VALIDATION_ERROR` 400; a vanished row ⇒ 404. This is
+the phase's one optimistic control — the Switch moves first and the response is
+what decides whether it stays moved.
+
+### `POST /api/professionals/me/location`
+
+| | |
+|---|---|
+| Auth | Required — professional |
+| Action | `professionals.me.location` |
+
+**Body** — `{ lat, lng }`. The writer half of the track read. The throttle is
+stateless: a ping within `proLocationThrottleSeconds` (30) of the stored
+`location_updated_at` is dropped and answers **200** `{ "updated": false }` with
+no write; otherwise the coordinates are stored with a **server** timestamp and the
+answer is `{ "updated": true }`. A skew on the device's clock therefore cannot
+make its pin look fresher or staler than it is.
+
+### `POST /api/kyc-documents/upload-url`
+
+| | |
+|---|---|
+| Auth | Required — professional |
+| Action | `kyc.upload_url` |
+
+**Body** — `{ docType, filename, contentType, size }`. `docType` is one of
+`identity`, `address`, `selfie`; `contentType` is on the bucket's MIME allow-list;
+`size` is ≤ 5 MB. **200** — `{ path, token, signedUrl }`, where `path` is built
+**server-side** as `${professionalId}/${docType}/${filename}` and never taken from
+the body — a client that could name the folder could write into another
+professional's slot. `filename` is sanitised (separators and `..` replaced) but
+keeps its extension. Size and MIME are checked against the **declared** values, a
+courtesy refusal that yields a readable message (`VALIDATION_ERROR` 400 `'Use a
+photo or PDF under 5 MB.'`); a signed URL cannot enforce bytes, and the bucket's
+`file_size_limit`/`allowed_mime_types` are the real backstop. A storage failure is
+`INTERNAL_ERROR` 500.
+
+### `GET` / `POST /api/professionals/me/kyc`
+
+| | |
+|---|---|
+| Auth | Required — professional |
+| Action | `professionals.kyc.get` / `professionals.kyc.submit` |
+
+**GET 200** — `{ verificationStatus, kycVerifiedAt, documents: [ { id, docType,
+filePath, status, rejectionReason, reviewedAt, createdAt } ] }`. The payload has
+**no internal reviewer-note field** — there is none to select.
+
+**POST body** — `{ docType, filePath }`, where `filePath` is the object the
+signed-URL route minted. The path must start with the caller's own
+`${professionalId}/` or `VALIDATION_ERROR` 400. The write is an upsert on
+`(professional_id, doc_type)`, so a re-upload after a rejection replaces the row;
+a document already verified or in review is locked by the `0005` trigger and
+surfaces as 409 `INVALID_STATE` `'That document is already under review…'`.
+**201** — `{ "document": { … } }`.
+
+### `POST /api/admin/professionals/[id]/kyc/[docId]/decision`
+
+| | |
+|---|---|
+| Auth | Required — `admin`, `super_admin`, `ops` |
+| Action | `admin.kyc.decision` |
+
+Ships **without a UI** (D2); Phase 6 builds the review queue on it. **Body** —
+`{ verdict: 'verified' \| 'rejected', note? }`. A verdict that is not one of the
+two is 422 `VALIDATION_ERROR` (not 400): the body is well-formed JSON with a
+present-but-wrong value. A document that does not belong to the professional in
+the path is 404 `NOT_FOUND`. The write and the roll-up are one RPC — any required
+document `rejected` ⇒ the professional is `rejected`; all required documents
+`verified` ⇒ `verified` + `kyc_verified_at`. **200** — `{ verificationStatus }`.
+An audit row names the admin. A customer token gets 403 with zero writes.
+
+### `GET /api/professionals/offers`
+
+| | |
+|---|---|
+| Auth | Required — **verified** professional |
+| Action | `professionals.offers.list` |
+
+Runs `sweep_new_bookings()` first (the minimal Phase 4 matcher, D1), lazily expires
+the caller's stale offers, then reads the live ones. **200** — `{ "offers": [ {
+id, bookingId, serviceName, scheduledStartAt, scheduledEndAt, area, quotedPrice,
+expiresAt } ], "serverNow": "…" }`. `id` is a `booking_assignments.id`, not a
+booking id. The payload carries **no phone, full address or customer name** — the
+§14.3 privacy gate. A past-TTL offer is refused at read and is never in the list.
+
+### `POST /api/professionals/offers/[id]/accept`
+
+| | |
+|---|---|
+| Auth | Required — **verified** professional |
+| Action | `professionals.offers.accept` |
+
+**Body** — none. Ownership is re-checked (a cross-pro id is 404 with zero writes).
+The RPC is a compare-and-set: a second tap, an expired offer or a stale id makes it
+affect zero rows ⇒ 409 `ASSIGNMENT_TAKEN`; an overlap with another job raises
+`PROFESSIONAL_UNAVAILABLE` ⇒ 409. **200** — `{ "job": ProBooking }` with the
+address now unlocked. An audit row records the acceptance.
+
+### `POST /api/professionals/offers/[id]/decline`
+
+| | |
+|---|---|
+| Auth | Required — **verified** professional |
+| Action | `professionals.offers.decline` |
+
+**Body** — `{ reason? }` (≤200 chars). **200** — `{ "declined": true }`. An offer
+no longer live is 409 `INVALID_STATE`; a cross-pro id is 404 with zero writes. The
+booking deliberately stays `assigned` — `0011` permits no reassign hop, so
+re-offering is Phase 5's.
+
+### `GET /api/professionals/me/jobs`
+
+| | |
+|---|---|
+| Auth | Required — professional |
+| Action | `professionals.jobs.list` |
+
+The professional's live jobs — `accepted`, `on_the_way`, `arrived`, `otp_verified`
+and `in_progress` — owner-filtered, oldest window first. **200** — `{ "jobs":
+ProBooking[], "serverNow": "…" }`. Uses the plain professional gate (not the
+verified one): an unverified professional simply has no live jobs. The payload is
+`stripProBooking(…, 'accepted')`, so the address is present and `otp_hash` is not.
+
+### Job execution: arrive, OTP, complete, no-show
+
+All four are `requireVerifiedProfessional`, owner-checked, and reuse an `:id` that
+is a **booking** id.
+
+| Method | Path | Action |
+|---|---|---|
+| `POST` | `/api/professionals/jobs/[id]/arrive` | `professionals.jobs.arrive` |
+| `POST` | `/api/professionals/jobs/[id]/otp` | `professionals.jobs.otp` |
+| `POST` | `/api/professionals/jobs/[id]/complete` | `professionals.jobs.complete` |
+| `POST` | `/api/professionals/jobs/[id]/no-show` | `professionals.jobs.no_show` |
+
+**`arrive`** — body `{ lat, lng, overrideReason? }`. The distance is computed on
+the **server** against the booking's frozen `address_snapshot`; outside
+`defaultArrivalRadiusM` (100 m) — or when the address has no coordinates — it is
+refused with 422 `VALIDATION_ERROR` and `details` carrying `distanceM`/`radiusM`
+unless an `overrideReason` is present. An override writes an audit row **before**
+the RPC. A wrong state is 409 `ILLEGAL_TRANSITION`; a concurrent change is 409
+`STALE_VERSION`. **200** — `{ "job": ProBooking }`.
+
+**`otp`** — body `{ code }` (the 4-digit service code). Calls
+`verify_service_otp`, which compares the SHA-256 digest in constant time and, on
+success, stamps `otp_verified_at`/`started_at`/`ends_at` from the server clock.
+**Every failure — wrong, expired or locked — returns the same generic 403**
+`OTP_INVALID` with a byte-identical body; distinguishing them would turn the
+endpoint into an oracle. Which of the three it was reaches the log only. A code of
+the wrong shape is `VALIDATION_ERROR` 400. **200** — `{ "job": ProBooking }` with
+the server's `startedAt`/`endsAt` for the timer to anchor on.
+
+**`complete`** — no body. Body-less by contract: the route reads the booking's
+current `version` itself and hands it to `complete_job`. Moves `in_progress →
+completed`, stamps `ended_at`/`actual_duration_minutes` from the server clock,
+closes the schedule window, bumps `completed_jobs` and inserts exactly one pending
+`professional_earnings` row (idempotent on retry). A job that is not running is
+409 `ILLEGAL_TRANSITION`; a row that moved is 409 `STALE_VERSION`. **200** —
+`{ "job": ProBooking }`.
+
+**`no-show`** — body `{ reason }` **required** (`VALIDATION_ERROR` 400 without).
+Writes the reason into the transition note and an audit row. **Touches no refund
+and no wallet** — a professional never cancels their own job into money moving
+back (hard rule 2; the live-DB test proves the absence of `refunds`/`wallets`/
+`wallet_transactions` rows). An illegal origin is 409 `ILLEGAL_TRANSITION`.
+**200** — `{ "job": ProBooking }`.
+
+### `GET /api/bookings/[id]/track`
+
+| | |
+|---|---|
+| Auth | Required — the customer or the owning professional |
+| Action | `bookings.track` |
+
+The live view both sides poll (15 s). `auth` is resolved first, then ownership is
+one function (`getBookingForTrack`): a customer and the owning professional read
+it, and **anyone else gets the same 404 as a booking that does not exist** — the
+payload carries the professional's coordinates, so confirming a stranger's job id
+is real is a reference check nobody needs.
+
+**200** —
+
+```
+{ booking: ProBooking, status, presentation, timeline: [ { status, at } ],
+  startedAt, endsAt, serverNow, remainingSeconds, extensionAvailable: false,
+  extendedMinutes: 0, proLocation: { lat, lng } | null,
+  otpExpiresAt?, otpGenerationsRemaining? }
+```
+
+`remainingSeconds` is `endsAt − serverNow`, computed in the handler — the device
+clock is never consulted. `extensionAvailable` is hard-coded `false` and
+`extendedMinutes` `0` (D5: extensions are deferred, but the shape is final).
+`proLocation` is the professional's `current_lat`/`current_lng` when a
+`location_updated_at` within `proLocationFreshMinutes` (15) exists, else `null`;
+**no ETA is ever derived**. `otpExpiresAt` and `otpGenerationsRemaining` appear
+only for a **customer** caller **and only while the booking is `arrived`** — the
+code itself is never here. `booking` is shaped by `stripProBooking`, so `otp_hash`
+and the OTP counters can never appear.
+
+### `POST /api/bookings/[id]/otp/regenerate`
+
+| | |
+|---|---|
+| Auth | Required — **customer** (a professional token is refused) |
+| Action | `bookings.otp.regenerate` |
+
+Legal only at `arrived` (else 409 `INVALID_STATE` `'A start code can only be
+issued once the professional has arrived.'`) and only while
+`otp_generations < otpMaxGenerations` (3) — generation 1 is the first mint, and the
+fourth call is 409 `INVALID_STATE` `'New code limit reached — ask support.'`.
+
+**200** — `{ code, expiresAt }`. This response is **the single plaintext moment of
+the code's life**: the client caches it in `sessionStorage`, and only its SHA-256
+digest reaches `bookings.otp_hash`, so it can never be read back. Nothing here is
+logged.
+
+---
+
 ## 5. Idempotency
 
 **Used by `POST /api/bookings` and `POST /api/payments/create-order`.**
@@ -1568,8 +1869,8 @@ longer than the route table.
 |---|---|---|
 | 2 — Booking & pricing | **Delivered**: quote, create, list, detail, cancel, reschedule, invoice stub, coupons and the `bookings` state machine. Still open: there is no `bookingView` consolidated read model | `INVALID_STATE`, `ILLEGAL_TRANSITION`, `STALE_VERSION`, `ADDRESS_IN_USE` — `PRICE_CHANGED` is now in use |
 | 3 — Payments | **Delivered**: order create, webhook, verify, `GET /api/payments/[id]`, the reconcile cron (§4.5). Still open: refunds, the wallet ledger and the approval console on top of them | `PAYMENT_FAILED`, `PAYMENT_NOT_VERIFIED` |
-| 4 — Professional app | KYC upload, verification workflow, working-hours editing, offers inbox, accept/decline, arrive, service OTP, complete | `PROFESSIONAL_UNAVAILABLE` |
-| 5 — Matching engine | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper, `professional_schedule` reservations | `ASSIGNMENT_TAKEN`, `PROFESSIONAL_UNAVAILABLE` |
+| 4 — Professional app | **Delivered**: KYC signed-upload trio, the verification workflow and staff verdict endpoint, working hours and time off, availability, the offer ledger (accept/decline), the job verbs (arrive, on-site OTP, complete, no-show) and the customer track/OTP read (§4.7). Still open: the earnings **page** and payouts (Phase 8), extensions, ETA and any professional-facing refund path | `PROFESSIONAL_UNAVAILABLE`, `ASSIGNMENT_TAKEN` are now in use |
+| 5 — Matching engine | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper, the full `professional_schedule` producer (Phase 4 ships only `sweep_new_bookings`) | `ASSIGNMENT_TAKEN`, `PROFESSIONAL_UNAVAILABLE` |
 | 6 — Admin console | Everything under `/admin`: dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, analytics, notifications, settings, audit | — |
 | 7 — Realtime | Channels, presence, chat, notification dispatcher, templates, reminders | — |
 | 8 — Growth | Recurring, wallet top-up, referrals, favourites, surge, PDF invoices, PWA | — |
@@ -1581,8 +1882,9 @@ Concretely, the gaps a reader is most likely to trip over:
   `/customer/checkout` was a deliberate Phase 1 deferral: the service-detail CTA
   pointed at a real destination rather than a dead button. The endpoints now exist
   (§4.4).
-- **No professional-facing API exists at all.** `/api/auth/professional/apply` is
-  the only route that writes a professional, and it is Phase 0 work.
+- **No professional-facing API exists at all.** — **Superseded by Phase 4.**
+  `/api/auth/professional/apply` is still the Phase 0 write, but the whole
+  professional surface now exists (§4.7).
 - **No admin API exists.** There is no role-management endpoint, which is what
   currently keeps the known gap in `README.md` — the `guard_profile_privileges()`
   trigger lets an *admin* set `super_admin`, because it distinguishes admin from

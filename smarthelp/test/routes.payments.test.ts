@@ -65,6 +65,12 @@ interface Prime {
   /** Returned instead of a row when the `payments` insert runs. */
   insertError?: { message: string; code: string };
   claim?: Record<string, unknown>;
+  /**
+   * Makes `confirm_booking_payment` answer `null` — the SQL function's replay
+   * guard — so a test can pin what the verify route does when a concurrent
+   * writer (the webhook) won the race.
+   */
+  confirmReturnsNull?: boolean;
 }
 
 let stored: { paymentId: string; orderId: string; keyId: string; amount: number; currency: string };
@@ -92,6 +98,16 @@ function prime(over: Prime = {}) {
   };
 
   rpcs = {
+    // The single writer the verify route now calls. It answers with the row in
+    // its new state, or `null` when the SQL function's replay guard matched
+    // nothing — which is what a concurrent webhook winning the race looks like.
+    confirm_booking_payment: (call) => {
+      if (over.confirmReturnsNull) return { data: null, error: null };
+      const target = (over.payments ?? []).find(
+        (p) => p && (p as Record<string, unknown>).id === call.args?.p_payment_id
+      );
+      return { data: target ? { ...target, status: 'success' } : null, error: null };
+    },
     claim_idempotency_key: () => ({
       data:
         over.claim ??
@@ -389,24 +405,28 @@ describe('POST /api/payments/create-order', () => {
 });
 
 /**
- * `POST /api/payments/verify` and `GET /api/payments/[id]` â€” the two *reads*
- * of money (Â§25.8, Â§25.4).
+ * `POST /api/payments/verify` and `GET /api/payments/[id]` (§25.8, §25.4).
  *
- * verify exists so a browser can close the loop on the Checkout callback
- * without a client-reachable write path: it is a signature check and a lookup,
- * and the status it reports is a fact the webhook owns. The tests therefore
- * pin two invariants together:
+ * verify exists so a browser can close the loop on the Checkout callback. It
+ * is a signature check, a lookup, and — when the row is still awaiting money —
+ * a call to `confirm_booking_payment()`, the single writer the webhook and the
+ * cron also use. The tests pin four things together:
  *
- *   1. **A valid call writes nothing.** Paid rows stay `success`, unpaid rows
- *      stay `created`, bookings do not move, the gateway is not called.
- *   2. **A correct signature is not proof of ownership.** The row goes through
+ *   1. **A valid call on an already-paid row writes nothing.** `success` stays
+ *      `success`, no RPC, no gateway call.
+ *   2. **A valid call on a `created` row confirms it** through the single
+ *      writer, once, with the gateway's own ids, and audits the actor.
+ *   3. **A concurrent writer winning the race is respected.** A `null` from the
+ *      function's replay guard means the row was moved off `created`, so the
+ *      route re-reads rather than claiming `success` it did not write.
+ *   4. **A correct signature is not proof of ownership.** The row goes through
  *      `getPaymentForCaller` like every other read, so verifying someone
  *      else's order id is still 403.
  *
- * GET is the poll target behind "Confirming paymentâ€¦", so the important test
+ * GET is the poll target behind "Confirming payment…", so the important test
  * is the projection: every field the browser uses comes back in rupees, and
- * `gateway_signature` and `idempotency_key` â€” dispute evidence and server
- * state â€” do not come back at all.
+ * `gateway_signature` and `idempotency_key` — dispute evidence and server
+ * state — do not come back at all.
  */
 import { createHmac } from 'node:crypto';
 import { POST as verifyPayment } from '@/app/api/payments/verify/route';
@@ -456,7 +476,7 @@ function verifyReq(body: Record<string, unknown>): Request {
 }
 
 describe('POST /api/payments/verify', () => {
-  it('confirms a genuine signature and reports the status the webhook set', async () => {
+  it('leaves an already-paid row alone and reports the status it holds', async () => {
     prime({ payments: [payment()] });
 
     const res = await verifyPayment(
@@ -471,14 +491,15 @@ describe('POST /api/payments/verify', () => {
     const body = await res.json();
     expect(body.data).toEqual({ verified: true, status: 'success', paymentId: PAYMENT_ID });
 
-    // The webhook, not this route, owns `success`: the pair sent here is the
-    // same pair the browser sent, and the row already moved. Zero writes.
+    // Already `success`, so the write is skipped: the pair sent here is the same
+    // pair the browser sent, and the row already moved. No RPC, no gateway call.
+    expect(fake.rpcCalls.filter((c) => c.fn === 'confirm_booking_payment')).toHaveLength(0);
     expect(fake.writesTo('payments')).toHaveLength(0);
     expect(fake.writesTo('bookings')).toHaveLength(0);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('reports a pending row as pending, still without writing', async () => {
+  it('confirms a created row through the single writer and reports success', async () => {
     prime({ payments: [payment({ status: 'created', captured_at: null })] });
 
     const res = await verifyPayment(
@@ -490,10 +511,56 @@ describe('POST /api/payments/verify', () => {
     );
 
     expect(res.status).toBe(200);
-    // The browser maps this to "Confirming paymentâ€¦" â€” the webhook has a few
-    // more seconds, and this route must not close the gap itself.
+    // This is the whole point of the bug fix: the browser maps `success` to
+    // "paid", so the checkout screen no longer sits on "Confirming payment…"
+    // waiting for a webhook that may never arrive.
+    expect((await res.json()).data.status).toBe('success');
+
+    const confirmations = fake.rpcCalls.filter((c) => c.fn === 'confirm_booking_payment');
+    expect(confirmations).toHaveLength(1);
+    const args = confirmations[0].args;
+    expect(args.p_payment_id).toBe(PAYMENT_ID);
+    expect(args.p_gateway_order_id).toBe(ORDER_ID);
+    expect(args.p_booking_id).toBe(BOOKING_ID);
+    expect(args.p_gateway_payment_id).toBe('pay_123');
+    expect(args.p_gateway_signature).toBe(checkoutSignature());
+    expect(String(args.p_note)).toMatch(/checkout callback/i);
+
+    // The confirmation is a state change, so it leaves an audit row naming the
+    // customer whose callback it was — and never the signature.
+    const audits = fake.rpcCalls.filter((c) => c.fn === 'write_audit');
+    expect(audits).toHaveLength(1);
+    expect(audits[0].args.p_action).toBe('payment.callback.confirmed');
+    expect(audits[0].args.p_actor_profile_id).toBe(USER_ID);
+    expect(JSON.stringify(audits[0].args.p_metadata ?? {}).toLowerCase()).not.toContain(
+      'signature'
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('re-reads the row when a concurrent writer wins the confirm race', async () => {
+    // `confirm_booking_payment` returns `null` — its replay guard — so the row
+    // was moved off `created` by something else (the webhook). The route must
+    // not claim a `success` it did not write.
+    prime({
+      payments: [payment({ status: 'created', captured_at: null })],
+      confirmReturnsNull: true,
+    });
+
+    const res = await verifyPayment(
+      verifyReq({
+        razorpay_order_id: ORDER_ID,
+        razorpay_payment_id: 'pay_123',
+        razorpay_signature: checkoutSignature(),
+      })
+    );
+
+    expect(res.status).toBe(200);
+    // The re-read returns the fixture, which is still `created` here; the point
+    // is that the route reports what the row says rather than inventing success.
     expect((await res.json()).data.status).toBe('created');
-    expect(fake.writesTo('payments')).toHaveLength(0);
+    // It tried the writer exactly once.
+    expect(fake.rpcCalls.filter((c) => c.fn === 'confirm_booking_payment')).toHaveLength(1);
   });
 
   it('rejects a signature that does not verify, writing nothing', async () => {

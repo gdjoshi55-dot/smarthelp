@@ -102,7 +102,19 @@ begin
     v_actor := auth.uid();
   end if;
   if v_role is null then
-    v_role := nullif(auth.jwt() ->> 'role', '')::public.user_role;
+    -- The §8.2 fallback is for a direct browser write, where
+    -- `auth.jwt()->>'role'` is one of the `user_role` values. System roles are
+    -- not: over the service-role client `auth.jwt()->>'role'` is
+    -- 'service_role', and casting that raises — rolling back the caller's whole
+    -- transaction, not just this hop. So a role outside the enum stays null and
+    -- the caller's GUC, already read above, remains the actor.
+    v_role := nullif(
+      case when auth.jwt() ->> 'role' in (
+        'customer', 'professional', 'admin', 'support', 'ops', 'super_admin'
+      ) then auth.jwt() ->> 'role'
+      end,
+      ''
+    )::public.user_role;
   end if;
 
   insert into public.booking_status_history

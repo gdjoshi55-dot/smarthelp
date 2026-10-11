@@ -5,6 +5,8 @@ import { usePathname, useRouter } from 'next/navigation';
 import { LogOut, Wrench } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
+import { usePoll } from '@/components/professional/usePoll';
+import { fetchOffers } from '@/lib/professionalClient';
 import type { UserRole } from '@/lib/supabase';
 
 const SECTION_LABELS: Record<string, string> = {
@@ -55,6 +57,9 @@ const SECTION_HREFS: Record<
   (role: 'customer' | 'professional' | 'admin') => string | null
 > = {
   bookings: (role) => (role === 'customer' ? '/customer/bookings' : null),
+  jobs: (role) => (role === 'professional' ? '/professional/jobs' : null),
+  kyc: (role) => (role === 'professional' ? '/professional/kyc' : null),
+  availability: (role) => (role === 'professional' ? '/professional/availability' : null),
 };
 
 /**
@@ -77,9 +82,19 @@ export default function RoleShell({
   title: string;
   children: React.ReactNode;
 }) {
-  const { profile, roleLabel, sections, signOut, loading, initialising } = useAuth();
+  const { profile, roleLabel, sections, signOut, loading, initialising, professional } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+
+  // Interaction Contract 3: the red dot on the Jobs item is the number of open
+  // offers, derived client-side from the same 5s inbox poll the inbox uses. Only
+  // a verified professional can have offers (the endpoint 403s otherwise), so
+  // the poll is disabled for every other role — a customer shell must not fetch
+  // a professional-only endpoint.
+  const offerPoll = usePoll(fetchOffers, {
+    enabled: role === 'professional' && professional?.verification_status === 'verified',
+  });
+  const openOffers = offerPoll.data?.offers.length ?? 0;
 
   if (initialising) {
     return (
@@ -157,13 +172,22 @@ export default function RoleShell({
                 <Link
                   href={item.href ?? '#'}
                   aria-current={item.current ? 'page' : undefined}
-                  className={`block px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap ${
+                  className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap ${
                     item.current
                       ? 'bg-blue-50 text-blue-700'
                       : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                   }`}
                 >
                   {item.label}
+                  {item.key === 'jobs' && openOffers > 0 ? (
+                    <span aria-live="polite" className="inline-flex items-center gap-1.5">
+                      <span
+                        role="img"
+                        aria-label={`${openOffers} open ${openOffers === 1 ? 'offer' : 'offers'}`}
+                        className="h-2 w-2 rounded-full bg-red-600"
+                      />
+                    </span>
+                  ) : null}
                 </Link>
               </li>
             ))}

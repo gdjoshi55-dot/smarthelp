@@ -3,11 +3,12 @@
 A service marketplace for home services: customers book, professionals get
 jobs, and four staff roles run the platform.
 
-**This repository is at Phase 3.** The database schema, the sign-in flows for every
-role, the authorisation model, the public catalogue, bookings and pricing, and the
-payments, refunds and wallet money paths are built and tested. What is not built is
-the professional app, the matching engine, and the admin and ops dashboards — they
-remain role-gated placeholder shells.
+**This repository is at Phase 4.** The database schema, the sign-in flows for every
+role, the authorisation model, the public catalogue, bookings and pricing, the
+payments, refunds and wallet money paths, and the professional app — KYC,
+availability, the offers inbox, and the arrive/OTP/complete job flow — are built
+and tested. What is not built is the matching engine, and the admin and ops
+dashboards — they remain role-gated placeholder shells.
 
 The public surface is real and usable today — the landing page, `/services`, a
 service detail page with live slots, and saved addresses behind a session.
@@ -22,7 +23,8 @@ real over the anon key.
 | 1 | Catalogue & availability | done |
 | 2 | Booking & pricing | done |
 | 3 | Payments | done |
-| 4–9 | Professional app, matching, admin, realtime, growth, launch | planned |
+| 4 | Professional app | done |
+| 5–9 | Matching, admin, realtime, growth, launch | planned |
 
 `.planning/ROADMAP.md` is the full list with exit criteria.
 
@@ -53,8 +55,8 @@ accounts. `docs/DATABASE.md`, `docs/API.md`, `docs/FEATURES.md` and
 | `npm run build` | Production build |
 | `npm run lint` | ESLint |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | 273 tests. 243 are mocked and need nothing; the other 30 need a real database and skip loudly without one |
-| `npm run test:db` | The live-database tests — RLS, OTP ledger, triggers, the booking state machine, the atomic write paths and connection recovery — against a real database. 67 tests across 3 files |
+| `npm test` | 798 tests. 702 are mocked and need nothing; the other 96 need a real database and skip loudly without one |
+| `npm run test:db` | The live-database tests — RLS, OTP ledger, triggers, the booking state machine, the atomic write paths, the offer ledger, the job-execution RPCs and connection recovery — against a real database. 96 tests across 7 files |
 | `npm run db:migrate` | Applies `supabase/migrations/*.sql` in filename order |
 | `npm run db:seed` | Demo accounts and the bookable catalogue |
 | `npm run db:verify` | Signs in as each demo account for real, over the anon key |
@@ -194,6 +196,9 @@ lib/
   availabilityServer.ts Gathers the rows; availability.ts does the arithmetic.
   addressServer.ts      The address write model.
   catalogueClient.ts    The browser's half of the catalogue contract.
+  professionalServer.ts The professional read/write model: gates, and the one strip function.
+  professionalClient.ts The browser's half of the professional contract.
+  serviceOtp.ts         The service-OTP helpers: generate, hash, redact, expiry.
 supabase/migrations/    The schema, in order. This is the source of truth.
 scripts/                Migration runner, seed, and the checks under scripts/.
 test/                   Unit tests, Route Handler tests, and the DB tests.
@@ -272,21 +277,24 @@ ticket — a path a browser session cannot take.
 
 ## Testing
 
-`npm test` runs 243 tests that need no database: the validators, the API envelope,
+`npm test` runs 702 tests that need no database: the validators, the API envelope,
 the role table, the OTP policy, the owner allow-list, the `NEXT_PUBLIC_` inlining
-guard, the geo and availability engines, and the Route Handlers against a fake
-service-role client. The fake records every table a route touched, so a test can
-assert *which row was written*, not merely that something was. A further 67 run
-against a real database and are skipped, loudly, when there is not one.
+guard, the geo and availability engines, the service OTP helpers, and the Route
+Handlers against a fake service-role client. The fake records every table a route
+touched, so a test can assert *which row was written*, not merely that something
+was. A further 96 run against a real database and are skipped, loudly, when there
+is not one.
 
-`npm run test:db` runs those 67 tests, which a fake cannot answer: whether RLS is
+`npm run test:db` runs those 96 tests, which a fake cannot answer: whether RLS is
 on every table in `public`, whether any policy exposes every profile, whether the
 six buckets exist, whether the OTP ledger throttles, locks, salts and expires as
 it claims, whether the audit trail refuses to be edited, whether one customer can
 read or write another's address, whether `admin.createUser` provisions a usable
 account, whether the booking state machine refuses an illegal move even when a
-function writes it, and whether a booking and its item lines can be left half
-written. It reads `SUPABASE_DB_URL` from the environment or from `.env.local`, and
+function writes it, whether a booking and its item lines can be left half written,
+whether `otp_hash` is invisible to the `authenticated` role, whether 50 concurrent
+`accept_offer` calls produce exactly one winner, whether `verify_service_otp`
+expires and locks as it claims, and whether `complete_job` is idempotent on retry. It reads `SUPABASE_DB_URL` from the environment or from `.env.local`, and
 skips loudly, with a warning, when there is neither. It runs its files
 sequentially — several live-database files in parallel against one remote link
 produce failures that have nothing to do with the code — and it needs a migrated

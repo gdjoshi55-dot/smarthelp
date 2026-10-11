@@ -40,14 +40,50 @@ export async function getBookingById(id: string) {
  * `getBookingForCaller`'s callers did, and why this note exists.
  *
  * Staff answer for any booking, which is what the admin console is for. A
- * professional is not staff: their own bookings are Phase 4's concern and this
- * helper does not guess at them.
+ * professional is not staff: their own bookings are Phase 4's concern. That
+ * hand-off is now closed — `lib/professionalServer.ts`'s
+ * `getProBookingForCaller()` is the professional-side ownership check, and a
+ * booking's `professional_id` is a `professionals.id`, not a `profiles.id`, so
+ * this helper must not be asked to guess at it.
  */
 export async function getBookingForCaller(id: string, customerId: string, role: UserRole) {
   const booking = await getBookingById(id)
   if (!booking) throw new ApiHttpError('NOT_FOUND', 'Booking not found', 404)
   if (booking.customer_id === customerId || STAFF_ROLES.includes(role)) return booking
   throw new ApiHttpError('FORBIDDEN', 'This booking belongs to another account.', 403)
+}
+
+/**
+ * The booking a *track* viewer may see, or a 404.
+ *
+ * `GET /api/bookings/[id]/track` is the one read both sides of a booking use:
+ * the customer watching it, and the professional working it. It cannot borrow
+ * `getBookingForCaller` (customer-only) or `getProBookingForCaller`
+ * (professional-only) without one of them refusing the other's caller, so it
+ * takes the viewer's already-resolved row ids and asks one question of one
+ * place — which keeps ownership a single decision rather than two that could
+ * drift.
+ *
+ * The refusal is a 404, not the 403 the customer's own screens use: the track
+ * payload carries the professional's live coordinates, and confirming that a
+ * stranger's job id is real is a reference check the caller has no business
+ * making (Pitfall 9). Staff still answer for any booking, like everywhere else.
+ */
+export async function getBookingForTrack(
+  id: string,
+  viewer: { customerId?: string | null; professionalId?: string | null },
+  role: UserRole
+) {
+  const booking = await getBookingById(id);
+  if (!booking) throw new ApiHttpError('NOT_FOUND', 'Booking not found', 404);
+  if (STAFF_ROLES.includes(role)) return booking;
+
+  const ownsBooking =
+    (viewer.customerId != null && booking.customer_id === viewer.customerId) ||
+    (viewer.professionalId != null && booking.professional_id === viewer.professionalId);
+  if (ownsBooking) return booking;
+
+  throw new ApiHttpError('NOT_FOUND', 'That booking was not found on your account.', 404);
 }
 
 /**

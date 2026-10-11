@@ -89,13 +89,17 @@ decision 1 — **the signature verifier is a pure module tested with synthetic
 signatures, and the transport is mocked, not the logic** — and its accepted
 consequence is that the part nobody can verify automatically is this:
 
-> **Manual step, every deployment:** configure the three keys, point a Razorpay
-> webhook at `POST /api/webhooks/razorpay` for `payment.captured`,
-> `payment.failed` and `refund.processed`, then complete one real checkout and
-> confirm the booking reaches `paid` from the *webhook* — not from the checkout
-> window. A card that succeeds in the browser while the booking stays
-> `payment_pending` means the webhook secret or the endpoint URL is wrong, and no
-> amount of green tests would have caught it.
+> **Manual step, every deployment:** configure the three keys and point a
+> Razorpay webhook at `POST /api/webhooks/razorpay` for `payment.captured`,
+> `payment.failed` and `refund.processed`. Then complete one real checkout. The
+> booking reaches `paid` either way: `POST /api/payments/verify` now confirms the
+> checkout callback's own signature through `confirm_booking_payment()`, so a
+> deployment Razorpay cannot route to still completes. To confirm the *webhook*
+> — the path that also handles `payment.failed` and `refund.processed`, and the
+> authority when a browser never returns — check the Razorpay dashboard's
+> delivery log for a `2xx` on the captured payment and the matching
+> `payment.captured` audit row. A webhook secret or endpoint URL that is wrong
+> leaves that log red, and no amount of green tests would have caught it.
 
 Two environment-level knobs are worth knowing here. `CRON_SECRET` is required by
 `GET /api/cron/reconcile-payments`: the route answers 503 when it is unset rather

@@ -182,6 +182,18 @@ export type WalletTxnType = 'credit' | 'debit';
 /** Which of the two ways money goes back: the gateway instrument or the wallet. */
 export type RefundRoute = 'gateway' | 'wallet' | 'mixed';
 
+/**
+ * 0012. §24.8's offer states. The spec's spelling, not the plan's earlier
+ * guess: a decline is `rejected`, and a timed-out offer is `expired`.
+ */
+export type AssignmentStatus = 'offered' | 'accepted' | 'rejected' | 'expired' | 'withdrawn';
+
+/**
+ * 0021. §24.12's earnings states. `paid` is Phase 8's payout run; Phase 4
+ * only ever writes `pending`.
+ */
+export type EarningStatus = 'pending' | 'available' | 'paid' | 'reversed';
+
 /** The three states `claim_idempotency_key` can return — it has four outcomes. */
 export interface IdempotencyClaim {
   outcome: 'claimed' | 'replay' | 'in_flight' | 'conflict';
@@ -528,6 +540,9 @@ type RawTables = {
           // Default is `not_submitted`; a professional may only ever write
           // `submitted`, and the guard trigger refuses anything else.
           status?: VerificationStatus;
+          // Set by the KYC decision route (B1); NULL on a fresh submission so a
+          // re-upload after a rejection clears the old reason.
+          rejection_reason?: string | null;
         };
         Update: Partial<RawTables['professional_documents']['Row']>;
       };
@@ -675,6 +690,8 @@ type RawTables = {
           otp_attempts: number;
           otp_generations: number;
           otp_verified_at: Timestamptz | null;
+          /** 0029 (D3). Set when `otp_attempts` hits the cap; NULL = unlocked. */
+          otp_locked_until: Timestamptz | null;
           started_at: Timestamptz | null;
           ends_at: Timestamptz | null;
           ended_at: Timestamptz | null;
@@ -745,6 +762,7 @@ type RawTables = {
           completed_at?: Timestamptz | null;
           closed_at?: Timestamptz | null;
           pricing_snapshot?: Record<string, unknown>;
+          otp_locked_until?: Timestamptz | null;
         };
       };
 
@@ -1120,6 +1138,82 @@ type RawTables = {
           description?: string;
         };
       };
+
+      // 0012. The offer ledger (§24.8). `professional_id` scopes the browser
+      // read (RLS); every write goes through the security-definer RPCs, so
+      // Insert and Update are mirrored for completeness only and are not
+      // reachable from a client.
+      booking_assignments: {
+        Row: {
+          id: string;
+          booking_id: string;
+          professional_id: string;
+          status: AssignmentStatus;
+          attempt_no: number;
+          round_no: number;
+          distance_km: Numeric | null;
+          score: Numeric | null;
+          was_favourite: boolean;
+          was_repeat: boolean;
+          offered_at: Timestamptz;
+          expires_at: Timestamptz;
+          responded_at: Timestamptz | null;
+          decline_reason: string | null;
+        };
+        Insert: {
+          id?: string;
+          booking_id: string;
+          professional_id: string;
+          status?: AssignmentStatus;
+          attempt_no?: number;
+          round_no?: number;
+          distance_km?: Numeric | null;
+          score?: Numeric | null;
+          was_favourite?: boolean;
+          was_repeat?: boolean;
+          offered_at?: Timestamptz;
+          expires_at: Timestamptz;
+          responded_at?: Timestamptz | null;
+          decline_reason?: string | null;
+        };
+        Update: Partial<RawTables['booking_assignments']['Row']>;
+      };
+
+      // 0021. The earnings ledger (§24.12). Read by its owner through RLS;
+      // written only by `complete_job`. `payout_id` is a bare uuid until
+      // Phase 8 brings the `payouts` table.
+      professional_earnings: {
+        Row: {
+          id: string;
+          professional_id: string;
+          booking_id: string;
+          gross_amount: Numeric;
+          commission_pct: Numeric;
+          commission_amount: Numeric;
+          net_amount: Numeric;
+          bonus_amount: Numeric;
+          status: EarningStatus;
+          available_at: Timestamptz;
+          payout_id: string | null;
+          reversed_reason: string | null;
+          created_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          professional_id: string;
+          booking_id: string;
+          gross_amount: Numeric;
+          commission_pct: Numeric;
+          commission_amount: Numeric;
+          net_amount: Numeric;
+          bonus_amount?: Numeric;
+          status?: EarningStatus;
+          available_at: Timestamptz;
+          payout_id?: string | null;
+          reversed_reason?: string | null;
+        };
+        Update: Partial<RawTables['professional_earnings']['Row']>;
+      };
 };
 
 type RawViews = {
@@ -1390,6 +1484,82 @@ export type Database = {
         };
         Returns: Database['public']['Tables']['refunds']['Row'] | null;
       };
+
+      // ── Phase 4: assignment, job execution and KYC verdict ────────────
+      //
+      // 0012 / 0029. Every one is `security definer`, revoked from PUBLIC
+      // and granted to `service_role` only; the caller is always a Route
+      // Handler that has authenticated and authorised first. A NULL/zero-row
+      // return is the "not live / stale version" signal each route maps to a
+      // 409; an illegal move raises ILLEGAL_TRANSITION from 0011's trigger.
+
+      /** 0012. §24.8's compare-and-set accept. NULL = offer no longer live. */
+      accept_offer: {
+        Args: { p_assignment_id: string; p_professional_id: string };
+        Returns: Database['public']['Tables']['booking_assignments']['Row'] | null;
+      };
+
+      /** 0012. Records a decline. NULL = offer no longer live. */
+      decline_offer: {
+        Args: { p_assignment_id: string; p_professional_id: string; p_reason: string | null };
+        Returns: Database['public']['Tables']['booking_assignments']['Row'] | null;
+      };
+
+      /** 0012. Phase 4's minimal matcher. Returns the number of offers made. */
+      sweep_new_bookings: {
+        Args: Record<PropertyKey, never>;
+        Returns: number;
+      };
+
+      /** 0029. `on_the_way -> arrived`. NULL = stale version. */
+      arrive_job: {
+        Args: { p_booking_id: string; p_professional_id: string; p_expected_version: number };
+        Returns: Database['public']['Tables']['bookings']['Row'] | null;
+      };
+
+      /** 0029. Mints a service code hash. NULL = wrong state or generation cap. */
+      issue_service_otp: {
+        Args: { p_booking_id: string; p_code_hash: string; p_ttl_minutes: number };
+        Returns: Database['public']['Tables']['bookings']['Row'] | null;
+      };
+
+      /** 0031. `accepted -> on_the_way`. NULL = stale version. */
+      start_journey: {
+        Args: { p_booking_id: string; p_professional_id: string; p_expected_version: number };
+        Returns: Database['public']['Tables']['bookings']['Row'] | null;
+      };
+
+      /**
+       * 0029. Verifies the code and starts the job (`arrived -> otp_verified ->
+       * in_progress`). Zero rows = invalid/expired/locked; the route answers one
+       * generic 403 (Pitfall 5).
+       */
+      verify_service_otp: {
+        Args: { p_booking_id: string; p_code: string; p_max_attempts: number };
+        Returns: Array<{ started_at: string | null; ends_at: string | null }>;
+      };
+
+      /** 0029. `in_progress -> completed`, closes the window, writes the earning. NULL = stale version. */
+      complete_job: {
+        Args: { p_booking_id: string; p_professional_id: string; p_expected_version: number };
+        Returns: Database['public']['Tables']['bookings']['Row'] | null;
+      };
+
+      /** 0029. `-> no_show`, reason mandatory. Touches no refund or wallet. */
+      no_show_job: {
+        Args: { p_booking_id: string; p_professional_id: string; p_reason: string };
+        Returns: Database['public']['Tables']['bookings']['Row'] | null;
+      };
+
+      /** 0029 (D2). Applies a document verdict and rolls it up. NULL = no such document. */
+      kyc_document_decision: {
+        Args: {
+          p_document_id: string;
+          p_verdict: Database['public']['Enums']['verification_status'];
+          p_admin: string;
+        };
+        Returns: VerificationStatus | null;
+      };
     };
 
     Enums: {
@@ -1409,6 +1579,8 @@ export type Database = {
       refund_status: RefundStatus;
       wallet_txn_type: WalletTxnType;
       schedule_status: ScheduleStatus;
+      assignment_status: AssignmentStatus;
+      earning_status: EarningStatus;
     };
   };
 };
@@ -1427,6 +1599,7 @@ export type ServiceTask = Tables<'service_tasks'>;
 export type ServiceCategory = Tables<'service_categories'>;
 export type Locality = Tables<'localities'>;
 export type Professional = Tables<'professionals'>;
+export type ProfessionalDocument = Tables<'professional_documents'>;
 export type PublicProfessional = Schema['Views']['public_professionals']['Row'];
 export type Booking = Tables<'bookings'>;
 export type BookingItem = Tables<'booking_items'>;

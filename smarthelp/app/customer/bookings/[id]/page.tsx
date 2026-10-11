@@ -12,14 +12,19 @@ import { ReschedulePanel } from '@/components/catalogue/ReschedulePanel';
 import { InvoiceView } from '@/components/catalogue/InvoiceView';
 import { EmptyState } from '@/components/catalogue/EmptyState';
 import { formatBookingWhen } from '@/components/catalogue/bookingFormat';
+import { OtpDisplay } from '@/components/booking/OtpDisplay';
+import { ServiceTimer } from '@/components/booking/ServiceTimer';
 import {
   fetchBooking,
+  fetchBookingTrack,
   fetchInvoice,
   BookingApiError,
   type BookingDetailResult,
+  type BookingTrackResult,
   type InvoiceResult,
   type CancelResult,
 } from '@/lib/bookingClient';
+import type { BookingStatus } from '@/lib/supabase';
 import type { LocationQueryInput } from '@/lib/catalogueClient';
 
 /**
@@ -49,6 +54,18 @@ import type { LocationQueryInput } from '@/lib/catalogueClient';
  * reschedule route enforces, so the button can never be offered for a move that
  * would 409 — including a booking whose professional is already on the way, which
  * a "is it cancellable" test would have wrongly allowed.
+ *
+ * ## The live view
+ *
+ * While a booking is in flight the page polls `/track` every 15 s. The poll owns
+ * the status, the timer and the start code, and the initial detail read is the
+ * floor it improves on: every status-dependent element reads `liveStatus`, which
+ * is the poll's answer when there is one and the detail's otherwise. The timer
+ * numbers are the server's — `endsAt` and `serverNow` travel together and never
+ * meet `Date.now()` — so a phone with a wrong clock cannot lie to its owner about
+ * how long is left. The poll is skipped while the tab is hidden and the moment
+ * the tab returns, and a failed tick keeps the last good payload rather than
+ * blanking the screen.
  */
 
 interface Loaded {
@@ -78,6 +95,7 @@ function BookingDetail({ id }: { id: string }) {
   const [problem, setProblem] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [track, setTrack] = useState<BookingTrackResult | null>(null);
 
   const load = useCallback(async () => {
     const detail = await fetchBooking(id);
@@ -131,6 +149,49 @@ function BookingDetail({ id }: { id: string }) {
     };
   }, [data, id]);
 
+  // The live view: a 15 s poll of `/track` once the booking has resolved
+  // (§10.2, Interaction Contract 2). The dependency is `loaded`, not `data`, so
+  // the invoice arriving mid-poll does not tear the interval down and start a
+  // fresh one. A tick is skipped while one is still in flight and while the tab
+  // is hidden, and the moment the tab returns the poll runs immediately rather
+  // than waiting out the interval.
+  const loaded = data !== null;
+  useEffect(() => {
+    if (!loaded) return;
+    let cancelled = false;
+    let inFlight = false;
+    let controller: AbortController | null = null;
+
+    const tick = async () => {
+      if (inFlight || document.hidden) return;
+      inFlight = true;
+      controller = new AbortController();
+      try {
+        const next = await fetchBookingTrack(id, { signal: controller.signal });
+        if (!cancelled) setTrack(next);
+      } catch {
+        // Keep the last good payload; a missed poll is not a blanked screen.
+      } finally {
+        inFlight = false;
+        controller = null;
+      }
+    };
+
+    void tick();
+    const interval = window.setInterval(tick, 15_000);
+    const onVisibility = () => {
+      if (!document.hidden) void tick();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibility);
+      controller?.abort();
+    };
+  }, [id, loaded]);
+
   const location = useMemo(
     () => (data ? bookingLocation(data.detail.booking) : null),
     [data]
@@ -169,6 +230,15 @@ function BookingDetail({ id }: { id: string }) {
   }
 
   const { booking, status, cancellable, reschedulable, items, history } = data.detail;
+
+  // The poll is the source of truth once it has answered; the detail read is the
+  // floor it improves on. The badge, the description and the timeline all read
+  // `liveStatus`, so a job that went `on_the_way` a second ago shows it without a
+  // reload — and while the tab was hidden and polls paused, it still shows the
+  // last state the server named.
+  const liveStatus = (track?.status ?? booking.status) as BookingStatus;
+  const presentation = track?.presentation ?? status;
+
   const firstServiceId = items[0]?.service_id ?? null;
   const showReschedule = reschedulable && firstServiceId != null;
 
@@ -187,13 +257,13 @@ function BookingDetail({ id }: { id: string }) {
           <section className="rounded-xl border border-gray-200 bg-white p-5">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-mono text-xs text-gray-500">{booking.booking_number}</span>
-              <BookingStatusBadge status={booking.status} />
+              <BookingStatusBadge status={liveStatus} />
             </div>
             <p className="mt-2 text-lg font-semibold text-gray-900">
               {formatBookingWhen(booking.scheduled_start_at)}
             </p>
-            <p className="mt-1 text-sm text-gray-600">{status.description}</p>
-            {booking.status === 'payment_pending' ? (
+            <p className="mt-1 text-sm text-gray-600">{presentation.description}</p>
+            {liveStatus === 'payment_pending' ? (
               // A booking is created in `payment_pending` because payment is the
               // next release, not because the customer did something wrong. Landing
               // here from checkout with a silent "payment pending" reads as a
@@ -211,12 +281,35 @@ function BookingDetail({ id }: { id: string }) {
                 {booking.notes}
               </p>
             ) : null}
+            {/* While the job is running the timer is the most-consulted thing on
+                the page, so it sits in the status card rather than below it. Both
+                terms come from the track poll; before the first answer it renders
+                nothing. */}
+            {liveStatus === 'in_progress' ? (
+              <ServiceTimer
+                endsAt={track?.endsAt ?? null}
+                serverNow={track?.serverNow ?? null}
+                className="mt-3"
+              />
+            ) : null}
           </section>
 
           <section className="rounded-xl border border-gray-200 bg-white p-5">
             <h2 className="mb-3 text-sm font-semibold text-gray-900">Progress</h2>
-            <BookingTimeline status={booking.status} history={history} />
+            <BookingTimeline status={liveStatus} history={history} />
           </section>
+
+          {/* The start code appears exactly when it is useful — the professional
+              has arrived and is about to verify it — and disappears once they
+              have, so the customer is not left staring at a dead code. */}
+          {liveStatus === 'arrived' ? (
+            <OtpDisplay
+              bookingId={booking.id}
+              expiresAt={track?.otpExpiresAt ?? null}
+              serverNow={track?.serverNow ?? null}
+              generationsRemaining={track?.otpGenerationsRemaining ?? null}
+            />
+          ) : null}
 
           {showReschedule ? (
             <ReschedulePanel
@@ -281,7 +374,7 @@ function BookingDetail({ id }: { id: string }) {
 
           {data.invoice ? <InvoiceView data={data.invoice} /> : null}
 
-          {!showReschedule && booking.booking_type === 'scheduled' && !status.terminal ? (
+          {!showReschedule && booking.booking_type === 'scheduled' && !presentation.terminal ? (
             <p className="flex items-center gap-2 rounded-xl bg-gray-50 px-4 py-3 text-xs text-gray-600">
               <CalendarClock className="h-3.5 w-3.5" aria-hidden="true" />
               This booking can no longer be moved online. Contact support if the time has to change.

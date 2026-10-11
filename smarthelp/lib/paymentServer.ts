@@ -2,6 +2,7 @@ import { ApiHttpError } from './api';
 import { audit } from './audit';
 import { numericLiteral, parseNumeric, rupees, toPaise } from './money';
 import { createRazorpayClient } from './razorpayClient';
+import { razorpayTransport } from './razorpayProxy';
 import { createServerClient } from './supabaseServer';
 import type { Booking, Payment, UserRole } from './supabase';
 
@@ -212,14 +213,21 @@ async function chargeRow(args: CreateOrderArgs, ctx: ChargeContext): Promise<Pay
 
   let orderId: string;
   try {
-    const order = await createRazorpayClient({ keyId: ctx.keyId, keySecret: ctx.keySecret })
-      .createOrder({
-        amountPaise: ctx.amountPaise,
-        // The booking number is the receipt Razorpay shows in its dashboard, so
-        // a support conversation can name a booking rather than an order id.
-        receipt: args.booking.booking_number,
-        notes: { bookingId: args.booking.id, paymentId: payment.id },
-      });
+    // The transport is the proxy when `RAZORPAY_PROXY_URL` is set (the
+    // pos-subscription path), the direct Razorpay call otherwise. See
+    // `lib/razorpayProxy.ts`.
+    const transport = razorpayTransport();
+    const order = await createRazorpayClient({
+      keyId: ctx.keyId,
+      keySecret: ctx.keySecret,
+      ...(transport ? { fetch: transport } : {}),
+    }).createOrder({
+      amountPaise: ctx.amountPaise,
+      // The booking number is the receipt Razorpay shows in its dashboard, so
+      // a support conversation can name a booking rather than an order id.
+      receipt: args.booking.booking_number,
+      notes: { bookingId: args.booking.id, paymentId: payment.id },
+    });
     orderId = order.id;
   } catch (e) {
     await supabase

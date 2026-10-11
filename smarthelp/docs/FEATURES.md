@@ -504,16 +504,16 @@ section after the first links to `#`.
 | Route | Roles | What is actually there |
 |---|---|---|
 | `/customer` | `customer` | A "Book a service" section whose **Browse services button is disabled** and titled "Arrives in Phase 1"; a hard-coded "No bookings yet"; two stats read from the `customers` row; the referral code with the promise that you both get ₹100; four quick links that all go to `#` |
-| `/professional` | `professional` | A verification-status banner with five copy variants driven by `professionals.verification_status` (not started, in review, verified, rejected, expired); "Today's jobs" with a status chip; a KYC explainer listing three document types; the rating and review count; an earnings panel |
+| `/professional` | `professional` | A verification-status banner with five copy variants driven by `professionals.verification_status` (not started, in review, verified, rejected, expired); "Today's jobs" **now read live from `GET /api/professionals/me/jobs`**; the availability card **now read live from `GET /api/professionals/me/availability` with a link into `/professional/availability`**; a KYC explainer listing three document types that **links into `/professional/kyc`**; the rating and review count; an earnings panel that stays prose (Phase 8) |
 | `/admin` | `admin`, `ops`, `support`, `super_admin` | A greeting by local hour; a table of the caller's `sections`, each marked "Permission granted"; a "Your access" panel showing role, status and section count; a restricted-areas note that varies on `hasCapability('role.manage')` and links nowhere |
 
 > **`/customer` is stale.** The catalogue it says "arrives in Phase 1" is built,
 > public, and needs no account. That button should link to `/services`.
 >
-> **`/professional` has a phase-number error in its copy.** "Availability and
-> scheduling arrive in Phase 3." `ROADMAP.md` has Payments in Phase 3 and the
-> professional app — KYC, working hours, offers inbox — in Phase 4, which is
-> what the same page's KYC section says correctly two panels down.
+> **`/professional`'s phase-number copy was wrong, and Phase 4 fixed it.** The
+> availability card used to say "Availability and scheduling arrive in Phase 3"
+> while `ROADMAP.md` puts the professional app — KYC, working hours, offers inbox —
+> in Phase 4. It now reads the real availability state and links into the page.
 >
 > **`/admin`'s marketplace toggle is local-only.** For `super_admin` there is a
 > "Marketplace live / paused" checkbox. It is `useState` and nothing else: no
@@ -541,8 +541,8 @@ rows are updated in place rather than deleted, so the sequence stays legible.
 | Booking creation, quote engine, cancel/reschedule, coupons, invoice stub, `bookings` state machine | Phase 2 | **Built** — see §4.2. `quoteToken` is now consumed by `POST /api/payments/create-order`, which asserts its presence. Still missing: there is no consolidated `bookingView` read model |
 | Tax, platform fee, surge and the commission split | Phase 2–3 | **Partly built.** Tax, platform fee and the commission split are in `buildQuote()` and stored on the booking. Surge is Phase 3, and `lib/catalogue.ts` still does line-price arithmetic only — which is fine, because nothing calls it for a total any more |
 | Razorpay orders, webhook, verify, reconciliation | Phase 3 | **Built** — see §4.3. Still open: refunds, the wallet ledger and the approval console on top of them |
-| Professional KYC upload and the verification workflow | Phase 4 | The `kyc-documents` bucket exists and is private. No form |
-| Professional working hours, offers inbox, accept/decline, arrive, on-site OTP, complete | Phase 4 | `/professional` is a shell |
+| Professional KYC upload and the verification workflow | Phase 4 | **Built** — the signed-upload trio, the stepper and the admin verdict endpoint; see §6.1 |
+| Professional working hours, offers inbox, accept/decline, arrive, on-site OTP, complete | Phase 4 | **Built** — the four professional screens and the job-execution spine; see §6 |
 | Matching engine, candidate ranking, offer fan-out, advisory locks, reassignment cascade | Phase 5 | Not started |
 | `professional_schedule` overlap term in slot availability | Phase 5 | The input parameter exists and is left empty; see §1.7 |
 | Admin console: dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, analytics, notifications, settings, audit | Phase 6 | `/admin` is a shell with a local toggle |
@@ -604,9 +604,10 @@ correct but is more than one call's worth of work per page.
 
 ### 4.3 Paying, end to end (built)
 
-What the customer does, what the server does, what the webhook owns and what the
-cron owns. `docs/API.md` §4.5 has the wire format and `docs/DATABASE.md` §7 has the
-table and RLS; this is the behaviour.
+What the customer does, what the server does, how the three writers of `paid`
+agree, and what the cron covers when they cannot. `docs/API.md` §4.5 has the
+wire format and `docs/DATABASE.md` §7 has the table and RLS; this is the
+behaviour.
 
 **The customer does three things.** Presses *Confirm booking* on the checkout
 screen, completes Razorpay's own window, and — if the window is closed without an
@@ -628,13 +629,14 @@ The amount comes from `bookings.total_amount`; a client's figure is never read.
 
 **The handler callback may start work and may not conclude it.** This is §12.1's
 hard rule and the one a payment UI gets wrong most often: Razorpay's `handler`
-fires the instant the window closes, while the webhook that owns the row may still
-be seconds away. So the callback does exactly two things — fires
-`POST /api/payments/verify` (which reads and writes nothing) and begins polling
-`GET /api/payments/[id]`. The display state is derived only from the polled
-`payments.status` through `paymentDisplayState()`, and `paid` is reachable only
-from `success` (or the refund states). A handler payload fed straight into that
-function yields `confirming`, and `test/paymentClient.test.ts` asserts it.
+fires the instant the window closes, while the authoritative write may still be
+in flight. So the callback does exactly two things — fires
+`POST /api/payments/verify` (which confirms the booking through the single
+writer) and begins polling `GET /api/payments/[id]`. The display state is derived
+only from the polled `payments.status` through `paymentDisplayState()`, and
+`paid` is reachable only from `success` (or the refund states). A handler payload
+fed straight into that function yields `confirming`, and
+`test/paymentClient.test.ts` asserts it.
 
 **Loading, error, retry and an honest timeout are all real states.** A `402
 PAYMENT_FAILED` shows the gateway's own words, because the server stored them in
@@ -642,31 +644,45 @@ PAYMENT_FAILED` shows the gateway's own words, because the server stored them in
 a "still confirming" state where pressing the button asks the row *again* rather
 than ordering a second charge. Nothing anywhere claims success it has not read.
 
-**The webhook owns `paid`.** `POST /api/webhooks/razorpay` is the one
-unauthenticated route in the tree, and its credential is HMAC-SHA256 over the exact
-bytes it sent — read with `req.text()` before any parse, checked before
-`JSON.parse`, and refused with 400 if it does not match. `payment.captured` compares
-paise against paise and then calls `confirm_booking_payment()`, which moves
-`payments.status = 'success'` and `bookings.status = 'paid'` in one transaction.
-`payment.failed` marks the *payment* failed and leaves the booking
-`payment_pending`, because a declined card is a state the customer can leave by
-paying again. Every delivery writes an audit row; `gateway_signature` never reaches
-one.
+**Three writers, one function: `confirm_booking_payment()`.** `paid` is written
+in exactly one place — the `0014` SQL function — which moves
+`payments.status = 'success'` and `bookings.status = 'paid'` in one transaction
+and guards on `status in ('created','pending')`, so any two writers racing still
+make one write. It has three callers:
 
-**The cron owns the gap.** A customer who paid while the webhook was down is
-invisible to every screen. `GET /api/cron/reconcile-payments` looks at payments
-still waiting past ten minutes, asks the gateway once per row, and writes through
-the *same* two places the webhook uses. Anything that is not a usable gateway
-answer is counted `unreachable` and left untouched — writing rows because the
-gateway answered 503 would confirm payments that never happened. It is guarded by
-`CRON_SECRET` over three channels and answers 503 when the variable is unset.
+- **`POST /api/payments/verify`** — the customer's own checkout. Its credential
+  is the Checkout `handler`'s signature over `order_id|payment_id` under the
+  server-only key secret, so a valid signature proves Razorpay issued the pair
+  *and* authorisation succeeded. This is the path that closes the loop on a
+  deployment Razorpay cannot route to (a laptop, a preview): without it the row
+  sat at `created` and the screen said "Confirming payment…" forever.
+- **`POST /api/webhooks/razorpay`** — the one unauthenticated route in the tree.
+  Its credential is HMAC-SHA256 over the exact bytes Razorpay sent — read with
+  `req.text()` before any parse, checked before `JSON.parse`, refused with 400 if
+  it does not match. It compares paise against paise before confirming, and it is
+  also the only path for `payment.failed` and `refund.processed` (`payment.failed`
+  marks the *payment* failed and leaves the booking `payment_pending`, because a
+  declined card is a state the customer can leave by paying again).
+- **`GET /api/cron/reconcile-payments`** — the gap, below.
+
+Each writer leaves one audit row and `gateway_signature` never reaches any of
+them.
+
+**The cron covers the gap.** A customer who paid while every other writer was
+unreachable is invisible to every screen. `GET /api/cron/reconcile-payments`
+looks at payments still waiting past ten minutes, asks the gateway once per row,
+and writes through the *same* `confirm_booking_payment()` the other two call.
+Anything that is not a usable gateway answer is counted `unreachable` and left
+untouched — writing rows because the gateway answered 503 would confirm payments
+that never happened. It is guarded by `CRON_SECRET` over three channels and
+answers 503 when the variable is unset.
 
 **Live end-to-end verification is a documented manual step**, in `docs/SETUP.md`
 under *Razorpay keys, and the live check that is deliberately manual*. The suite
 performs no network call by design (03-CONTEXT decision 1: the signature verifier
 is pure and tested with synthetic signatures, the transport is mocked), so the one
-thing nobody can automate is a real card reaching the webhook and turning a booking
-`paid`.
+thing nobody can automate is a real card and a real gateway signature turning a
+booking `paid`.
 
 ---
 
@@ -813,6 +829,206 @@ scroll horizontally rather than wrapping.
 - `next/next/no-img-element` is disabled in four places and catalogue images are
   plain `<img>`: cards use `loading="lazy"`, the detail hero does not, which is
   correct, but none of them are sized by the optimiser.
+
+---
+
+## 6. The professional app (Phase 4, built)
+
+Phase 4 turns `/professional` from a shell into four working screens — the
+availability editor, the KYC stepper, the offers inbox and the phone-first job
+detail — and builds the server spine they stand on: the offer ledger, the
+signed-upload KYC trio, the geofenced arrival, the service OTP and completion.
+The customer's booking page gains the live timer and the start-code card through
+the deferred track endpoint. Every route here reads the database through the
+service role; the browser never talks to `booking_assignments` or `otp_hash`
+directly.
+
+### 6.1 KYC, from upload to a verified badge
+
+`POST /api/kyc-documents/upload-url` mints a Supabase **signed upload URL** for
+one file. The storage path is the tenant boundary and is built **server-side**
+as `${professionalId}/${docType}/${filename}` — never taken from the body — so a
+professional cannot name another's folder even if they try. `docType` is on the
+three-value allow-list the stepper uses (`identity`/`address`/`selfie`, mapped
+onto the `0005` doc-type enum), and the declared size and MIME are checked
+against a 5 MB / images-plus-PDF contract. A signed URL cannot enforce bytes, so
+the size check is a courtesy refusal with a readable message and the bucket's
+`file_size_limit` is the real backstop — the route says so rather than pretending
+otherwise.
+
+The browser completes the upload with `uploadToSignedUrl`, then `POST
+/api/professionals/me/kyc` records a `status='submitted'` row, upserting on
+`(professional_id, doc_type)` so a re-upload after a rejection replaces the file
+and restarts review. A verified or already-in-review document is locked by the
+`0005` review trigger, which the route surfaces as a 409.
+
+`GET /api/professionals/me/kyc` reports the roll-up `verification_status`
+alongside the per-document rows. The payload has no internal reviewer-note field
+because `professional_documents` has no such column: "never show internal notes"
+is satisfied by there being nothing internal to select. `rejection_reason` is the
+feedback *for* the professional, and it is deliberately visible.
+
+The verdict endpoint, `POST /api/admin/professionals/:id/kyc/:docId/decision`, is
+**staff-only and ships without a UI** (Phase 6 builds the review queue on it — the
+same API-without-UI pattern Phase 3 used for refunds). One RPC applies the verdict
+and rolls it up: any required document `rejected` ⇒ the professional is
+`rejected`; all required documents `verified` ⇒ `verified` and `kyc_verified_at`
+is stamped; otherwise `submitted`. The admin's free-text rejection note is written
+by the route, not the RPC, because a note is prose, not a state transition. An
+unverified professional never reaches the inbox: `requireVerifiedProfessional`
+gates every job route, and the UI shows the amber verification banner instead of
+the screen behind it.
+
+### 6.2 Availability
+
+`/professional/availability` is the weekly editor, the time-off list and the one
+optimistic control in the phase — the online Switch. The Switch moves first and
+the server owns the stored value: `POST /api/professionals/me/availability` accepts
+only `online`/`offline` from the browser and never lets a client name `busy` or
+`break` (which the matching engine sets), so the response echoes what was stored
+for the rollback.
+
+`PUT /api/professionals/me/working-hours` **replaces the whole week** in one call.
+A weekly schedule is edited as a set, and a per-window PATCH surface would let a
+half-applied week exist between two requests. Two rules the database cannot state
+as a column check are enforced in the route: no window may fall outside
+00:00–24:00, and two windows on one weekday may not overlap. Both are refused as
+field errors, because a raw `23P01` is not something to show a person.
+
+`GET`/`POST`/`DELETE /api/professionals/me/time-off` is the absence list. Every
+read and write is filtered by the caller's own `professionals.id`, so one
+professional can never read or delete another's. Overlapping time off is refused
+by the route before the insert, with a 409, rather than letting a second block sit
+silently inside the first.
+
+### 6.3 The offers inbox
+
+An offer is a row in `booking_assignments`: one booking handed to one
+professional, expiring in 15 minutes. Two things are structurally impossible and
+neither is an application check. A booking cannot have two live offers or
+acceptances, because a partial unique index on `booking_id` for the `offered` and
+`accepted` states makes a second one unwritable; and one professional cannot
+accept two bookings that overlap, because `accept_offer` writes a `reserved`
+`professional_schedule` window and the GiST exclusion constraint vetoes the
+overlap.
+
+`GET /api/professionals/offers` is the inbox. It runs `sweep_new_bookings()`
+first — Phase 4's minimal matcher, which picks **one** eligible professional
+(verified, online, available, skilled for every service on the booking, free on
+the time-off calendar and the schedule) and makes **one** offer with a 15-minute
+TTL. There is no ranking and no fan-out; Phase 5 replaces this producer whole. It
+then **lazily expires** the caller's stale offers, because no sweeper cron exists,
+so the countdown on a card is never against an offer the accept path would refuse.
+The payload is the OfferCard contract exactly — service name, window, area only,
+quoted price, `expiresAt` — and carries no phone, no full address and no customer
+name. `stripProBooking(..., 'offered')` enforces the §14.3 privacy gate even
+before the fields are picked.
+
+`POST …/offers/:id/accept` is the compare-and-set. A second tap, an expired offer
+or a stale id makes the RPC affect zero rows ⇒ 409; an overlap with another job
+raises `PROFESSIONAL_UNAVAILABLE` ⇒ 409; a cross-professional id is a 404 with
+zero writes because ownership is re-checked through the service role before the
+RPC. On success the address unlocks — the job is theirs now. `POST …/decline`
+records the reason as a tombstone (`rejected`); the booking deliberately stays
+`assigned`, because `0011` permits no reassign hop, so re-offering is Phase 5's.
+
+### 6.4 Job execution: arrive, OTP, complete, no-show
+
+The job-detail screen walks `on_the_way → arrived → otp_verified → in_progress →
+completed` through server responses only, and the buttons are derived from the
+status so the page cannot offer an action the `0011` state machine forbids.
+
+**Arrival is geofenced.** `POST …/jobs/:id/arrive` computes the Haversine distance
+**on the server** against the booking's frozen `address_snapshot`; inside
+`defaultArrivalRadiusM` (100 m) the arrival is taken. Outside it — or when the
+address carries no coordinates to measure against, which is not the same as "close
+enough" — the arrival is refused with a 422 unless a manual override reason is
+given. The override is the threat, not the arrival, so its `write_audit` row is
+written **before** the RPC: an override that failed downstream is still on the
+record.
+
+**The service OTP is the customer's, not the professional's.** The professional's
+`POST …/jobs/:id/otp` proves the customer knows the code by typing it; SQL does
+the comparison against `bookings.otp_hash` inside `verify_service_otp`, which also
+stamps `started_at`/`ends_at` from the server clock in the same statement. A
+wrong, expired or locked attempt returns **one generic 403 with the same body** —
+distinguishing them to the caller would make the endpoint an oracle. Which of the
+three it was reaches the log, and nothing else. The professional can never mint or
+see a code.
+
+The plaintext of a service code exists for exactly one moment, in the response of
+`POST /api/bookings/:id/otp/regenerate`, which is **customer-only** and only legal
+at `arrived`. Only its SHA-256 digest reaches `bookings.otp_hash` (via
+`issue_service_otp`), so it can never be read back; generation 1 is the first
+mint, and the generation cap is three. The customer's card caches the code in
+`sessionStorage` and counts down to the server's expiry. The job starts from the
+code the customer can see on their own phone, which is the whole anti-fraud point.
+
+`POST …/complete` is a single multi-effect statement: `in_progress → completed`,
+`ended_at`/`actual_duration_minutes` from the server clock, the schedule window
+closed, the completed-jobs counter bumped, and exactly one pending
+`professional_earnings` row inserted (idempotent on retry). `POST …/no-show`
+requires a reason and writes an audit row, and — by hard rule — **touches no
+refund and no wallet**: a professional never cancels their own job into money
+moving back; that resolution is ops'.
+
+### 6.5 The customer's live view
+
+`GET /api/bookings/:id/track` is the live view both sides poll every 15 seconds,
+closing Phase 2's deferral. Two rules decide everything: **the clock is the
+server's** (every timer field is computed from the server's `now`, so a phone with
+a skewed clock still shows the right "5:20 left"), and **the payload is a
+projection, not the row** (it is shaped through `stripProBooking`, so `otp_hash`
+and the OTP counters can never appear no matter who asks). Ownership is one
+function: a customer and the owning professional both read it, and anyone else
+gets the same 404 as a booking that does not exist — the payload carries the
+professional's live coordinates, so confirming a stranger's job id is real would
+be a reference check nobody needs.
+
+The payload carries `startedAt`, `endsAt`, `serverNow`, `remainingSeconds`,
+`extensionAvailable: false` and `extendedMinutes: 0` (extensions are deferred;
+the fields ship now so re-enabling later is additive), and `proLocation` — the
+professional's coordinates, or `null`. `null` is the honest answer for "we don't
+know where they are": no ping yet, a ping too old to be a claim about the present,
+or a row with one coordinate and not the other. **No ETA is ever invented** — no
+travel model exists, and a made-up number is worse than a missing one. The one OTP
+fact the customer needs, `otpExpiresAt`, is lifted out as a top-level field and
+only while the booking is `arrived`; the code itself is never here.
+
+### 6.6 The nine decisions, each in one line
+
+- **D1** — `0012` is reclaimed from Phase 5 (the exit criterion is unreachable
+  without an assignment row to take); a minimal `sweep_new_bookings` producer
+  ships, and Phase 5 replaces it whole.
+- **D2** — the admin KYC decision endpoint ships; the admin review UI does not.
+- **D3** — the service OTP is minted lazily, customer-gated, at `arrived`; the
+  professional's route never sees a plaintext code.
+- **D4** — `professional_earnings` ships as a partial `0021`; payout runs, the
+  payouts table and the cron stay Phase 8, and the `/professional/earnings` page
+  does not ship.
+- **D5** — extensions are deferred; the timer payload carries
+  `extensionAvailable: false` so the client shape is final now.
+- **D6** — tracking ships status, timeline, the OTP-gated timer, `serverNow` and
+  `proLocation`; ETA does not.
+- **D7** — the geofence radius is a `PLATFORM_DEFAULTS` constant
+  (`DEFAULT_ARRIVAL_RADIUS_M`, 100 m); an override requires a reason and audits.
+- **D8** — edge-case legs ship detection signals only; hold crons, reassignment
+  and late penalties stay Phases 5/9.
+- **D9** — no new npm packages, no new crons, no refund UI, no `NEXT_PUBLIC_`
+  secrets; `vercel.json` is untouched.
+
+### 6.7 What is deliberately not here
+
+- **No earnings page and no payouts.** The home-page earnings panel stays prose;
+  the pending `professional_earnings` row is written by `complete_job` and read by
+  nobody until Phase 8.
+- **No extension flow.** The timer shows the original window; the client field is
+  hard-coded false.
+- **No ETA.** `proLocation` is coordinates or `null`, never a number of minutes.
+- **No reassignment, ranking or fan-out.** One offer per booking, one
+  professional, no ranking — Phase 5.
+- **No professional-facing refund or cancel-to-refund path.** A no-show is a
+  detection signal; ops owns the resolution.
 - Toasts on `/login` come from `react-hot-toast`, whose live-region semantics
   were not checked here.
 - `docs/DATABASE.md` and `docs/API.md` are named in the Phase 1 plan and do not

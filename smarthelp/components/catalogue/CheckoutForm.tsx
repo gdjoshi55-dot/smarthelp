@@ -71,11 +71,16 @@ import {
  *
  * Three rules govern the states below, and none of them is an aesthetic choice:
  *
- * 1. **The `handler` callback never renders `paid`.** It fires the instant the
- *    gateway closes its window; the webhook that writes `payments.status` may
- *    still be seconds away. The handler may only start `verifyPayment` (which
- *    writes nothing) and begin polling `fetchPayment`. `paid` is reached solely
- *    through `paymentDisplayState(polledStatus)`.
+ * 1. **The `handler` closes the loop from `verifyPayment`'s own answer.** The
+ *    route it calls already confirmed the payment with the signature the
+ *    gateway handed over — the same truth the webhook's header proves — so a
+ *    returned `status` of `success` is a fact, and the screen claims `paid`
+ *    from it directly. This is pos-subscription's model: authorisation
+ *    happened, signature verified, row written, done — the webhook is never a
+ *    prerequisite, which is exactly what keeps a payment from sitting on
+ *    "Processing payment…" when no webhook can reach the host. A status still
+ *    awaiting money, or a failed verification, falls back to the poll/retry
+ *    path below instead of hanging.
  * 2. **A poll that never settles says so.** It stops after `POLL_ATTEMPTS` and
  *    shows an honest "still confirming" state where pressing the button asks the
  *    row again — it does not order a second charge. Spinning forever, or
@@ -107,10 +112,15 @@ const POLL_ATTEMPTS = 15;
  */
 interface RazorpayCheckoutOptions {
   key: string;
+  /** pos-subscription sends both; Razorpay reads `key`, and `key_id` is kept so the two configs are interchangeable. */
+  key_id?: string;
   order_id: string;
   amount: number;
   currency: string;
   name?: string;
+  description?: string;
+  /** Same shape as pos-subscription's Checkout invocation. */
+  prefill?: { email?: string; contact?: string; name?: string };
   handler: (response: CheckoutSignaturePayload) => void;
   modal?: { ondismiss?: () => void };
 }
@@ -118,7 +128,10 @@ interface RazorpayCheckoutOptions {
 declare global {
   interface Window {
     /** Injected by `checkout.js`. Absent until the script has loaded. */
-    Razorpay?: new (options: RazorpayCheckoutOptions) => { open: () => void };
+    Razorpay?: new (options: RazorpayCheckoutOptions) => {
+      open: () => void;
+      on: (event: string, handler: (payload?: unknown) => void) => void;
+    };
   }
 }
 
@@ -168,6 +181,7 @@ export function CheckoutForm({
   slotStart,
   bookingType: bookingTypeProp,
   slotForDurationMinutes,
+  customerEmail,
 }: {
   serviceId: string;
   serviceName: string;
@@ -178,6 +192,8 @@ export function CheckoutForm({
   bookingType?: 'instant' | 'scheduled' | null;
   /** The length the pre-chosen slot was picked for, if there is a slot. */
   slotForDurationMinutes: number | null;
+  /** Prefills the gateway's email field, exactly as pos-subscription does. */
+  customerEmail?: string | null;
 }) {
   const router = useRouter();
   const { addressId } = usePublicLocation();
@@ -443,20 +459,77 @@ export function CheckoutForm({
     setPayPhase('checkout');
     const rzp = new window.Razorpay!({
       key: order.keyId,
+      // The full pos-subscription set: same key twice, a description, and an
+      // email prefill, so the checkout reads identically to the POS one.
+      key_id: order.keyId,
       order_id: order.orderId,
       amount: Math.round(order.amount * 100),
       currency: order.currency,
       name: 'SmartHelp',
-      handler: (response) => {
-        // §12.1's hard rule, in code: the handler may *start* work and must not
-        // conclude it. `confirming` is the strongest state it can ask for, and
-        // `paid` is reachable only from the polled row below.
+      description: serviceName,
+      ...(customerEmail ? { prefill: { email: customerEmail } } : {}),
+      handler: async (response) => {
+        // pos-subscription's closing loop: the verify route checks the
+        // signature and confirms the payment, so its answer is the settlement
+        // — not a request for a webhook that may never reach this host.
         stopPolling();
         setPayPhase('confirming');
         setPayNote('Checking your payment…');
-        // Reads only — a signature mismatch here changes nothing about the
-        // webhook's authority, and swallowing it leaves the poll to decide.
-        void verifyPayment(response).catch(() => {});
+        // Tell `ondismiss` synchronously, not through the effect: the modal may
+        // close during the `await` below, before any re-render flushes, and a
+        // closed window at that moment must not reset a confirmed payment to idle.
+        phaseRef.current = 'confirming';
+
+        let verify: { status: string };
+        try {
+          verify = await verifyPayment(response);
+        } catch (e) {
+          // Surface the server's own reason instead of a guess, exactly like
+          // pos-subscription shows `verifyRes.errBody.error`: 401 (session
+          // expired), 402 (signature mismatch — a credentials inconsistency),
+          // 404 (no row for that order) or 500. A silent generic sentence is
+          // what turns a verification failure into an unreadable hang.
+          const code = e instanceof BookingApiError ? e.code : 'UNKNOWN';
+          const reason =
+            e instanceof Error && e.message
+              ? e.message
+              : 'The payment could not be verified.';
+          if (e instanceof BookingApiError && e.code === 'PAYMENT_NOT_VERIFIED') {
+            // Nothing was charged — the payment was never captured. Retry with a
+            // fresh idempotency key, not a replay of the spent attempt.
+            paymentKey.current = createIdempotencyKey();
+            setPayPhase('payment_failed');
+            setPayNote(
+              'The payment could not be verified, and nothing was charged. You can try again.'
+            );
+          } else {
+            // A real failure worth showing verbatim, so a stuck checkout names
+            // its cause. Still a retryable ended attempt, not a hang.
+            paymentKey.current = createIdempotencyKey();
+            setPayPhase('payment_failed');
+            setPayNote(
+              `${reason} Nothing was charged, and your booking is still saved. You can try again.`
+            );
+          }
+          return;
+        }
+
+        const state = paymentDisplayState(verify.status);
+        if (state === 'paid') {
+          setPayPhase('paid');
+          setPayNote(null);
+          return;
+        }
+        if (state === 'failed') {
+          // The attempt is over: nothing was captured, and a retry wants its
+          // own order rather than a replay of a spent one.
+          paymentKey.current = createIdempotencyKey();
+          setPayPhase('payment_failed');
+          setPayNote('The payment did not go through, and nothing was charged. You can try again.');
+          return;
+        }
+        // Verify reported the row still awaiting money — a rare race. The poll
+        // settles it within its own bound, and its timeout says so honestly.
         startPolling(order.paymentId);
       },
       modal: {
@@ -472,6 +545,14 @@ export function CheckoutForm({
           );
         },
       },
+    });
+    // pos-subscription closes the loop on a declined payment with this event;
+    // without it the window is dismissed with no sentence. The row is still
+    // authoritative, so this only reports the failure the gateway just gave us.
+    rzp.on('payment.failed', () => {
+      stopPolling();
+      setPayPhase('payment_failed');
+      setPayNote('The payment did not go through. You can try again.');
     });
     rzp.open();
   }

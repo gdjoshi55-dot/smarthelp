@@ -138,7 +138,7 @@ describeDb('database: the schema is actually there', () => {
       `select coalesce(string_agg(u.email, ', '), '')
          from auth.users u
          join public.profiles p on p.id = u.id
-        where u.email like '%@smarthelp.test'
+        where u.email like 'demo.%@smarthelp.test'
           and (u.email_confirmed_at is null or not exists (
                 select 1 from auth.identities i
                  where i.user_id = u.id and i.provider = 'email'));`
@@ -708,6 +708,206 @@ describeAuth(
       await adminClient().auth.admin.deleteUser(second.data.user!.id);
     }
   });
+  },
+  60_000
+);
+
+/** The seeded demo professional, as a profile id and a professionals id. */
+async function demoProfessionalIds(): Promise<{ profileId: string; professionalId: string }> {
+  const profileId = await seededProfileId('demo.pro@smarthelp.test');
+  const professionalId = await sql(
+    `select id from public.professionals where profile_id = '${profileId}';`
+  );
+  if (!/^[0-9a-f-]{36}$/i.test(professionalId)) {
+    throw new Error('the seeded demo professional has no professionals row — run "npm run db:seed"');
+  }
+  return { profileId, professionalId };
+}
+
+/** The id of a seeded demo booking, by its fixed booking number. */
+async function seededBookingId(bookingNumber: string): Promise<string> {
+  const id = await sql(`select id from public.bookings where booking_number = '${bookingNumber}';`);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    throw new Error(`no seeded booking ${bookingNumber} — run "npm run db:seed"`);
+  }
+  return id;
+}
+
+/*
+ * Phase 4's two new ledgers — `booking_assignments` and `professional_earnings`
+ * — both hold something worth hiding: which jobs were offered to whom, and what
+ * each professional earned. They share one shape: the owner reads their own rows
+ * and nobody else reads anything, the browser never writes. A policy that simply
+ * denied everyone would pass a "the other user sees nothing" test, so each block
+ * also proves the owner *can* read, which is what makes the denial meaningful.
+ */
+
+describeDb(
+  'database: the offer ledger is private to the professional',
+  () => {
+    it('lets the owner read their own offer, and nobody else', async () => {
+      const pro = await demoProfessionalIds();
+      const customer = await demoCustomerIds();
+      const bookingId = await seededBookingId('SH-20260101-90002');
+
+      // A fixture offer. Clear any live one first: `uniq_active_assignment_per_booking`
+      // allows only one offered/accepted row per booking, so a leftover from an
+      // interrupted run would make the insert fail for the wrong reason.
+      await sql(
+        `delete from public.booking_assignments
+          where booking_id = '${bookingId}' and status in ('offered','accepted');`
+      );
+      const assignmentId = await sql(
+        `insert into public.booking_assignments
+           (booking_id, professional_id, status, expires_at)
+         values ('${bookingId}', '${pro.professionalId}', 'offered', now() + interval '15 minutes')
+         returning id;`
+      );
+
+      try {
+        // The owner sees it.
+        expect(
+          await sqlAsRole(
+            pro.profileId,
+            `select count(*) from public.booking_assignments where id = '${assignmentId}';`
+          )
+        ).toBe('1');
+
+        // Another signed-in account sees nothing — RLS filters the row out.
+        expect(
+          await sqlAsRole(customer.profileId, `select count(*) from public.booking_assignments;`)
+        ).toBe('0');
+
+        // An anonymous visitor cannot even attempt the read: anon was revoked.
+        await expect(
+          sqlAsRole(null, `select count(*) from public.booking_assignments;`, 'anon')
+        ).rejects.toThrow(/permission denied/i);
+
+        // No browser write policy exists, so the owner cannot accept by hand —
+        // only `accept_offer` (service role) may move the row.
+        await expect(
+          sqlAsRole(
+            pro.profileId,
+            `update public.booking_assignments set status = 'accepted' where id = '${assignmentId}';`
+          )
+        ).rejects.toThrow(/permission denied/i);
+      } finally {
+        await sql(`delete from public.booking_assignments where id = '${assignmentId}';`);
+      }
+    });
+  },
+  60_000
+);
+
+describeDb(
+  'database: the earnings ledger is private to the professional',
+  () => {
+    it('lets the owner read their own earning, and nobody else', async () => {
+      const pro = await demoProfessionalIds();
+      const customer = await demoCustomerIds();
+      const bookingId = await seededBookingId('SH-20260101-90004');
+
+      // `booking_id` is UNIQUE; drop a leftover first so the insert is clean.
+      await sql(`delete from public.professional_earnings where booking_id = '${bookingId}';`);
+      const earningId = await sql(
+        `insert into public.professional_earnings
+           (professional_id, booking_id, gross_amount, commission_pct,
+            commission_amount, net_amount, available_at)
+         values ('${pro.professionalId}', '${bookingId}', 240.00, 0.2000,
+                 48.00, 192.00, now() + interval '24 hours')
+         returning id;`
+      );
+
+      try {
+        expect(
+          await sqlAsRole(
+            pro.profileId,
+            `select count(*) from public.professional_earnings where id = '${earningId}';`
+          )
+        ).toBe('1');
+
+        expect(
+          await sqlAsRole(customer.profileId, `select count(*) from public.professional_earnings;`)
+        ).toBe('0');
+
+        await expect(
+          sqlAsRole(null, `select count(*) from public.professional_earnings;`, 'anon')
+        ).rejects.toThrow(/permission denied/i);
+      } finally {
+        await sql(`delete from public.professional_earnings where id = '${earningId}';`);
+      }
+    });
+  },
+  60_000
+);
+
+/*
+ * The `kyc-documents` bucket is the one place a professional's identity papers
+ * live. It is private by construction: 0025 deliberately creates no SELECT
+ * policy, so the bytes are reachable only through a staff-guarded signed URL.
+ * These assertions pin that absence — a `select` policy on the bucket would be a
+ * complete identity-document disclosure, and is easy to add by accident.
+ */
+describeDb('database: kyc documents are a private bucket', () => {
+  it('has no select policy on the bucket, so the objects are not readable', async () => {
+    const readers = await sql(
+      `select coalesce(string_agg(policyname, ', '), '') from pg_policies
+        where schemaname = 'storage' and tablename = 'objects'
+          and cmd = 'SELECT' and qual like '%kyc-documents%';`
+    );
+    expect(readers, `kyc-documents has a select policy: ${readers}`).toBe('');
+  });
+
+  it('marks the bucket private and caps the file size', async () => {
+    const row = await sql(
+      `select "public"::text || '|' || file_size_limit::text
+         from storage.buckets where id = 'kyc-documents';`
+    );
+    // 5 MiB, from 0000_storage_buckets.sql.
+    expect(row).toBe('false|5242880');
+  });
+
+  it('confines an upload to the uploader’s own folder', async () => {
+    const check = await sql(
+      `select with_check from pg_policies
+        where schemaname = 'storage' and tablename = 'objects'
+          and policyname = 'kyc_insert_own';`
+    );
+    expect(check).toContain('current_professional_id');
+  });
+});
+
+/*
+ * Pitfall 1's regression. `bookings_select_own` lets a customer read their own
+ * booking and a professional read theirs, and 0010 originally granted SELECT on
+ * every column — including the live `otp_hash`. Once a job is at `arrived` that
+ * hash is the verification secret, so 0029 revoked the blanket grant and
+ * re-granted every column *except* `otp_hash`. This is the live proof: the
+ * ordinary column comes back, the hash does not. If it ever fails, A3's column
+ * hardening has been lost and the fallback (route-layer strip only) is in force.
+ */
+describeDb(
+  'database: a booking otp_hash is not readable by its owner',
+  () => {
+    it('returns the ordinary columns but refuses otp_hash', async () => {
+      const customer = await demoCustomerIds();
+      const bookingId = await seededBookingId('SH-20260101-90001');
+
+      // The row itself is visible: this is the customer's own booking.
+      expect(
+        await sqlAsRole(
+          customer.profileId,
+          `select status from public.bookings where id = '${bookingId}';`
+        )
+      ).toBe('in_progress');
+
+      await expect(
+        sqlAsRole(
+          customer.profileId,
+          `select otp_hash from public.bookings where id = '${bookingId}';`
+        )
+      ).rejects.toThrow(/permission denied/i);
+    });
   },
   60_000
 );

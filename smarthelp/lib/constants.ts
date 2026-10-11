@@ -122,7 +122,86 @@ export const PLATFORM_DEFAULTS = {
    * and Phase 2 for `maxBookingMinutes`.
    */
   supportRefundLimit: Number(process.env.DEFAULT_SUPPORT_REFUND_LIMIT || 1500),
+
+  // ── Phase 4: the professional app ──────────────────────────────
+  //
+  // Offered jobs, the service OTP's own policy, and the arrive geofence.
+  // All of these are Phase 6 `platform_settings` rows eventually; until that
+  // table lands they read from here, the same pattern Phase 1 used for
+  // `instant_lead_minutes`.
+
+  /**
+   * §9.4. How long an offer is live before lazy expiry. Phase 5's sweeper cron
+   * expires offers eagerly; until it exists the inbox read and the accept route
+   * refuse an offer past this (D1, Pitfall 6).
+   */
+  offerTtlMinutes: Number(process.env.DEFAULT_OFFER_TTL_MINUTES || 15),
+  /**
+   * §22.3. The service OTP's TTL, attempt cap, lockout and regeneration cap.
+   * `serviceOtpLength` above is the digit count; these are the rest of the
+   * policy. Distinct from the sign-in OTP policy (`OTP_*` below) because the
+   * two are different secrets with different lifetimes.
+   */
+  otpTtlMinutes: Number(process.env.DEFAULT_OTP_TTL_MINUTES || 10),
+  otpMaxAttempts: Number(process.env.DEFAULT_OTP_MAX_ATTEMPTS || 3),
+  otpLockoutMinutes: Number(process.env.DEFAULT_OTP_LOCKOUT_MINUTES || 15),
+  otpMaxGenerations: Number(process.env.DEFAULT_OTP_MAX_GENERATIONS || 3),
+  /**
+   * §14.3 / §25.7 (D7). The geofence radius, in metres: the server-side
+   * haversine check an arrive must pass, or be overridden with a reason.
+   */
+  defaultArrivalRadiusM: Number(process.env.DEFAULT_ARRIVAL_RADIUS_M || 100),
+  /**
+   * §10.2 (D6). How old a professional's last location ping may be before the
+   * track payload treats it as unknown and answers `proLocation: null`. A stale
+   * pin is worse than no pin: a customer watching it move would be watching a
+   * building the professional left minutes ago. No ETA is ever derived from it.
+   */
+  proLocationFreshMinutes: Number(process.env.DEFAULT_PRO_LOCATION_FRESH_MINUTES || 15),
+  /**
+   * §25.7 (D6). The `POST /api/professionals/me/location` throttle: a ping that
+   * arrives within this many seconds of the last accepted one is dropped rather
+   * than written. One write per client per window, computed from
+   * `location_updated_at` — no separate rate-limit table exists.
+   */
+  proLocationThrottleSeconds: Number(process.env.DEFAULT_PRO_LOCATION_THROTTLE_SECONDS || 30),
 } as const;
+
+/**
+ * The KYC documents the professional stepper collects (§20.10).
+ *
+ * These are exactly the `professional_documents.doc_type` values the `0005`
+ * check constraint accepts for the three steps (Identity / Address / Selfie),
+ * and the same set the `kyc_document_decision` roll-up (0029) counts over —
+ * one list, three readers. `address_proof` and `selfie` are self-describing;
+ * Identity is an Aadhaar front. The wider enum (`aadhaar_back`, `pan`,
+ * `police_verification`, …) stays available for Phase 6 to request.
+ */
+export const KYC_REQUIRED_DOC_TYPES = [
+  'aadhaar_front',
+  'address_proof',
+  'selfie',
+] as const;
+
+export type KycDocType = (typeof KYC_REQUIRED_DOC_TYPES)[number];
+
+/**
+ * The KYC upload policy (§24.15), mirroring the `kyc-documents` bucket row in
+ * `0000_storage_buckets.sql`.
+ *
+ * These are declared *and* enforced at the route, but the signature that
+ * matters is the bucket's own `allowed_mime_types` / `file_size_limit` — a
+ * signed URL cannot promise a byte count, so the route check is a courtesy
+ * refusal with a readable message, and the bucket is the backstop. The client
+ * pre-checks the same two numbers before it ever uploads.
+ */
+export const KYC_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+export const KYC_ALLOWED_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'application/pdf',
+] as const;
 
 /** Default duration ladder offered when an admin has not overridden it (§4.3). */
 export const DEFAULT_DURATION_LADDER = [30, 45, 60, 90, 120, 180, 240, 300, 360];

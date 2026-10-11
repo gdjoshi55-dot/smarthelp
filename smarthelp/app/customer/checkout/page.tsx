@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import AuthGuard from '@/components/auth/AuthGuard';
 import RoleShell from '@/components/auth/RoleShell';
+import { useAuth } from '@/contexts/AuthContext';
 import { PublicLocationProvider } from '@/components/catalogue/PublicLocationContext';
 import { CheckoutForm } from '@/components/catalogue/CheckoutForm';
 import { fetchService } from '@/lib/catalogueClient';
@@ -27,6 +28,8 @@ import type { ServiceSummary } from '@/lib/catalogue';
 
 function CheckoutInner() {
   const params = useSearchParams();
+  // The email the gateway's checkout is prefilled with, as pos-subscription does.
+  const { session } = useAuth();
   const slug = params.get('service');
   const durationParam = Number(params.get('duration'));
   const bookingType = params.get('bookingType') as 'instant' | 'scheduled' | null;
@@ -92,6 +95,7 @@ function CheckoutInner() {
             slotStart={slot}
             bookingType={bookingType}
             slotForDurationMinutes={slot ? slotForDuration : null}
+            customerEmail={session?.user?.email ?? null}
           />
         </PublicLocationProvider>
       ) : null}

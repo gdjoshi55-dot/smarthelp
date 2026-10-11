@@ -13,13 +13,17 @@ import { BookingApiError } from './bookingClient';
  * not a second class that renders differently by accident. What this module adds
  * is the hard rule made testable:
  *
- * **The Razorpay `handler` callback never produces a `paid` state.** It fires
- * the moment the gateway closes its window, and a webhook can still be seconds
- * away — §12.1 is explicit that "paid" may not be claimed until the payment row
- * says `success`. Everything the handler *may* do is start `verifyPayment` and
- * begin polling `fetchPayment`; the only thing that may render "paid" is
- * `paymentDisplayState('success')`. The test for that feeds the handler payload
- * into the display logic and asserts the result is `confirming`, never `paid`.
+ * **The Razorpay `handler` closes the loop through `verifyPayment`.** It fires
+ * the moment the gateway closes its window; a webhook can still be seconds
+ * away — or never arrive, when the host Razorpay has no route to. That is the
+ * pos-subscription model: `/api/payments/verify` checks the Checkout signature
+ * (the same truth the webhook's header proves) and, when the row is still
+ * awaiting money, confirms it through the single writer, so its returned
+ * `status` *is* the settled fact. The only thing that may render "paid" is
+ * `paymentDisplayState(status)`, fed from either the verify response or, as a
+ * fallback when that status is still pre-capture, the poll of `fetchPayment`.
+ * A screen that waits only on the poll can sit on "Confirming payment…"
+ * forever; this module exists so the handler never does.
  *
  * ## The `Authorization` header
  *
@@ -138,7 +142,11 @@ export function createPaymentOrder(
 
 /**
  * The Checkout handler's one real job: prove the signature we were handed and
- * read what the webhook (so far) says. Writes nothing itself.
+ * read what the server says. The route confirms a booking payment through the
+ * same single writer the webhook uses, so the `status` it returns is already
+ * `success` on a normal checkout — exactly as pos-subscription's verify answers
+ * after it writes. The browser renders `paid` only from `paymentDisplayState`
+ * over that status, never from the mere shape of this response.
  */
 export function verifyPayment(payload: CheckoutSignaturePayload): Promise<{
   verified: boolean;

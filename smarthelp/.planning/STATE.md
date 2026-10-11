@@ -1,17 +1,39 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: in_progress
+last_updated: "2026-10-10T00:00:00.000Z"
+last_activity: "2026-10-10 - **Phase 4 (Professional app) fully complete.** All four waves built, the Wave A schema push (`0012`/`0021`/`0029`, plus the `0030` fix) applied to the live project, and the D1 phase gate passed: typecheck/lint/build exit 0, `npm test` 798/46 (floor 655/38), `npm run test:db` 96/7 (floor 77/5), §31.1's exit criterion hand-checked, and the three manual verifications (live bucket upload, on-device geofence override, §30 smoke) passed. The four house docs updated; `phases/04-professional-app/04-SUMMARY.md` written; ROADMAP Phase 4 marked complete."
+progress:
+  total_phases: 4
+  completed_phases: 2
+  total_plans: 4
+  completed_plans: 2
+  percent: 50
+---
+
 # SmartHelp — Project State
 
 ## Current Phase
 
-Phase 3 — Payments, refunds & wallet. **Complete.** B-GATE passed 2026-10-08:
-all nine steps green, `0015` applied to the live project (24 migrations applied,
-0 outstanding), unexcluded suite 655/38, `npm run test:db` 77/5, and §31.1's
-exit criteria hand-checked — money in, money out, webhook sole authority (zero
-client-reachable writers of `success`; only the webhook and the reconcile cron
-reach `confirm_booking_payment`), RLS on payments. `README.md` now says
-"at Phase 3" with the phase table updated. Plans:
-[`phases/03-payments/03-PLAN.md`](phases/03-payments/03-PLAN.md).
+Phase 4 — Professional app. **Complete.** D1 phase gate passed 2026-10-10: all
+four waves built, the Wave A schema push (`0012`/`0021`/`0029`, plus the `0030`
+fix) applied to the live project (28 applied, 0 outstanding), typecheck/lint/build
+exit 0, `npm test` **798/46** (floor 655/38), `npm run test:db` **96/7** (floor
+77/5), §31.1's exit criterion hand-checked, and the three manual verifications
+(live bucket upload, on-device geofence override, §30 smoke) passed. `README.md`
+now says "at Phase 4", and `docs/API.md` §4.7, `docs/FEATURES.md` §6,
+`docs/DATABASE.md` §11 record the phase. Plan and record:
+[`phases/04-professional-app/04-PLAN.md`](phases/04-professional-app/04-PLAN.md),
+[`04-SUMMARY.md`](phases/04-professional-app/04-SUMMARY.md).
 
-**Next:** Phase 4 (see [`ROADMAP.md`](ROADMAP.md)).
+**Next:** Phase 5 — the matching engine (see [`ROADMAP.md`](ROADMAP.md)).
+
+Phase 3 — Payments, refunds & wallet. **Complete.** B-GATE passed 2026-10-08:
+unexcluded suite 655/38, `npm run test:db` 77/5, §31.1's exit criteria
+hand-checked — money in, money out, webhook sole authority, RLS on payments.
+Plans and record in `phases/03-payments/`.
 
 Phase 2 — Booking & pricing. **Substantially complete.** Plan:
 [`phases/02-booking-pricing/02-PLAN.md`](phases/02-booking-pricing/02-PLAN.md).
@@ -23,15 +45,26 @@ read model.
 - Phase 0 — Foundation. Migrations 0000–0007 and 0024–0027, email + password
   sign-in, the OTP ledger, roles and capabilities. Built before the phase list was
   tracked; summarised in `README.md`.
+
 - Phase 1 — Catalogue & availability. Migration 0008, locality resolution, the
   slot engine, nine endpoints, three public pages, `docs/`.
+
 - Phase 2 — Booking & pricing. Migrations 0009–0013, 0016–0017, 0028, the pricing
   engine, the booking endpoints and pages — see "Phase 2 progress" below.
+
 - Phase 3 — Payments, refunds & wallet. Migrations 0014–0015, Razorpay
   order/verify/webhook/reconcile, `confirm_booking_payment` as the single writer
   of `success`, the refund API with the ₹1500 limit, cancel-of-paid auto-refund,
   the wallet ledger with `apply_wallet_delta`, and the §31.1 exit criteria.
   Recorded 2026-10-08; plans and record in `phases/03-payments/`.
+
+- Phase 4 — Professional app. Migrations `0012` (assignments), `0021` (earnings),
+  `0029` (service execution) and `0030` (the `search_path` / re-complete fix), the
+  professional server/client modules and OTP helpers, availability, the KYC flow
+  end-to-end, the offers inbox, arrive/OTP/complete/no-show, the customer track
+  endpoint, the professional console and the customer's live booking screen, and
+  §31.1's exit criterion (take and complete a job). Recorded 2026-10-10; plan and
+  record in `phases/04-professional-app/`.
 
 ## Phase 2 progress
 
@@ -84,29 +117,35 @@ returns the breakdown, the two shares, and a `pricing_snapshot`.
   `professional_gross = taxable - platform_fee - commission`, which reads as
   "the professional earns on the discounted service value, less commission" and
   never touches the fee or the tax, both of which the platform remits.
+
 - **`assertBalanced()` throws if the two shares ever stop summing to the total**,
   so a rule added later that forgets a share fails a booking creation instead of
   quietly overpaying a professional.
+
 - **A discount is apportioned across lines by largest remainder.** Flooring each
   line's share loses paise (₹10 over three equal lines is 999 paise, not 1000);
   rounding each share up overpays (three half-paiso shares each round to 2).
   Flooring and then handing out the leftover by largest fractional remainder,
   breaking ties on index, is exact — and the tie-break matters because the result
   is frozen into `pricing_snapshot` and must replay identically.
+
 - **Two different scales for two similar-looking columns.** `tax_rate` and
   `commission_pct` are rates in [0,1]; `discount_value` for a percentage coupon
   and `max_discount_pct_of_total` are percents on a 0–100 scale. Conflating them
   is the easiest mistake in the file, so the conversion is written next to the
   comment that says which is which.
+
 - **§7.1's floor guard is currently unreachable**, and the code says so. The
   guard allows a discount up to `subtotal + platformFee`, but
   `max_discount_pct_of_total` is clamped to 100% of the subtotal, which is
   strictly less. It stays as the thing that would stop `taxable` going negative
   if the ceiling were ever allowed above 100.
+
 - **`parseNumeric()` throws rather than defaulting a broken value to zero.**
   PostgREST returns `numeric` as a JSON string; every money column on
   `bookings` is `not null`, so a null there is a wrong query, not an absent
   value, and zeroing it would create a booking worth nothing.
+
 - **`pricing.test.ts` checks the engine against `priceForDuration()`** from the
   Phase 1 catalogue over a matrix of durations and duration-row overrides, so
   the display price and the invoiced price cannot drift the way `durationMinutes`
@@ -129,30 +168,36 @@ catalogue.
   application guard exists to produce a readable error; the trigger is what makes
   the state safe, because a Route Handler written next year that forgets the
   guard cannot produce `refunded -> paid`.
+
 - **The whole 18-value enum ships in Phase 2 while the code reaches four of its
   values.** A label added when it is first needed is an `ALTER TYPE` that
   rewrites `bookings` under an `ACCESS EXCLUSIVE` lock, on the one table with a
   history row behind every row. The unreached states are unreachable because
   nothing writes them, not because the database would refuse.
+
 - **Actor identity is passed in, not read from `auth.uid()`.** §8.2 says to read
   the JWT, but every privileged write reaches Postgres through the service-role
   client, so `auth.uid()` is null precisely for the events that matter — a
   cancellation, a refund, an ops override. The caller sets `app.transition_actor`
   transaction-locally and the JWT remains a fallback.
+
 - **Money is `numeric(12,2)` and rates are `numeric(5,4)`.** The scale is the
   guard: `numeric(5,2)` would hold `18.00` happily, and a tax rate stored as
   `18` instead of `0.18` survives to checkout, where the customer sees it.
   `tax_rate between 0 and 1` catches what does fit.
+
 - **Double-booking is a GiST exclusion, not a check.** An availability check is a
   read followed by a write, and two customers booking the same professional at the
   same time both read "free". The constraint is atomic; the loser gets `23P01` and
   the server offers the next slot. The partial `where (status in
   ('reserved','in_progress'))` is what stops a completed window from blocking that
   slot forever.
+
 - **A coupon is a ledger, not a counter.** `coupon_usage` has
   `unique (booking_id)`, so "one coupon per booking" is a property of the schema
   rather than a check the pricing engine must remember. `coupons.usage_count` is a
   cache for rendering "3 of 10 left" and is not what enforces `usage_limit`.
+
 - **Ratings are gated in the database.** `validate_rating_booking()` checks the
   booking exists, belongs to that customer, was done by that professional, and has
   finished. A rating is what every professional's public score is computed from,
@@ -168,13 +213,16 @@ Written after the migrations and immediately wrong, which is what they were for.
   nothing cascades from it. Fixed by testing whether the parent row still exists:
   Postgres fires a referential action from an AFTER trigger on the parent, so a
   cascade finds no parent and a hand-rolled delete finds one.
+
 - **`ratings` had the same bug**, so deleting a rated booking failed the same way.
   Fixed the same way.
+
 - **The history trigger silently swallowed edits.** The DELETE branch returned
   `OLD` and the UPDATE branch fell through to it, so `update … set note = …` was
   discarded with no error. The caller would believe the note was rewritten. A
   guard that quietly does nothing is worse than none, because it looks like it
   worked.
+
 - **A hand-written path table in the test was wrong in ten of twelve entries.**
   `paid` and `cancelled` omitted their own final state, so walks stopped a step
   short and the failure surfaced in an unrelated assertion. Replaced with
@@ -188,18 +236,26 @@ Written after the migrations and immediately wrong, which is what they were for.
   sequence gives the same shape and cannot collide; the unique constraint is the
   actual guarantee. The date part renders in `Asia/Kolkata`, because a booking made
   at 00:10 IST is the 26th in India even when the database is configured for UTC.
+
 - **No `commission_amount` or `platform_revenue` column.** §24.7 does not list
   them, and both are arithmetic on `professional_gross` and `commission_pct`, which
   are stored. A third column would be a second thing to drift. They are derived
   and retained in `pricing_snapshot`.
+
 - **The spec's geo index does not compile as written.** §24.7 says
   `point(address_snapshot->>'lng', …)`, but `jsonb ->> text` and there is no
   `point(text, text)`. Explicit `::double precision` casts, with `btree_gist`
   from `0002`.
-- **`booking_assignments` and `assignment_status` are deferred to Phase 5.** They
-  are declared in §24.9 beside `professional_schedule` but belong to the matching
-  engine, and a table with no matching engine behind it can only ever hold rows
-  nothing wrote. `favourites` is deferred from `0017` for the same reason.
+
+- **`booking_assignments` and `assignment_status` are no longer deferred.** Phase 4
+  reclaimed migration `0012` (D1 in `phases/04-professional-app/04-PLAN.md`): the
+  offers inbox and the accept compare-and-set need the table, so `0012` now
+  creates it with `uniq_active_assignment_per_booking`, the `accept_offer`/
+  `decline_offer` CAS RPCs, and the minimal `sweep_new_bookings` producer. What
+  stays in Phase 5 is the *matching engine* — ranking, fan-out, advisory locks and
+  the reassignment cascade — and the table is built to receive it unchanged.
+  `favourites` is still deferred from `0017`.
+
 - **`booking_status_history` is append-only but not untouchable by cascade**, and
   the distinction is the parent-existence test described above.
 
@@ -226,15 +282,18 @@ no.
   null actor — the anonymity `0011`'s own comment calls "exactly the events that
   matter". Each of the three new functions sets both settings *itself* and then
   performs the writes that read them, in one statement.
+
 - **Three PostgREST requests could not be one transaction. — fixed by `0028` too.**
   Creating a booking was a row, then its `booking_items`, then a status update, so a
   failure between any two left a booking with a total and nothing behind it.
   `create_booking` does all three; the test that proves it uses a duplicate
   `service_id` to make one line impossible and asserts the *booking count* is
   unchanged afterwards.
+
 - **`POST /api/bookings/[id]/reschedule` answered 409 on every request.** See above.
 - **Idempotency is now used**, by `POST /api/bookings`, with the validated body as
   the hash so whitespace cannot spend a customer's key.
+
 - **The `/customer` "Browse services" button is disabled** with the title "Arrives
   in Phase 1", which was false — the catalogue is public and built.
 
@@ -250,35 +309,43 @@ no.
   decision lands in a layout effect on the commit that delivers the list, so the
   amber notice never paints over an address about to be applied; `BookingPanel`
   is fixed by the same code path.
+
 - **`GET /api/availability` answers `VALIDATION_ERROR` (with a 422 status
   override) for an unresolvable locality**, where its own docstring and the plan
   both say `SERVICE_UNAVAILABLE`. A client branching on `code` therefore sees a
   different code for the same 422 that an uncovered *service* produces. Left as
   is, and documented in `docs/API.md`.
+
 - ~~**Nothing consumes `quoteToken` for payment.**~~ — closed by Phase 3:
   `create-order` asserts `bookings.quote_token IS NOT NULL` (presence gates
   payment, freshness does not) and `confirm_booking_payment` nulls it, making
   the token single-use across the payment lifecycle.
+
 - **There is no consolidated `bookingView`.** Detail pages assemble their payload
   from several queries. Correct, but more than one round trip per page.
+
 - **Dead code**: `noContent`, `requireCapability`/`requireStaff`/`requireAdmin`
   (the capability table is enforced by the UI only), `isUuid`, `parsePaging`,
   `createRequestClient`, a byte-identical private `maskEmail` in `send-otp`, and
   `components/ui/ImageUpload.tsx` — unreferenced, and pointed at a `menu-images`
   bucket that belongs to SmartPOS and does not exist here.
+
 - **`sign-in` returns the raw `['*']` capability list to a `super_admin`**, where
   `/api/auth/me` expands the wildcard. A client checking capabilities must handle
   the literal `'*'`.
+
 - **Comment drift**: two code comments point at files that do not exist, and
   `lib/validation.ts`'s header claims it is safe to import from the browser when it
   is not. `0007`'s header says twenty services and there are twenty-three; its
   coverage comment says thirteen localities and there are twelve; `seed.sql`'s
   header says four demo users and creates five, and misspells
   `SMARTHELP_OWNER_LOGIN`. None of these change behaviour; all are wrong.
+
 - ~~**`vercel.json` declares eight cron paths with no handlers**~~ — closed
   2026-10-08: it declares exactly one (`/api/cron/reconcile-payments`, every 30
   minutes, fail-closed on `CRON_SECRET`), and the other seven schedules live as
   prose in `docs/ARCHITECTURE.md` §7 until their phases build handlers.
+
 - **The migration ledger holds one filename that is not on disk** — `0009_bookings.sql`,
   from the legacy era. Harmless, because the ledger is only consulted for files
   that exist, but it is a record of a file nobody can read.
@@ -294,18 +361,22 @@ Found by using the application, not by the suite. A signed-in customer opened
   route can check — it is easy to write and believe the call is authenticated,
   because the page is visibly signed in. `lib/bookingClient.ts` did exactly that, on
   every booking read and write.
+
 - **`SavedAddressPicker` had the same omission, and failed silently.** It sends
   `credentials: 'include'` with no token and returns quietly on a non-ok response,
   so checkout quietly showed no saved addresses. Nobody had reported that one; the
   bookings page just happened to shout about it first.
+
 - **Every route test passed, because each builds its own `Request` with the header
   already attached.** The 40 tests in `routes.bookings.test.ts` prove the server
   accepts a bearer token. No test imported the module that failed to send one —
   `bookingClient.ts` had no test file at all.
+
 - **`authorizationHeader()` now lives in `lib/sessionHeaders.ts`** and both callers
   import it, so a third client inherits it by importing rather than by remembering.
   The server side needed no change: signing in as the demo customer and calling the
   routes with a real token returned 353 bookings and 246 addresses.
+
 - **The gap was the browser client's, so it is now tested as one.**
   `test/bookingClient.test.ts` asserts the header on all six verbs, that it is the
   caller's own token, that it is re-read per call so a rotated token is never stale,
@@ -322,6 +393,7 @@ Both were in the harness, and both had been passing by luck.
   `undefined`. Nothing noticed until the create route started *comparing* the
   claims against the request: every valid token then failed to agree with itself.
   Verification now rebuilds the items as objects and validates each field.
+
 - **One dead connection failed every later test in a DB file.** The suite holds a
   single `pg` client for two minutes of sequential queries against a pooler that
   recycles idle connections; when the socket went, the transport error surfaced on
@@ -332,6 +404,7 @@ Both were in the harness, and both had been passing by luck.
   (`pg_terminate_backend(pg_backend_pid())`) so the recovery path is asserted rather
   than hoped for. It retries transport errors *only*: a `check_violation` is a real
   answer and is never retried.
+
 - **`npm run test:db` listed its files explicitly**, so `db.connection.test.ts` was
   silently outside the gate. It is a filter now (`vitest run test/db.`) and the files
   run sequentially — three live-DB files in parallel against one remote link
@@ -349,42 +422,29 @@ Both were in the harness, and both had been passing by luck.
 | 261007-vhn | Keep building smarthelp (Phase 3): Wave A finished and gated, Wave B schema/modules/routes/tests started | 2026-10-08 | 5c44539 (docs) | [.planning/quick/261007-vhn-keep-building-smarthelp-phase](./quick/261007-vhn-keep-building-smarthelp-phase/) |
 | 261008-f2b | Phase 3 Task B-GATE: 0015 applied live, nine gate steps green, §31.1 exit criteria met, README Phase 3 record | 2026-10-08 | (docs commit) | [.planning/quick/261008-f2b-phase3-wave-b-gate](./quick/261008-f2b-phase3-wave-b-gate/) |
 
-
 ## Blockers/Concerns
 
-- None outstanding. Migrations through `0028` are applied to the live project and
-  `npm run test:db` passes against it (67 tests across 3 files).
+- None outstanding. Migrations through `0030` are applied to the live project
+  (28 applied, 0 outstanding) and `npm run test:db` passes against it (96 tests
+  across 7 files).
+
 - The database tests need a migrated, seeded database and `SUPABASE_DB_URL`. Without
   one they skip loudly rather than passing quietly.
+
 - `test/db.booking.test.ts` needs more than one customer and more than one
   professional to exist for the two rating-mismatch assertions; where only one
   exists, those tests clean up and return rather than failing.
+
 - **`gsd-sdk` is broken in this environment** and could not write the quick-task
   artifacts: `Cannot find module
   'C:\Users\arush\AppData\Local\npm-cache\_npx\6bdcb3e009b8f3f6\node_modules\@opengsd\get-shit-done-redux\bin\gsd-sdk.js'`.
   The `261003-03` plan and summary were therefore written by hand, matching the
   directory layout the earlier two tasks use.
+
 - **The working tree carries substantial pre-existing changes from outside this
   phase.** No commit was made for `261003-03`, because separating these files from
   whatever else is uncommitted is a decision for whoever owns the branch.
 
 ---
 
-Last activity: 2026-10-08 - Closed the four Phase 3 record gaps after B-GATE: `vercel.json` reduced to exactly one cron (`/api/cron/reconcile-payments` — A6's requirement; the seven handlerless schedules from Phases 5/7/8 now live as prose in `docs/ARCHITECTURE.md` §7, and its stale known-issues entries were corrected), `phases/03-payments/03-SUMMARY.md` written (wave gates, 655/38 vs the 555 baseline, deviations with reasons), `ROADMAP.md` Phase 3 marked complete (and Phase 2's stale quote-token note dropped), STATE's vercel known-issue struck out. lint and build re-verified exit 0 after the vercel.json change. **Phase 3 is now fully complete.**
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Last activity: 2026-10-10 - **Phase 4 (Professional app) complete.** All four waves built; the Wave A schema push (`0012`/`0021`/`0029`, plus the `0030` fix) applied to the live project (28 applied, 0 outstanding); D1 phase gate passed — typecheck/lint/build exit 0, `npm test` 798/46 (floor 655/38), `npm run test:db` 96/7 (floor 77/5), §31.1's exit criterion hand-checked, and the three manual verifications (live bucket upload, on-device geofence override, §30 smoke) passed. `docs/API.md` §4.7, `docs/FEATURES.md` §6 and `docs/DATABASE.md` §11 written, `README.md` updated, `phases/04-professional-app/04-SUMMARY.md` recorded, ROADMAP Phase 4 marked complete.

@@ -2695,6 +2695,368 @@ revoke all on function public.booking_history_is_immutable() from public, anon, 
 
 
 -- ------------------------------------------------------------
+-- 0012_assignment_integrity.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0012_assignment_integrity.sql
+-- SmartHelp Phase 4: the offer ledger and its two guarantees.
+--
+-- Spec: §24.8 (verbatim DDL), §8.2 (transitions), §9.1 (matching)
+-- Depends on: 0005 (professionals, current_professional_id),
+--             0010/0011 (bookings + the state machine),
+--             0001 (is_staff).
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- Phase 4's job flow starts with an offer: a booking is handed to
+-- one professional, who accepts or declines. Two things must be
+-- structurally impossible, and neither is something an application
+-- check can promise:
+--
+--   1. Two professionals accepting the same booking. Handled here by
+--      `uniq_active_assignment_per_booking`, a partial unique index on
+--      `booking_id` for the live states (`offered`, `accepted`). A
+--      second `offered`/`accepted` row cannot exist; the accept itself
+--      is a compare-and-set UPDATE (see `accept_offer`).
+--
+--   2. One professional accepting two bookings that overlap in time.
+--      That half is *not* here: it is the GiST exclusion constraint on
+--      `professional_schedule` (0013), the same structure §24.9 uses
+--      for double-booking. `accept_offer` writes a `reserved` window
+--      and lets that constraint veto the accept. The two halves are
+--      deliberately independent so neither depends on the other being
+--      correct.
+--
+-- The `assignment_status` enum and the table shape are §24.8 verbatim
+-- (`_docgen/part3_tech.py`). The value set is `offered | accepted |
+-- rejected | expired | withdrawn`: a *decline* is `rejected`, and an
+-- offer that times out is `expired`. Do not confuse `rejected` with a
+-- plan-era guess of `declined`; the spec's spelling is what the
+-- application types mirror.
+--
+-- NOTE ON ORDERING: `accept_offer` references `public.professional_schedule`,
+-- which 0013 creates. PostgreSQL defers plpgsql relation resolution to
+-- execution time, so the forward reference is intentional and safe; the
+-- dry-run in `scripts/check-migrations.mjs` is what proves it.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+do $$ begin
+  create type assignment_status as enum
+    ('offered','accepted','rejected','expired','withdrawn');
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.booking_assignments (
+  id              uuid primary key default gen_random_uuid(),
+  booking_id      uuid not null references public.bookings(id) on delete cascade,
+  professional_id uuid not null references public.professionals(id) on delete cascade,
+  status          assignment_status not null default 'offered',
+  attempt_no      int not null default 1,
+  round_no        int not null default 1,
+  distance_km     numeric(6,2),
+  score           numeric(6,2),
+  was_favourite   boolean not null default false,
+  was_repeat      boolean not null default false,
+  offered_at      timestamptz not null default now(),
+  expires_at      timestamptz not null,
+  responded_at    timestamptz,
+  decline_reason  text
+);
+
+comment on table public.booking_assignments is
+  'The offer ledger (§24.8). One row per offer made to one professional;
+   the row is the record of the CAS — a decline and an expiry are both
+   tombstones (rejected / expired), never rows that are picked up again.
+   Phase 4 makes one offer per booking for a demo; Phase 5''s ranking
+   engine is what fills attempt_no and round_no.';
+
+-- The offer inbox read: a professional's live offers, expiring soonest.
+create index if not exists idx_assign_booking
+  on public.booking_assignments (booking_id, attempt_no);
+create index if not exists idx_assign_prof
+  on public.booking_assignments (professional_id, status, expires_at);
+
+-- Guarantee (1): at most one live assignment per booking. This is the
+-- whole of the double-accept guarantee for a single booking; the accept
+-- UPDATE below races against it and loses cleanly.
+create unique index if not exists uniq_active_assignment_per_booking
+  on public.booking_assignments (booking_id)
+  where status in ('offered', 'accepted');
+
+-- One professional never holds two offers on the same booking, even
+-- across rounds. A re-offer to the same pro is a bug, not a retry.
+create unique index if not exists uniq_prof_booking_offer
+  on public.booking_assignments (professional_id, booking_id);
+
+comment on index public.uniq_active_assignment_per_booking is
+  'The double-accept guarantee (§24.8): a booking has one live offer or
+   acceptance at a time. Combined with accept_offer''s compare-and-set,
+   the second of two concurrent accepts affects zero rows.';
+
+-- ── Row level security ─────────────────────────────────────
+-- A professional reads their own offers from the browser; staff read
+-- the ledger for support. Nobody writes from the browser: every write
+-- goes through the security-definer functions below on the service role.
+alter table public.booking_assignments enable row level security;
+alter table public.booking_assignments force row level security;
+
+drop policy if exists booking_assignments_select_own on public.booking_assignments;
+create policy booking_assignments_select_own on public.booking_assignments
+  for select using (
+    professional_id = public.current_professional_id()
+    or public.is_staff(array['admin','super_admin','ops']::public.user_role[])
+  );
+
+revoke all on public.booking_assignments from anon, authenticated;
+grant select on public.booking_assignments to authenticated;
+grant all on public.booking_assignments to service_role;
+
+-- ── accept_offer ───────────────────────────────────────────
+-- Compare-and-set, then two independent safety nets:
+--   * the CAS UPDATE is the concurrency control — a second tap, an
+--     expired offer, or a stale offer id all affect zero rows and the
+--     function returns null (the route maps that to 409/410);
+--   * the schedule insert lets 0013's exclusion constraint veto an
+--     overlap, which is re-raised as PROFESSIONAL_UNAVAILABLE.
+-- Only then does the booking move `assigned -> accepted` (a legal hop
+-- per 0011; the transition trigger records the history row).
+create or replace function public.accept_offer(
+  p_assignment_id   uuid,
+  p_professional_id uuid
+) returns public.booking_assignments
+language plpgsql security definer set search_path = public as $$
+declare
+  v_assignment public.booking_assignments;
+  v_booking    public.bookings;
+  v_profile    uuid;
+  v_start      timestamptz;
+  v_end        timestamptz;
+begin
+  update public.booking_assignments
+     set status = 'accepted',
+         responded_at = now()
+   where id = p_assignment_id
+     and professional_id = p_professional_id
+     and status = 'offered'
+     and expires_at > now()
+  returning * into v_assignment;
+
+  if not found then
+    return null;
+  end if;
+
+  select * into v_booking from public.bookings where id = v_assignment.booking_id;
+
+  v_start := coalesce(v_booking.scheduled_start_at, now());
+  v_end   := coalesce(
+    v_booking.scheduled_end_at,
+    v_start + make_interval(mins => v_booking.duration_minutes)
+  );
+
+  begin
+    insert into public.professional_schedule
+      (professional_id, booking_id, starts_at, ends_at, status)
+    values
+      (p_professional_id, v_assignment.booking_id, v_start, v_end, 'reserved');
+  exception when exclusion_violation then
+    raise exception 'PROFESSIONAL_UNAVAILABLE'
+      using errcode = '23P01',
+            detail = 'the professional already has a booking in this window';
+  end;
+
+  -- booking_status_history.actor_id references profiles, so record the
+  -- professional's *profile*, not their professionals row.
+  select profile_id into v_profile
+    from public.professionals where id = p_professional_id;
+
+  perform set_config('app.transition_actor', coalesce(v_profile::text, ''), true);
+  perform set_config('app.transition_actor_role', 'professional', true);
+  perform set_config('app.transition_note', 'offer accepted', true);
+
+  update public.bookings
+     set status = 'accepted',
+         accepted_at = now()
+   where id = v_assignment.booking_id
+   returning * into v_booking;
+
+  update public.professionals
+     set accepted_offers = accepted_offers + 1
+   where id = p_professional_id;
+
+  return v_assignment;
+end $$;
+
+comment on function public.accept_offer(uuid, uuid) is
+  'Accepts an offer by compare-and-set (§24.8). Returns the assignment on
+   success, or NULL if the offer was not live (already answered, expired,
+   or a different professional). Reserves the booking window through the
+   professional_schedule exclusion constraint; an overlap surfaces as
+   PROFESSIONAL_UNAVAILABLE (23P01).';
+
+-- ── decline_offer ──────────────────────────────────────────
+-- Records the decline as a tombstone. The booking is left `assigned`:
+-- the deployed 0011 state machine permits no `assigned -> searching`,
+-- so re-offering after a decline is deliberately out of Phase 4's scope.
+-- Phase 5's engine owns reassignment; this is recorded so the absence is
+-- a decision, not an oversight.
+create or replace function public.decline_offer(
+  p_assignment_id   uuid,
+  p_professional_id uuid,
+  p_reason          text default null
+) returns public.booking_assignments
+language plpgsql security definer set search_path = public as $$
+declare
+  v_assignment public.booking_assignments;
+begin
+  update public.booking_assignments
+     set status = 'rejected',
+         responded_at = now(),
+         decline_reason = p_reason
+   where id = p_assignment_id
+     and professional_id = p_professional_id
+     and status = 'offered'
+  returning * into v_assignment;
+
+  return v_assignment;
+end $$;
+
+comment on function public.decline_offer(uuid, uuid, text) is
+  'Declines an offer by compare-and-set. Returns the rejected assignment,
+   or NULL if it was not live. The booking stays `assigned` — 0011 permits
+   no reassign hop, so Phase 5 owns re-offering.';
+
+-- ── sweep_new_bookings ─────────────────────────────────────
+-- The minimal Phase 4 matcher: for each paid booking with no live
+-- assignment, pick one eligible professional and make one offer.
+--
+-- Deliberately not a ranking engine. §10.4's scoring, geo radius and
+-- fan-out are Phase 5; 0002 has no earthdistance, so distance is not
+-- computed here at all. Eligibility is the same shape Phase 5 will reuse:
+-- verified, online, available today, skilled for every service the
+-- booking contains, free on both the time-off calendar and the schedule.
+--
+-- Only `paid` bookings are swept. An expired or declined offer is a
+-- tombstone that this function never revisits (D3), and the transition
+-- table's `paid -> searching -> assigned` is walked one legal hop at a
+-- time. The offer TTL is PLATFORM_DEFAULTS.offerTtlMinutes = 15 in
+-- lib/constants.ts; with no settings table the value is mirrored here.
+create or replace function public.sweep_new_bookings()
+returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  v_offer_ttl_minutes constant int := 15;
+  v_booking  public.bookings;
+  v_pro      uuid;
+  v_start    timestamptz;
+  v_end      timestamptz;
+  v_count    int := 0;
+begin
+  for v_booking in
+    select * from public.bookings b
+     where b.status = 'paid'
+       and not exists (
+         select 1 from public.booking_assignments a
+          where a.booking_id = b.id and a.status in ('offered', 'accepted')
+       )
+     order by b.created_at
+  loop
+    v_start := coalesce(v_booking.scheduled_start_at, now());
+    v_end   := coalesce(
+      v_booking.scheduled_end_at,
+      v_start + make_interval(mins => v_booking.duration_minutes)
+    );
+
+    select p.id into v_pro
+      from public.professionals p
+     where p.verification_status = 'verified'
+       and p.availability_status = 'online'
+       and p.is_available_today
+       -- Skilled for every service on the booking.
+       and not exists (
+         select 1 from public.booking_items bi
+          where bi.booking_id = v_booking.id
+            and not exists (
+              select 1 from public.professional_skills ps
+               where ps.professional_id = p.id
+                 and ps.service_id = bi.service_id
+            )
+       )
+       -- Not on a booked day off.
+       and not exists (
+         select 1 from public.professional_time_off t
+          where t.professional_id = p.id
+            and tstzrange(t.starts_at, t.ends_at, '[)')
+                && tstzrange(v_start, v_end, '[)')
+       )
+       -- Calendar is clear.
+       and not exists (
+         select 1 from public.professional_schedule s
+          where s.professional_id = p.id
+            and s.status in ('reserved', 'in_progress')
+            and tstzrange(s.starts_at, s.ends_at, '[)')
+                && tstzrange(v_start, v_end, '[)')
+       )
+     order by p.created_at, p.id
+     limit 1;
+
+    if v_pro is null then
+      continue;
+    end if;
+
+    perform set_config('app.transition_actor', '', true);
+    perform set_config('app.transition_actor_role', '', true);
+    perform set_config('app.transition_note', 'assignment sweep', true);
+
+    -- paid -> searching -> assigned, one legal hop at a time.
+    update public.bookings
+       set status = 'searching'
+     where id = v_booking.id and status = 'paid';
+
+    update public.bookings
+       set status = 'assigned',
+           professional_id = v_pro,
+           matched_at = now()
+     where id = v_booking.id and status = 'searching';
+
+    insert into public.booking_assignments
+      (booking_id, professional_id, status, offered_at, expires_at)
+    values
+      (v_booking.id, v_pro, 'offered', now(),
+       now() + make_interval(mins => v_offer_ttl_minutes))
+    on conflict do nothing;
+
+    update public.professionals
+       set total_offers = total_offers + 1
+     where id = v_pro;
+
+    v_count := v_count + 1;
+  end loop;
+
+  return v_count;
+end $$;
+
+comment on function public.sweep_new_bookings() is
+  'Phase 4''s minimal matcher: makes one offer per paid, unassigned
+   booking to one eligible professional and walks paid -> searching ->
+   assigned. Returns the number of offers made. Ranking, fan-out and geo
+   are Phase 5; the offer TTL mirrors PLATFORM_DEFAULTS.offerTtlMinutes.';
+
+-- ── Grants ─────────────────────────────────────────────────
+-- security definer: the EXECUTE grant belongs to the *caller*. These
+-- write the offer ledger and the booking's state, so anon and
+-- authenticated get nothing; only the service role (Route Handlers) may.
+revoke all on function public.accept_offer(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.decline_offer(uuid, uuid, text) from public, anon, authenticated;
+revoke all on function public.sweep_new_bookings() from public, anon, authenticated;
+
+grant execute on function public.accept_offer(uuid, uuid) to service_role;
+grant execute on function public.decline_offer(uuid, uuid, text) to service_role;
+grant execute on function public.sweep_new_bookings() to service_role;
+
+
+-- ------------------------------------------------------------
 -- 0013_professional_schedule.sql
 -- ------------------------------------------------------------
 
@@ -4102,6 +4464,103 @@ grant update (pro_response, responded_at) on public.ratings to authenticated;
 
 
 -- ------------------------------------------------------------
+-- 0021_earnings.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0021_earnings.sql
+-- SmartHelp Phase 4: the professional earnings ledger (read model).
+--
+-- Spec: §24.12 (verbatim DDL), §7.5 (commission basis)
+-- Depends on: 0005 (current_professional_id), 0010 (bookings),
+--             0001 (is_staff).
+--
+-- WHY THIS IS PARTIAL
+-- -------------------
+-- §24.12 describes a payout ledger. Phase 4 ships only the half it can
+-- honour: `professional_earnings`. The `payouts` table, batch payout
+-- runs and the payout_weekday cron are Phase 8's, and §24.12's
+-- `payout_id` is left a bare `uuid` with no foreign key for exactly
+-- that reason — the column is spec-shaped and points at a table this
+-- phase does not create. D4 recorded this partial ship deliberately.
+--
+-- The row is written by `complete_job` (0029), once per booking
+-- (`booking_id` is UNIQUE). No application code writes it directly and
+-- no browser may read another professional's rows.
+--
+-- COMMISSION BASIS (§7.5 vs the engine)
+-- -------------------------------------
+-- §7.5 computes `professional_gross = taxable × (1 − commission)`, while
+-- this repository's pricing engine deliberately departs from that and
+-- freezes `professional_gross = taxable − platform_fee − commission`
+-- (see STATE.md). The engine's number is already frozen on the booking
+-- (`bookings.professional_gross` and `bookings.pricing_snapshot.totals`),
+-- so the earnings row copies the frozen figure rather than recomputing
+-- §7.5 — the two would disagree, and the frozen one is what the customer
+-- was charged against. The arithmetic lives in `complete_job`; §7.5's
+-- `earnings_hold_hours = 24` is the `available_at` delay, hardcoded there
+-- because no settings table exists yet.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+do $$ begin
+  create type earning_status as enum ('pending','available','paid','reversed');
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.professional_earnings (
+  id               uuid primary key default gen_random_uuid(),
+  professional_id  uuid not null references public.professionals(id) on delete cascade,
+  booking_id       uuid not null unique references public.bookings(id) on delete cascade,
+  gross_amount     numeric(12,2) not null,
+  commission_pct   numeric(5,4)  not null,
+  commission_amount numeric(12,2) not null,
+  net_amount       numeric(12,2) not null,
+  bonus_amount     numeric(12,2) not null default 0,
+  status           earning_status not null default 'pending',
+  available_at     timestamptz not null,
+  -- §24.12: no FK. `payouts` is Phase 8.
+  payout_id        uuid,
+  reversed_reason  text,
+  created_at       timestamptz not null default now()
+);
+
+comment on table public.professional_earnings is
+  'The professional earnings ledger (§24.12). One row per completed
+   booking (booking_id UNIQUE), written by complete_job. status starts
+   at pending and becomes available after the §7.5 hold (available_at);
+   the transition to paid is Phase 8''s payout run. payout_id is a bare
+   uuid because the payouts table is Phase 8.';
+
+create index if not exists idx_earnings_pro
+  on public.professional_earnings (professional_id, created_at desc);
+create index if not exists idx_earnings_ready
+  on public.professional_earnings (available_at)
+  where status = 'available';
+
+comment on index public.idx_earnings_ready is
+  'The payout run''s work list (§24.12): earnings whose hold has
+   elapsed and have not yet been paid.';
+
+-- ── Row level security ─────────────────────────────────────
+-- Owner and staff read; nobody writes from the browser. complete_job
+-- (0029) is the only writer and runs on the service role.
+alter table public.professional_earnings enable row level security;
+alter table public.professional_earnings force row level security;
+
+drop policy if exists professional_earnings_select_own on public.professional_earnings;
+create policy professional_earnings_select_own on public.professional_earnings
+  for select using (
+    professional_id = public.current_professional_id()
+    or public.is_staff(array['admin','super_admin','ops']::public.user_role[])
+  );
+
+revoke all on public.professional_earnings from anon, authenticated;
+grant select on public.professional_earnings to authenticated;
+grant all on public.professional_earnings to service_role;
+
+
+-- ------------------------------------------------------------
 -- 0024_audit_idempotency.sql
 -- ------------------------------------------------------------
 
@@ -4891,3 +5350,466 @@ revoke all on function public.transition_booking(uuid, public.booking_status, uu
 grant execute on function public.create_booking(uuid, uuid, uuid, jsonb, public.booking_type, int, timestamptz, timestamptz, text, jsonb, text, jsonb, text, jsonb, uuid, public.user_role) to service_role;
 grant execute on function public.cancel_booking(uuid, int, text, numeric, text, uuid, public.user_role) to service_role;
 grant execute on function public.transition_booking(uuid, public.booking_status, uuid, public.user_role, text, int, timestamptz, timestamptz) to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0029_service_execution.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0029_service_execution.sql
+-- SmartHelp Phase 4: the job-execution write path.
+--
+-- Spec: §10.1 (service OTP), §10.4 (completion), §8.2/§8.3 (transitions),
+--       §24.5 (KYC verdict), D3 (OTP lockout), D4 (earnings row)
+-- Depends on: 0010/0011 (bookings + state machine), 0013 (schedule),
+--             0017 (ratings precedent), 0021 (professional_earnings),
+--             0024 (write_audit), 0005 (current professional guards).
+--
+-- WHY THIS FILE EXISTS
+-- --------------------
+-- Phase 4 is the first phase that lets a professional *change* a booking
+-- through the job flow: arrive, verify the service OTP, start, finish.
+-- Every one of those is a security-definer function here, single-statement
+-- in the 0028 style, so the state machine (0011) is the only thing that
+-- decides legality and the actor is recorded in booking_status_history.
+--
+-- All six functions are service-role-only. The Route Handlers behind them
+-- authenticate and authorise; these functions are the mechanism, not the
+-- policy.
+--
+-- `write_audit` is deliberately NOT called from these functions: like the
+-- Phase 3 RPCs, the *route* writes the audit row (lib/audit.ts), because
+-- the reason and the request context live there. C1's no-show route does
+-- exactly that.
+--
+-- TRANSITION SHAPE (0011 is the authority)
+-- ----------------------------------------
+--   accept_offer (0012): assigned -> accepted -> on_the_way
+--   arrive_job:          on_the_way -> arrived
+--   verify_service_otp:  arrived -> otp_verified -> in_progress
+--   complete_job:        in_progress -> completed
+--   no_show_job:         accepted|on_the_way|arrived|otp_verified|in_progress -> no_show
+--
+-- `accepted` and `otp_verified` are both transient by design: the accept
+-- is also "I am on my way", and a verified code is also "the job has
+-- started". Both hops are walked one legal step at a time so
+-- booking_status_history records each.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+-- ── Lockout column (D3) ────────────────────────────────────
+-- §10.1 fixes the attempt cap but not what happens after it. D3 chose a
+-- timed lockout over a permanent one; this column is its only state.
+alter table public.bookings
+  add column if not exists otp_locked_until timestamptz;
+
+comment on column public.bookings.otp_locked_until is
+  'Set when otp_attempts reaches the cap (D3): verification is refused
+   until this time passes. NULL means not locked.';
+
+-- ── arrive_job ─────────────────────────────────────────────
+-- `on_the_way -> arrived` only. The geofence itself is checked in the
+-- route (D7) — this function trusts a route that has already decided and
+-- stays a single versioned UPDATE (Pitfall 4). Zero rows means the
+-- version moved; the trigger raises ILLEGAL_TRANSITION for a wrong state.
+create or replace function public.arrive_job(
+  p_booking_id       uuid,
+  p_professional_id  uuid,
+  p_expected_version int
+) returns public.bookings
+language plpgsql security definer set search_path = public as $$
+declare
+  v_booking public.bookings;
+  v_profile uuid;
+begin
+  select profile_id into v_profile
+    from public.professionals where id = p_professional_id;
+
+  perform set_config('app.transition_actor', coalesce(v_profile::text, ''), true);
+  perform set_config('app.transition_actor_role', 'professional', true);
+  perform set_config('app.transition_note', 'arrival confirmed', true);
+
+  update public.bookings
+     set status = 'arrived',
+         arrived_at = now()
+   where id = p_booking_id
+     and professional_id = p_professional_id
+     and version = p_expected_version
+  returning * into v_booking;
+
+  return v_booking;
+end $$;
+
+comment on function public.arrive_job(uuid, uuid, int) is
+  'Moves on_the_way -> arrived and stamps arrived_at. The geofence is the
+   route''s job (D7); this is a single versioned UPDATE. NULL means the
+   version was stale; an illegal state raises ILLEGAL_TRANSITION.';
+
+-- ── issue_service_otp ──────────────────────────────────────
+-- Mints the service OTP. The route generates the code and passes only its
+-- hash (the plaintext never reaches SQL). Legal only from `arrived`, and
+-- only while otp_generations < otpMaxGenerations (3 in
+-- lib/constants.ts; the route passes the ttl, this mirrors the ceiling).
+create or replace function public.issue_service_otp(
+  p_booking_id   uuid,
+  p_code_hash    text,
+  p_ttl_minutes  int
+) returns public.bookings
+language plpgsql security definer set search_path = public as $$
+declare
+  v_booking public.bookings;
+begin
+  update public.bookings
+     set otp_hash        = p_code_hash,
+         otp_expires_at  = now() + make_interval(mins => p_ttl_minutes),
+         otp_generations = otp_generations + 1,
+         otp_attempts    = 0,
+         otp_locked_until = null
+   where id = p_booking_id
+     and status = 'arrived'
+     and otp_generations < 3
+  returning * into v_booking;
+
+  return v_booking;
+end $$;
+
+comment on function public.issue_service_otp(uuid, text, int) is
+  'Mints a service code hash, only from `arrived` and only for the first
+   three generations. NULL means not mintable (wrong state or cap
+   reached); the route maps that to 409.';
+
+-- ── verify_service_otp ─────────────────────────────────────
+-- §10.1's own SQL, extended across the two-hop `arrived -> otp_verified ->
+-- in_progress` path and with the D3 failure path in the same transaction.
+-- The client always gets the same generic 403 for any failure (Pitfall 5);
+-- the route logs which of invalid/expired/locked it was.
+create or replace function public.verify_service_otp(
+  p_booking_id   uuid,
+  p_code         text,
+  p_max_attempts int
+) returns table (started_at timestamptz, ends_at timestamptz)
+language plpgsql security definer set search_path = public as $$
+declare
+  v_booking public.bookings;
+  v_profile uuid;
+begin
+  select pr.profile_id into v_profile
+    from public.professionals pr
+    join public.bookings b on b.professional_id = pr.id
+   where b.id = p_booking_id;
+
+  perform set_config('app.transition_actor', coalesce(v_profile::text, ''), true);
+  perform set_config('app.transition_actor_role', 'professional', true);
+  perform set_config('app.transition_note', 'service OTP verified', true);
+
+  -- Success: compare-and-set against the stored hash (the DB does the
+  -- constant-time comparison), with expiry, attempt and lockout gates.
+  update public.bookings b
+     set status          = 'otp_verified',
+         otp_verified_at = now(),
+         started_at      = now(),
+         ends_at         = now() + make_interval(mins => b.duration_minutes)
+   where b.id = p_booking_id
+     and b.status = 'arrived'
+     and b.otp_hash = encode(digest(p_code, 'sha256'), 'hex')
+     and b.otp_expires_at > now()
+     and b.otp_attempts < p_max_attempts
+     and (b.otp_locked_until is null or b.otp_locked_until <= now())
+  returning * into v_booking;
+
+  if not found then
+    -- Failure: count the attempt and lock out at the cap. Only a genuine
+    -- wrong/expired attempt at `arrived` counts; a booking in another
+    -- state is not an OTP failure at all.
+    update public.bookings b
+       set otp_attempts = b.otp_attempts + 1,
+           otp_locked_until = case
+             when b.otp_attempts + 1 >= p_max_attempts
+               then now() + interval '15 minutes'
+             else b.otp_locked_until
+           end
+     where b.id = p_booking_id
+       and b.status = 'arrived'
+       and b.otp_hash is not null
+       and b.otp_expires_at > now()
+       and (b.otp_locked_until is null or b.otp_locked_until <= now());
+    return;
+  end if;
+
+  -- otp_verified -> in_progress: the job is now running. A separate hop
+  -- keeps booking_status_history honest (0011 allows in_progress only
+  -- from otp_verified).
+  update public.bookings
+     set status = 'in_progress'
+   where id = p_booking_id and status = 'otp_verified';
+
+  return query select v_booking.started_at, v_booking.ends_at;
+end $$;
+
+comment on function public.verify_service_otp(uuid, text, int) is
+  'Verifies the service code and starts the job: arrived -> otp_verified
+   -> in_progress, stamping otp_verified_at/started_at/ends_at from the
+   server clock. Zero rows means invalid, expired or locked — the caller
+   answers one generic 403 (Pitfall 5).';
+
+-- ── complete_job ───────────────────────────────────────────
+-- `in_progress -> completed`. Closes the schedule window, bumps the
+-- counter and writes the pending earnings row (D4). The commission basis
+-- is the frozen one (see 0021's header): net is the engine's
+-- professionalGross, commission is the engine's commission, and
+-- gross = net + commission. §7.5's 24-hour hold is `available_at`.
+create or replace function public.complete_job(
+  p_booking_id       uuid,
+  p_professional_id  uuid,
+  p_expected_version int
+) returns public.bookings
+language plpgsql security definer set search_path = public as $$
+declare
+  v_booking    public.bookings;
+  v_profile    uuid;
+  v_net        numeric(12,2);
+  v_commission numeric(12,2);
+begin
+  select profile_id into v_profile
+    from public.professionals where id = p_professional_id;
+
+  perform set_config('app.transition_actor', coalesce(v_profile::text, ''), true);
+  perform set_config('app.transition_actor_role', 'professional', true);
+  perform set_config('app.transition_note', 'job completed', true);
+
+  update public.bookings
+     set status = 'completed',
+         completed_at = now(),
+         ended_at = coalesce(ended_at, now()),
+         actual_duration_minutes = greatest(
+           0,
+           floor(extract(epoch from (coalesce(ended_at, now()) - started_at)) / 60)::int
+         )
+   where id = p_booking_id
+     and professional_id = p_professional_id
+     and version = p_expected_version
+  returning * into v_booking;
+
+  if not found then
+    return null;
+  end if;
+
+  update public.professional_schedule
+     set status = 'completed'
+   where booking_id = p_booking_id and status = 'reserved';
+
+  update public.professionals
+     set completed_jobs = completed_jobs + 1
+   where id = p_professional_id;
+
+  -- Frozen commission basis (see 0021): prefer the snapshot, fall back to
+  -- the booking columns. net = professionalGross; gross = net + commission.
+  v_net := coalesce(
+    nullif(v_booking.pricing_snapshot->'totals'->>'professionalGross', '')::numeric,
+    v_booking.professional_gross
+  );
+  v_commission := coalesce(
+    nullif(v_booking.pricing_snapshot->'totals'->>'commission', '')::numeric,
+    0
+  );
+
+  insert into public.professional_earnings
+    (professional_id, booking_id, gross_amount, commission_pct,
+     commission_amount, net_amount, status, available_at)
+  values
+    (p_professional_id, p_booking_id, v_net + v_commission,
+     v_booking.commission_pct, v_commission, v_net,
+     'pending', now() + interval '24 hours')
+  on conflict (booking_id) do nothing;
+
+  return v_booking;
+end $$;
+
+comment on function public.complete_job(uuid, uuid, int) is
+  'Completes a job: in_progress -> completed, stamps ended_at and
+   actual_duration_minutes from the server clock, closes the schedule
+   window, bumps completed_jobs and inserts the pending earnings row
+   (D4). NULL means the version was stale.';
+
+-- ── no_show_job ────────────────────────────────────────────
+-- Records a no-show. Reason is mandatory. Hard rule 2: this function
+-- touches no refund and no wallet — a professional never cancels their
+-- own job into a refund path; that resolution is ops' (Phase 5/6).
+create or replace function public.no_show_job(
+  p_booking_id       uuid,
+  p_professional_id  uuid,
+  p_reason           text
+) returns public.bookings
+language plpgsql security definer set search_path = public as $$
+declare
+  v_booking public.bookings;
+  v_profile uuid;
+begin
+  if p_reason is null or length(btrim(p_reason)) = 0 then
+    raise exception 'NO_SHOW_REASON_REQUIRED' using errcode = 'check_violation';
+  end if;
+
+  select profile_id into v_profile
+    from public.professionals where id = p_professional_id;
+
+  perform set_config('app.transition_actor', coalesce(v_profile::text, ''), true);
+  perform set_config('app.transition_actor_role', 'professional', true);
+  perform set_config('app.transition_note', 'no-show: ' || p_reason, true);
+
+  update public.bookings
+     set status = 'no_show',
+         notes = coalesce(notes, p_reason)
+   where id = p_booking_id
+     and professional_id = p_professional_id
+  returning * into v_booking;
+
+  if not found then
+    return null;
+  end if;
+
+  -- Free the calendar: the window is released, not completed.
+  update public.professional_schedule
+     set status = 'released'
+   where booking_id = p_booking_id and status in ('reserved', 'in_progress');
+
+  update public.professionals
+     set no_shows = no_shows + 1
+   where id = p_professional_id;
+
+  return v_booking;
+end $$;
+
+comment on function public.no_show_job(uuid, uuid, text) is
+  'Marks a job no-show (reason mandatory). Releases the schedule window
+   and bumps no_shows. Deliberately touches no refund or wallet (hard
+   rule 2); NULL means the booking is not the caller''s. The illegal-state
+   case raises ILLEGAL_TRANSITION from the 0011 trigger.';
+
+-- ── kyc_document_decision ──────────────────────────────────
+-- D2's roll-up. Applies the verdict to one document, then re-derives the
+-- professional's verification_status from the required set:
+--   * any required document `rejected`  => professional `rejected`
+--   * all required documents `verified` => professional `verified`
+--                                         (+ kyc_verified_at = now())
+--   * otherwise                         => professional `submitted`
+-- "Required" is the three-step stepper's documents (Identity / Address /
+-- Selfie): aadhaar_front, address_proof, selfie. The list is local to
+-- this function so Phase 6 can widen it without touching callers.
+-- rejection_reason is left to the route (B1), which owns the free-text
+-- note; this function only moves the verdict and the timestamps.
+create or replace function public.kyc_document_decision(
+  p_document_id uuid,
+  p_verdict     public.verification_status,
+  p_admin       uuid
+) returns public.verification_status
+language plpgsql security definer set search_path = public as $$
+declare
+  v_required  text[] := array['aadhaar_front','address_proof','selfie'];
+  v_doc       public.professional_documents;
+  v_rejected  int;
+  v_verified  int;
+  v_status    public.verification_status;
+begin
+  if p_verdict not in ('verified', 'rejected') then
+    raise exception 'KYC_VERDICT_INVALID' using errcode = 'check_violation';
+  end if;
+
+  if p_verdict = 'verified' then
+    update public.professional_documents
+       set status = p_verdict,
+           reviewed_by = p_admin,
+           reviewed_at = now(),
+           rejection_reason = null
+     where id = p_document_id
+    returning * into v_doc;
+  else
+    update public.professional_documents
+       set status = p_verdict,
+           reviewed_by = p_admin,
+           reviewed_at = now()
+     where id = p_document_id
+    returning * into v_doc;
+  end if;
+
+  if not found then
+    return null;
+  end if;
+
+  select count(*) filter (where status = 'rejected'),
+         count(*) filter (where status = 'verified')
+    into v_rejected, v_verified
+    from public.professional_documents
+   where professional_id = v_doc.professional_id
+     and doc_type = any (v_required);
+
+  if v_rejected > 0 then
+    v_status := 'rejected';
+  elsif v_verified = array_length(v_required, 1) then
+    v_status := 'verified';
+  else
+    v_status := 'submitted';
+  end if;
+
+  update public.professionals
+     set verification_status = v_status,
+         kyc_verified_at = case
+           when v_status = 'verified' then now()
+           else kyc_verified_at
+         end
+   where id = v_doc.professional_id;
+
+  return v_status;
+end $$;
+
+comment on function public.kyc_document_decision(uuid, public.verification_status, uuid) is
+  'Applies a KYC verdict to one document and rolls the result up onto the
+   professional (D2): any required document rejected => rejected; all
+   required verified => verified + kyc_verified_at; otherwise submitted.
+   Returns the resulting professional status, or NULL if the document
+   does not exist.';
+
+-- ── Grants ─────────────────────────────────────────────────
+revoke all on function public.arrive_job(uuid, uuid, int) from public, anon, authenticated;
+revoke all on function public.issue_service_otp(uuid, text, int) from public, anon, authenticated;
+revoke all on function public.verify_service_otp(uuid, text, int) from public, anon, authenticated;
+revoke all on function public.complete_job(uuid, uuid, int) from public, anon, authenticated;
+revoke all on function public.no_show_job(uuid, uuid, text) from public, anon, authenticated;
+revoke all on function public.kyc_document_decision(uuid, public.verification_status, uuid) from public, anon, authenticated;
+
+grant execute on function public.arrive_job(uuid, uuid, int) to service_role;
+grant execute on function public.issue_service_otp(uuid, text, int) to service_role;
+grant execute on function public.verify_service_otp(uuid, text, int) to service_role;
+grant execute on function public.complete_job(uuid, uuid, int) to service_role;
+grant execute on function public.no_show_job(uuid, uuid, text) to service_role;
+grant execute on function public.kyc_document_decision(uuid, public.verification_status, uuid) to service_role;
+
+-- ── Column hardening (Pitfall 1: the verified otp_hash exposure) ──
+-- `authenticated` held blanket SELECT on `bookings`, so a signed-in
+-- customer reading their own booking through PostgREST could ask for
+-- `otp_hash`. Revoke the table grant and re-grant every column except
+-- `otp_hash`. The loop is used rather than a hand-written column list so
+-- it cannot drift from the schema. Every Route Handler reads bookings
+-- through the service role, so nothing the app does is affected.
+--
+-- [ASSUMED] standard Postgres column privileges. If a live project
+-- refuses this form, the fallback is route-layer stripping only (already
+-- done in lib/professionalServer.ts) plus a loud note here — never a
+-- silent hole.
+revoke select on public.bookings from authenticated;
+
+do $$
+declare
+  c text;
+begin
+  for c in
+    select column_name
+      from information_schema.columns
+     where table_schema = 'public'
+       and table_name = 'bookings'
+       and column_name <> 'otp_hash'
+  loop
+    execute format('grant select (%I) on public.bookings to authenticated', c);
+  end loop;
+end $$;

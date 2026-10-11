@@ -57,6 +57,39 @@ export class FakeSupabase {
   calls: RecordedCall[] = [];
   rpcCalls: { fn: string; args: Record<string, unknown> }[] = [];
 
+  /**
+   * The signed-upload calls the storage stub answered, in order.
+   *
+   * The KYC upload-url route's whole security story is the path it hands the
+   * bucket, so the test asserts on this list (`{ bucket, path }`) rather than on
+   * the returned URL: the path is the tenant boundary, the URL is decoration.
+   */
+  storageCalls: { bucket: string; path: string }[] = [];
+
+  /**
+   * A minimal stand-in for `supabase.storage`.
+   *
+   * Only `from(bucket).createSignedUploadUrl(path)` exists, because that is the
+   * only storage call any Route Handler makes this phase. It records the path
+   * and answers with the shape the installed `storage-js` returns:
+   * `{ data: { signedUrl, path, token }, error }`.
+   */
+  storage = {
+    from: (bucket: string) => ({
+      createSignedUploadUrl: async (path: string) => {
+        this.storageCalls.push({ bucket, path });
+        return {
+          data: {
+            signedUrl: `https://storage.test/object/upload/sign/${bucket}/${path}?token=test-token`,
+            path,
+            token: 'test-token',
+          },
+          error: null,
+        };
+      },
+    }),
+  };
+
   constructor(
     private readonly tables: Record<string, Responder> = {},
     private readonly rpcs: Record<string, Responder> = {}

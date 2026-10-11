@@ -239,6 +239,42 @@ export interface BookingDetailResult {
   history: HistoryEntry[];
 }
 
+/** One step of the compact timeline the track payload carries. */
+export interface TrackStep {
+  status: string;
+  at: string;
+}
+
+/**
+ * The live booking view (§10.2, D6).
+ *
+ * Every timer number is the server's: `remainingSeconds` arrives pre-computed
+ * and `serverNow` is the instant it was computed at, so the countdown is
+ * `endsAt − serverNow` and never `Date.now() − startedAt` (Interaction Contract
+ * 2). `proLocation` is coordinates or null — never an invented ETA — and the OTP
+ * block is present only while the booking is `arrived` and only for the
+ * customer. In every case `otp_hash` is absent by construction.
+ */
+export interface BookingTrackResult {
+  booking: BookingRow;
+  status: string;
+  presentation: StatusPresentation;
+  timeline: TrackStep[];
+  startedAt: string | null;
+  endsAt: string | null;
+  serverNow: string;
+  remainingSeconds: number | null;
+  /** D5: reserved. Always false until extensions land. */
+  extensionAvailable: boolean;
+  extendedMinutes: number;
+  /** The professional's last-known pin, or null when unknown or stale. */
+  proLocation: { lat: number; lng: number } | null;
+  /** Customer + `arrived` only: when the current code stops being accepted. */
+  otpExpiresAt?: string | null;
+  /** Customer + `arrived` only: how many of the three generations are left. */
+  otpGenerationsRemaining?: number;
+}
+
 export interface InvoiceResult {
   booking: BookingRow;
   invoice: {
@@ -349,6 +385,34 @@ export function fetchBookings(query: {
 
 export function fetchBooking(id: string): Promise<BookingDetailResult> {
   return request<BookingDetailResult>(`/api/bookings/${encodeURIComponent(id)}`);
+}
+
+/**
+ * The 15 s live poll (§10.2). `signal` lets the caller abort a tick that is
+ * still in flight when the page unmounts or hides — the abort half of
+ * Interaction Contract 1.
+ */
+export function fetchBookingTrack(
+  id: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<BookingTrackResult> {
+  return request<BookingTrackResult>(`/api/bookings/${encodeURIComponent(id)}/track`, {
+    signal: options.signal,
+  });
+}
+
+/**
+ * Mint a fresh service code (D3).
+ *
+ * This is the only call that ever returns the plaintext, and it is the
+ * customer's alone. The caller caches it in `sessionStorage` for the session;
+ * a refresh after expiry asks again, up to the three-generation cap.
+ */
+export function regenerateServiceOtp(id: string): Promise<{ code: string; expiresAt: string }> {
+  return request<{ code: string; expiresAt: string }>(
+    `/api/bookings/${encodeURIComponent(id)}/otp/regenerate`,
+    { method: 'POST' }
+  );
 }
 
 export function fetchInvoice(id: string): Promise<InvoiceResult> {
