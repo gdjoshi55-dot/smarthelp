@@ -3,7 +3,7 @@ import { ApiHttpError, handle, ok } from '@/lib/api';
 import { readJson, validateSendOtp } from '@/lib/validation';
 import { deliverOtp, issueOtp, OTP_RESEND_SECONDS, OTP_TTL_MINUTES } from '@/lib/otp';
 import { createServerClient } from '@/lib/supabaseServer';
-import { ensureAuthUserForPhone } from '@/lib/authServer';
+import { ensureAuthUserForPhone, maskEmail } from '@/lib/authServer';
 import { audit, clientIp } from '@/lib/audit';
 
 export const runtime = 'nodejs';
@@ -108,13 +108,6 @@ export async function POST(req: Request) {
       200
     );
   });
-}
-
-function maskEmail(email: string): string {
-  const [local, domain] = email.split('@');
-  if (!domain) return email;
-  const head = local.slice(0, 2);
-  return `${head}${'*'.repeat(Math.max(1, local.length - 2))}@${domain}`;
 }
 
 export const GET = () =>

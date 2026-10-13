@@ -842,6 +842,7 @@ mistake the person can act on.
     ],
     "bookableCount": 6,
     "maxRemaining": 3,
+    "leadMinutes": 120,
     "serverNow": "…"
   },
   "serverNow": "…"
@@ -855,7 +856,10 @@ mistake the person can act on.
 whole window, capped by `service_areas.slot_capacity`; the client filters on
 `remaining > 0` and the server never hides a slot it cannot explain.
 `validDurations` is there so a `duration` out of the ladder is recoverable by the
-client rather than a dead end.
+client rather than a dead end. `day.leadMinutes` is the lead that actually gated
+this day, and it is `0` when the day is today — a same-day booking is dispatched
+the moment it is paid, so today's slots start at the next free professional
+window rather than after the works' lead.
 
 Note there are two different `location` fields and they are deliberately different
 types. The nested one inside `AvailabilityResult` is the *resolved* locality and
@@ -1623,12 +1627,16 @@ An audit row names the admin. A customer token gets 403 with zero writes.
 | Auth | Required — **verified** professional |
 | Action | `professionals.offers.list` |
 
-Runs `sweep_new_bookings()` first (the minimal Phase 4 matcher, D1), lazily expires
-the caller's stale offers, then reads the live ones. **200** — `{ "offers": [ {
-id, bookingId, serviceName, scheduledStartAt, scheduledEndAt, area, quotedPrice,
-expiresAt } ], "serverNow": "…" }`. `id` is a `booking_assignments.id`, not a
-booking id. The payload carries **no phone, full address or customer name** — the
-§14.3 privacy gate. A past-TTL offer is refused at read and is never in the list.
+Runs `run_matching_sweep()` first (the Phase 5 engine, D4), lazily expires the
+caller's stale offers, then reads the live ones. The sweep expires every stale
+offer globally, ranks the candidates for every waiting booking, issues one offer
+per booking under an advisory lock, and refunds any search that closed empty —
+all before this read returns, so opening the inbox is what drives the marketplace
+forward until the §25.11 cron exists. **200** — `{ "offers": [ { id, bookingId,
+serviceName, scheduledStartAt, scheduledEndAt, area, quotedPrice, expiresAt } ],
+"serverNow": "…" }`. `id` is a `booking_assignments.id`, not a booking id. The
+payload carries **no phone, full address or customer name** — the §14.3 privacy
+gate. A past-TTL offer is refused at read and is never in the list.
 
 ### `POST /api/professionals/offers/[id]/accept`
 
@@ -1650,10 +1658,15 @@ address now unlocked. An audit row records the acceptance.
 | Auth | Required — **verified** professional |
 | Action | `professionals.offers.decline` |
 
-**Body** — `{ reason? }` (≤200 chars). **200** — `{ "declined": true }`. An offer
-no longer live is 409 `INVALID_STATE`; a cross-pro id is 404 with zero writes. The
-booking deliberately stays `assigned` — `0011` permits no reassign hop, so
-re-offering is Phase 5's.
+**Body** — `{ reason? }` (≤200 chars). The decline records the reason as a
+tombstone (`rejected`), then — the Phase 5 cascade — calls `match_booking` for the
+booking so the job is re-offered to the next-ranked professional immediately
+rather than sitting until the next inbox open. **200** — `{ "declined": true,
+"reassigned": boolean }`, where `reassigned` is true when a fresh offer went out
+and false when the field was empty (the booking then stays `searching`, and is
+cancelled `no_professional_available` with a full refund if its window has
+already closed). An offer no longer live is 409 `INVALID_STATE`; a cross-pro id is
+404 with zero writes.
 
 ### `GET /api/professionals/me/jobs`
 
@@ -1667,6 +1680,27 @@ and `in_progress` — owner-filtered, oldest window first. **200** — `{ "jobs"
 ProBooking[], "serverNow": "…" }`. Uses the plain professional gate (not the
 verified one): an unverified professional simply has no live jobs. The payload is
 `stripProBooking(…, 'accepted')`, so the address is present and `otp_hash` is not.
+
+### `GET /api/professionals/me/earnings`
+
+| | |
+|---|---|
+| Auth | Required — professional |
+| Action | `professionals.earnings.list` |
+
+The professional's `professional_earnings` ledger, one row per completed job,
+owner-filtered, newest first. Uses the plain professional gate (not the verified
+one): an unverified professional has no jobs, so a gate would only hide an empty
+ledger. **200** — `{ "summary": { lifetimeGross, lifetimeNet, heldNet,
+availableNet, paidNet, reversedNet, counts }, "earnings": [ { id, bookingId,
+bookingNumber, serviceName, grossAmount, commissionAmount, netAmount,
+bonusAmount, status, availableAt, reversedReason, createdAt } ], "serverNow":
+"…" }`. The summary is a paise-exact sum of the returned rows (via `lib/money.ts`),
+not a stored or second figure, so the total can never disagree with the list.
+Money arrives as JSON numbers, converted at the same boundary. `bookingNumber`
+and `serviceName` are resolved from `bookings` / `booking_items` and fall back to
+`null` if the booking is gone. The caller's id filters the query and nothing
+else, so a cross-professional id is an empty ledger by construction.
 
 ### Job execution: arrive, OTP, complete, no-show
 
@@ -1870,7 +1904,7 @@ longer than the route table.
 | 2 — Booking & pricing | **Delivered**: quote, create, list, detail, cancel, reschedule, invoice stub, coupons and the `bookings` state machine. Still open: there is no `bookingView` consolidated read model | `INVALID_STATE`, `ILLEGAL_TRANSITION`, `STALE_VERSION`, `ADDRESS_IN_USE` — `PRICE_CHANGED` is now in use |
 | 3 — Payments | **Delivered**: order create, webhook, verify, `GET /api/payments/[id]`, the reconcile cron (§4.5). Still open: refunds, the wallet ledger and the approval console on top of them | `PAYMENT_FAILED`, `PAYMENT_NOT_VERIFIED` |
 | 4 — Professional app | **Delivered**: KYC signed-upload trio, the verification workflow and staff verdict endpoint, working hours and time off, availability, the offer ledger (accept/decline), the job verbs (arrive, on-site OTP, complete, no-show) and the customer track/OTP read (§4.7). Still open: the earnings **page** and payouts (Phase 8), extensions, ETA and any professional-facing refund path | `PROFESSIONAL_UNAVAILABLE`, `ASSIGNMENT_TAKEN` are now in use |
-| 5 — Matching engine | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper, the full `professional_schedule` producer (Phase 4 ships only `sweep_new_bookings`) | `ASSIGNMENT_TAKEN`, `PROFESSIONAL_UNAVAILABLE` |
+| 5 — Matching engine | **Delivered**: `run_matching_sweep` is invoked by the offers read, `rank_candidates` / `match_booking` drive the ranked offer and the reassignment cascade, and an exhausted search is cancelled and auto-refunded (§4.7). Still open: distance/rating scoring (needs `earthdistance` and the ratings roll-up), the true §25.11 cron, the 30-minute arrived hold and the `professional_schedule` slot-picker input | `ASSIGNMENT_TAKEN`, `PROFESSIONAL_UNAVAILABLE` |
 | 6 — Admin console | Everything under `/admin`: dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, analytics, notifications, settings, audit | — |
 | 7 — Realtime | Channels, presence, chat, notification dispatcher, templates, reminders | — |
 | 8 — Growth | Recurring, wallet top-up, referrals, favourites, surge, PDF invoices, PWA | — |
@@ -1890,10 +1924,12 @@ Concretely, the gaps a reader is most likely to trip over:
   trigger lets an *admin* set `super_admin`, because it distinguishes admin from
   everyone else rather than owner from admin. Whoever builds the admin
   role-management screen must refuse `super_admin` explicitly.
-- **`platform_settings` is not read.** `instant_lead_minutes`, `taxRate`,
-  `commissionPct` and `platformFee` come from `PLATFORM_DEFAULTS` in
-  `lib/constants.ts`. `/api/availability` uses `PLATFORM_DEFAULTS.instantLeadMinutes`
-  to push out today's first slot. The table lands in Phase 6.
+- **`platform_settings` is not read.** `taxRate`, `commissionPct` and
+  `platformFee` come from `PLATFORM_DEFAULTS` in
+  `lib/constants.ts`. `/api/availability` no longer pushes out today's first
+  slot: a same-day booking is dispatched immediately (`leadMinutesForDay` in
+  `lib/availability.ts`), so only future days gate on the works' lead. The table
+  lands in Phase 6.
 - **Service-level aggregate ratings are always `null`.** `ratings` rows are written
   when a booking is reviewed, which is Phase 2.
 - **No caching headers anywhere.** Every route sets `dynamic = 'force-dynamic'`.

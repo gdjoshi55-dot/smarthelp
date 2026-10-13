@@ -1,6 +1,6 @@
 import { ApiHttpError } from './api';
 import { createServerClient } from './supabaseServer';
-import { can, isAdminRole, isStaffRole, type Capability } from './roles';
+import { can, type Capability } from './roles';
 import type { Profile, UserRole } from './supabase';
 import { DEFAULT_PHONE_COUNTRY_CODE } from './constants';
 
@@ -9,9 +9,10 @@ import { DEFAULT_PHONE_COUNTRY_CODE } from './constants';
  *
  * Hand-written validators, deliberately: the stack has no zod and no ORM, and
  * a route with an explicit allow-list and length cap is easier to audit than a
- * schema string. The same functions are imported by client components, so a
- * field can be checked in the form and again on the server — the server check
- * is the one that counts.
+ * schema string. This module imports `supabaseServer`, so it is SERVER-ONLY:
+ * the field rules it reads are meant to be mirrored in the form client-side
+ * (see the per-form validators), but the check that counts runs here, server-
+ * side, next to the Route Handler that uses it.
  */
 
 // ── Field primitives ────────────────────────────────────────
@@ -214,20 +215,6 @@ export async function requireCapability(
     throw new ApiHttpError('FORBIDDEN', 'You do not have permission to do this.', 403, {
       capability,
     });
-  }
-  return auth;
-}
-
-export function requireStaff(auth: AuthContext): AuthContext {
-  if (!isStaffRole(auth.role)) {
-    throw new ApiHttpError('FORBIDDEN', 'Staff access only.', 403);
-  }
-  return auth;
-}
-
-export function requireAdmin(auth: AuthContext): AuthContext {
-  if (!isAdminRole(auth.role)) {
-    throw new ApiHttpError('FORBIDDEN', 'Admin access only.', 403);
   }
   return auth;
 }

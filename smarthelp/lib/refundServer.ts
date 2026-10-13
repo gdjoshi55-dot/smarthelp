@@ -2,6 +2,7 @@ import { ApiHttpError } from './api';
 import { audit } from './audit';
 import { PLATFORM_DEFAULTS } from './constants';
 import { numericLiteral, parseNumeric, toPaise } from './money';
+import { paymentAmountPaise } from './paymentServer';
 import { createRazorpayClient } from './razorpayClient';
 import type { Capability } from './roles';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -345,6 +346,172 @@ export async function executeRefund(args: ExecuteRefundArgs): Promise<Refund> {
   return row;
 }
 
+export interface ExecutePendingRefundArgs {
+  supabase: ServerClient;
+  /** The existing `requested` (or `approved`) refund row being carried through. */
+  refund: Refund;
+  payment: Payment;
+  processedBy: string;
+  /** Reads the current support-refund-limit setting when not supplied. */
+  supportRefundLimit?: number;
+  note?: string | null;
+  fetch?: typeof fetch;
+  requestId?: string | null;
+  ipAddress?: string | null;
+}
+
+/**
+ * Execute a refund row that already exists — §25.10's approver, and the console
+ * path for an above-limit request (Wave C).
+ *
+ * `executeRefund` is the path for refunds whose row is being created by the same
+ * call that executes them (cancellations, the customer support flow). An
+ * above-limit request, though, was created *without* being executed
+ * (`requestRefund`, row left `requested`, `approved_by` null), so its execution
+ * must not create a second row. The steps are the same as `executeRefund`'s
+ * after its step 1 — gateway first, wallet on a definite refusal — minus the
+ * `record_booking_refund` call, and with one extra fact: an above-limit refund
+ * (amount > `supportRefundLimit`) may only be executed by an approver, which is
+ * the Route Handler's job to have checked; this module only records who stamped
+ * the approval on the row.
+ *
+ * The row is stamped `approved` (with the approver) before the money moves, so
+ * an approval is never implied by a completed refund alone.
+ */
+export async function executePendingRefund(args: ExecutePendingRefundArgs): Promise<Refund> {
+  const supabase = args.supabase;
+  const { payment, processedBy } = args;
+  let refund: Refund = args.refund;
+
+  const limit = args.supportRefundLimit ?? PLATFORM_DEFAULTS.supportRefundLimit;
+  const aboveLimit = toPaise(parseNumeric(refund.amount)) > toPaise(limit);
+
+  // Stamp approval first: who approved and when is a fact the row must carry
+  // even if the gateway is unreachable and the money cannot move just yet.
+  if (aboveLimit && refund.status === 'requested') {
+    const { data: approved, error } = await supabase
+      .from('refunds')
+      .update({ status: 'approved', approved_by: processedBy })
+      .eq('id', refund.id)
+      .select('*')
+      .single();
+    if (error) throw error;
+    refund = approved;
+  }
+
+  const route = refund.route as RefundRoute;
+  const note = args.note ?? `refund executed${aboveLimit ? ' (approved)' : ''}`;
+  let gatewayRefundId: string | null = refund.gateway_refund_id;
+
+  if (route === 'gateway' && !gatewayRefundId) {
+    const attempt = await askGatewayForRefund({ payment, amountPaise: toPaise(parseNumeric(refund.amount)), fetch: args.fetch }, refund);
+    if (attempt.ok) {
+      gatewayRefundId = attempt.refundId;
+      const { error: storeError } = await supabase
+        .from('refunds')
+        .update({ gateway_refund_id: gatewayRefundId })
+        .eq('id', refund.id);
+      if (storeError) throw storeError;
+    } else if (attempt.unreachable) {
+      await noteOpsTicket(supabase, {
+        refund,
+        payment,
+        amountPaise: toPaise(parseNumeric(refund.amount)),
+        reasonCode: refund.reason_code,
+        failureReason: attempt.reason,
+        reachable: false,
+        requestId: args.requestId ?? null,
+        ipAddress: args.ipAddress ?? null,
+      });
+      return refund;
+    } else {
+      return walletFallbackForPending(supabase, args, refund, attempt.reason);
+    }
+  }
+
+  if (route === 'wallet') {
+    await creditWallet(
+      supabase,
+      payment.customer_id,
+      toPaise(parseNumeric(refund.amount)),
+      `refund:${refund.id}`,
+      `Refund of ${refund.amount} ${refund.currency || 'INR'} for booking ${refund.booking_id}`
+    );
+  }
+
+  const { data: completed, error: completeError } = await supabase.rpc('complete_booking_refund', {
+    p_refund_id: refund.id,
+    p_gateway_refund_id: gatewayRefundId,
+    p_route: route,
+    p_note: note,
+    p_processed_by: processedBy,
+  });
+  if (completeError) throw completeError;
+
+  const row = completed ?? refund;
+  await audit(supabase, {
+    actorProfileId: processedBy,
+    action: 'refund.approved_and_completed',
+    entityType: 'refunds',
+    entityId: row.id,
+    before: { status: refund.status },
+    after: { status: 'completed', route },
+    metadata: {
+      paymentId: payment.id,
+      bookingId: refund.booking_id,
+      amount: refund.amount,
+      reason_code: refund.reason_code,
+      gatewayRefundId,
+    },
+    requestId: args.requestId ?? null,
+    ipAddress: args.ipAddress ?? null,
+  });
+
+  return row;
+}
+
+/**
+ * The wallet fallback for an already-requested refund row: same promise as
+ * `walletFallback` (never left with nothing) but starting from a row that
+ * already exists rather than one `executeRefund` just created.
+ */
+async function walletFallbackForPending(
+  supabase: ServerClient,
+  args: ExecutePendingRefundArgs,
+  refund: Refund,
+  failureReason: string
+): Promise<Refund> {
+  await creditWallet(
+    supabase,
+    args.payment.customer_id,
+    toPaise(parseNumeric(refund.amount)),
+    `refund:${refund.id}`,
+    `Refund of ${refund.amount} ${refund.currency || 'INR'} for booking ${refund.booking_id}`
+  );
+
+  const { data: completed, error } = await supabase.rpc('complete_booking_refund', {
+    p_refund_id: refund.id,
+    p_gateway_refund_id: null,
+    p_route: 'wallet',
+    p_note: `refunded to the wallet: ${failureReason}`,
+    p_processed_by: args.processedBy,
+  });
+  if (error) throw error;
+
+  await noteOpsTicket(supabase, {
+    refund: completed ?? refund,
+    payment: args.payment,
+    amountPaise: toPaise(parseNumeric(refund.amount)),
+    reasonCode: refund.reason_code,
+    failureReason,
+    reachable: true,
+    requestId: args.requestId ?? null,
+    ipAddress: args.ipAddress ?? null,
+  });
+
+  return completed ?? refund;
+}
+
 /** What the gateway said, and whether it said it at all. */
 type GatewayAttempt =
   | { ok: true; refundId: string }
@@ -360,7 +527,7 @@ type GatewayAttempt =
  * function can tell the two apart.
  */
 async function askGatewayForRefund(
-  args: ExecuteRefundArgs,
+  args: { payment: Payment; amountPaise: number; fetch?: typeof fetch },
   refund: Refund
 ): Promise<GatewayAttempt> {
   const gatewayPaymentId = args.payment.gateway_payment_id;
@@ -472,6 +639,87 @@ async function walletFallback(
   });
 
   return completed ?? refund;
+}
+
+/** The shape a Route Handler returns in its JSON body for an automatic refund. */
+export interface CapturedRefund {
+  id: string;
+  amount: number;
+  currency: string;
+  status: Refund['status'];
+  route: RefundRoute;
+}
+
+export interface RefundCapturedBookingArgs {
+  supabase: ServerClient;
+  bookingId: string;
+  /**
+   * Rupees withheld — §11.1's cancellation fee. Zero refunds everything, which
+   * is the exhausted-search case: nobody provided a service, so nothing is kept.
+   */
+  feeRupees: number;
+  /** Defaults to the §16 reason a customer cancellation carries. */
+  reasonCode?: string;
+  /** Defaults to a sentence naming the cancellation; overridden for exhaustion. */
+  note?: string;
+  ipAddress?: string | null;
+}
+
+/**
+ * Give back what a captured-then-ended booking is owed, or nothing.
+ *
+ * This is the one place "refund the money we took" happens for a booking that
+ * ended without a service, and two callers share it: the customer's
+ * cancellation (`POST /api/bookings/:id/cancel`, where §11.1's fee may be
+ * withheld) and Phase 5's exhausted search (fee 0 — no professional was ever
+ * assigned, so there is no fee to keep). A second copy is a second place for the
+ * paise arithmetic to be a rupee out.
+ *
+ * A booking with no captured payment — the common unpaid case — has nothing to
+ * refund: this returns `null` rather than writing a zero-value ledger row. When
+ * money *was* captured, the refundable part is the captured amount less the fee,
+ * computed in paise, never re-derived in floats at the boundary. The
+ * `> 0` guard is what stops a zero row when the fee equals the capture exactly;
+ * `executeRefund`'s own `assertRefundable()` is the second line of defence.
+ *
+ * `auto: true` means it is never held for approval (see `planRefund`): the
+ * platform is taking back its own money, and a booking that has already ended
+ * must not be stranded waiting for a human.
+ */
+export async function refundCapturedBooking(
+  args: RefundCapturedBookingArgs
+): Promise<CapturedRefund | null> {
+  const { data, error } = await args.supabase
+    .from('payments')
+    .select('*')
+    .eq('booking_id', args.bookingId)
+    .eq('status', 'success')
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+
+  const payment = data as Payment;
+  const amountPaise = paymentAmountPaise(payment) - toPaise(args.feeRupees);
+  if (amountPaise <= 0) return null;
+
+  const refund = await executeRefund({
+    supabase: args.supabase,
+    payment,
+    amountPaise,
+    reasonCode: args.reasonCode ?? 'booking_cancelled',
+    note: args.note ?? `automatic refund on cancellation of booking ${args.bookingId}`,
+    auto: true,
+    requestedBy: null,
+    ipAddress: args.ipAddress ?? null,
+  });
+
+  return {
+    id: refund.id,
+    amount: parseNumeric(refund.amount),
+    currency: refund.currency,
+    status: refund.status,
+    route: refund.route,
+  };
 }
 
 /**

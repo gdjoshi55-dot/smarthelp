@@ -1,9 +1,10 @@
 import { createServerClient } from './supabaseServer';
 import { ApiHttpError } from './api';
-import { PLATFORM_DEFAULTS, SLOT_GRANULARITY_MIN } from './constants';
+import { SLOT_GRANULARITY_MIN } from './constants';
 import {
   computeSlots,
   estimateInstant,
+  leadMinutesForDay,
   wallClockToInstant,
   zoneDate,
   type AvailabilityResult,
@@ -32,8 +33,8 @@ export type { AvailabilityResult };
  *
  *   locality              resolved from the address / point / area
  *   service area          `service_areas` — an inactive row means SERVICE_UNAVAILABLE
- *   lead time             max(area.lead_minutes, service.prep_minutes) and, for today,
- *                         `platform_defaults.instantLeadMinutes`
+ *   lead time             max(area.lead_minutes, service.prep_minutes); today dispenses
+ *                         with it — a same-day booking dispatches immediately
  *   duration              bounded by the service and by `service_durations`
  *   working hours         `professional_working_hours`, per professional
  *   time off              `professional_time_off` overlapping the day
@@ -323,12 +324,16 @@ export async function getAvailability(input: AvailabilityRequest): Promise<Avail
     input.professionalId
   );
 
-  // An instant booking cannot start sooner than the platform lead either, so
-  // today's first slot is pushed out by whichever is larger.
+  // A same-day booking is dispatched the moment it is paid — Phase 5's matching
+  // broadcasts to every eligible professional with no holdback — so today's
+  // slots start at the next free professional window rather than after a lead.
+  // See `leadMinutesForDay`.
   const isToday = date === zoneDate(new Date(), timeZone);
-  const leadMinutes =
-    Math.max(input.serviceable.leadMinutes, service.prepMinutes) +
-    (isToday ? PLATFORM_DEFAULTS.instantLeadMinutes : 0);
+  const leadMinutes = leadMinutesForDay(
+    input.serviceable.leadMinutes,
+    service.prepMinutes,
+    isToday
+  );
 
   const day = computeSlots({
     date,

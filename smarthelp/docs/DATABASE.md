@@ -1306,7 +1306,7 @@ at the foot of `0029`. The first three live in `0012`.
 |---|---|---|
 | `accept_offer` | `(uuid booking, uuid professional)` | `assigned → accepted → on_the_way` (+ reserved schedule window) |
 | `decline_offer` | `(uuid, uuid, text reason)` | `offered → rejected` (tombstone) |
-| `sweep_new_bookings` | `()` | makes the one Phase 4 offer |
+| `run_matching_sweep` | `()` | the Phase 5 producer — see the matching-engine table below |
 | `arrive_job` | `(uuid booking, uuid professional, int expected_version)` | `on_the_way → arrived` |
 | `issue_service_otp` | `(uuid booking, text code, int ttl_seconds)` | stores a digest, no status move |
 | `verify_service_otp` | `(uuid booking, text code, int)` | `arrived → otp_verified → in_progress` |
@@ -1362,6 +1362,61 @@ Both fixes are in a new file rather than edits to `0029`, because `0029` is
 already recorded in the applied-migrations ledger and a migration that changed
 under its own ledger would stop meaning what the ledger says it means.
 
+### The matching engine (`0032`, Phase 5)
+
+Phase 4 shipped the offer *ledger* but not the matcher. `0032` builds the engine:
+four new `security definer`, `service_role`-only functions, the spec's restored
+transition edge, and `sweep_new_bookings` dropped.
+
+**The edge.** `0011`'s deployed transition table omitted `'assigned'` from the
+predecessors of `searching`, deliberately — Phase 4 could not reassign, so the hop
+would have been a door with no corridor. `0032` re-creates
+`enforce_booking_transition()` as `0011` verbatim with that one addition (§8.2:
+"offer expired or professional declined"). Nothing else in the trigger changes,
+and `lib/status.ts` gains the same successor so `test/status.test.ts`'s parity
+walk keeps passing.
+
+| Function | Signature | What it does |
+|---|---|---|
+| `expire_stale_offers` | `(timestamptz default now())` | flips every past-TTL `offered` row to `expired` and returns the affected booking ids |
+| `rank_candidates` | `(uuid booking)` → `(professional_id, was_repeat, load, score)` | the eligible professionals, best first |
+| `match_booking` | `(uuid booking)` → `jsonb` | matches one booking under an advisory lock |
+| `run_matching_sweep` | `()` → `setof jsonb` | the producer: expire globally, then match every waiting booking |
+
+Notes that matter when reading the SQL:
+
+- **Fan-out is round-based, not simultaneous (D1).**
+  `uniq_active_assignment_per_booking` permits at most one live
+  (`offered`|`accepted`) assignment per booking — that index *is* the double-assign
+  guarantee, so offering one booking to several professionals at once is
+  structurally impossible. The engine ranks and offers in rounds: a decline or an
+  expiry advances `round_no` and the next candidate is offered. `attempt_no` /
+  `round_no` on the ledger exist for exactly this.
+- **`rank_candidates` ranks on what the schema holds (D3).** Repeat, then load
+  (fewest live `professional_schedule` windows), then tenure
+  (`accepted_offers`, `created_at`, `id`). Distance needs `earthdistance`, which
+  `0002` does not install, and there is no ratings roll-up until Phase 8, so
+  `score` is written as `null` rather than as a fabricated number — the same
+  choice `0012` made. A professional already offered this booking is excluded,
+  because `uniq_prof_booking_offer` makes a re-offer a bug.
+- **`match_booking` walks the legal hops one at a time under
+  `pg_advisory_xact_lock(hashtext('assign:' || booking_id))`.** The lock is what
+  makes the *choice* deterministic between two concurrent sweeps; the partial
+  unique index is the backstop. It stamps `search_started_at` /
+  `search_expires_at` on the first `paid → searching`, walks `assigned →
+  searching` when a decline or expiry left the booking there, and on an offer
+  sets `professional_id`, `matched_at` and `assignment_rounds`.
+- **Exhaustion is `searching → cancelled` with
+  `cancellation_reason_code = 'no_professional_available'` (D2)**, reached only
+  when the ranked list is empty *and* the search window has closed. The engine's
+  job ends at the state move; the money is paid back by the JS caller (§12.3's
+  refund is an HTTP call to Razorpay and does not belong inside a transaction
+  holding the advisory lock). One money path — the Phase 3 cancel-of-paid
+  auto-refund — is reused with `feeRupees: 0`.
+- **`run_matching_sweep` is the single producer (D4)** and is idempotent: a
+  booking with a live offer is a `noop`. The offers inbox read calls it today; the
+  §25.11 cron calls the same RPC when a scheduler exists.
+
 ---
 
 ## 12. What is not here yet
@@ -1375,7 +1430,7 @@ otherwise have carried it. Nothing here is an oversight.
 | Deferred | Why | Lands in |
 |---|---|---|
 | `block_address_delete_with_future_bookings()` | It references `bookings`, which does not exist, and a migration naming a table that does not exist fails to apply. Reachable data loss window: none, since nothing references an address yet | Phase 2 |
-| `professional_schedule` as an input to the customer's slot picker | §9.1 lists "not already reserved" as an input. Phase 4 writes the table's first rows — `accept_offer` inserts a `reserved` window and `sweep_new_bookings` reads it — so the *offer* path honours reservations; the customer-facing slot list (`lib/availability.ts`) still ignores the table, so it can still show a slot the professional is already booked for | Phase 5 |
+| `professional_schedule` as an input to the customer's slot picker | §9.1 lists "not already reserved" as an input. Phase 4 writes the table's first rows — `accept_offer` inserts a `reserved` window and Phase 5's `rank_candidates` reads it — so the *offer* path honours reservations; the customer-facing slot list (`lib/availability.ts`) still ignores the table, so it can still show a slot the professional is already booked for | a later Phase 5 wave |
 | Service-level aggregate rating on catalogue cards | `ratings` rows are written when a booking is reviewed | Phase 2 |
 | Checkout behind the service-detail CTA | `/customer/checkout` is Phase 2; the CTA routes somewhere real rather than being a dead button | Phase 2 |
 | `platform_settings` rows (`instant_lead_minutes`, `max_booking_minutes`) | Read from `lib/constants.ts` defaults until the table lands | Phase 6 |
@@ -1397,7 +1452,7 @@ The only names quoted are ones the repository itself already uses.
 | 2 | Quote engine, booking create, cancel/reschedule, coupons, invoice stub, `bookings` state machine | **Delivered.** `bookings`, `booking_items`, `booking_status_history`, `booking_number_seq`, the price and quote-token snapshots, and the four write-path functions in §9. `block_address_delete_with_future_bookings()` and `ratings` land here |
 | 3 | Razorpay orders, webhook, verify, refunds, wallet ledger, reconciliation cron | The wallet that `customers.wallet_id` already points at. `0015_refunds_wallet.sql` is named in a comment in `0001` and does not exist |
 | 4 | KYC upload, verification workflow, working hours, offers inbox, accept/decline, arrive, OTP, complete | **Delivered.** `0012` (offer ledger + `accept_offer`/`decline_offer`/`sweep_new_bookings`), `0021` (`professional_earnings`), `0029` (`otp_locked_until`, the six job functions, the `otp_hash` column re-grant) and `0030` (two fixes) — see §11. The KYC verdict needed no new table: `professional_documents.status`, `rejection_reason`, `reviewed_by`, `reviewed_at` and `idx_prof_doc_status` already carried it |
-| 5 | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper, the full `professional_schedule` producer | `professional_schedule`, the one availability input §9.1 asks for that `lib/availability.ts` still cannot honour. Phase 4 ships only `sweep_new_bookings` (one offer, no ranking) |
+| 5 | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper, the full `professional_schedule` producer | **Delivered.** `0032` adds `expire_stale_offers` / `rank_candidates` / `match_booking` / `run_matching_sweep`, restores the `assigned → searching` edge and drops `sweep_new_bookings` — see §11. `professional_schedule` is the one availability input §9.1 asks for that `lib/availability.ts` still cannot honour; distance/rating scoring waits on `earthdistance` and the ratings roll-up |
 | 6 | Dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, audit, settings | `platform_settings`, whose `instant_lead_minutes` and `max_booking_minutes` are read from `lib/constants.ts` defaults until the table lands |
 | 7 | Channels, presence, chat, notification dispatcher, templates, reminders | Notification and chat state. The `chat-media` bucket has no client policy at all, on the stated grounds that the phase which owns it writes participant-scoped policies first |
 | 8 | Recurring, wallet top-up, referrals, favourites, surge, invoices/PDF, PWA | Recurring schedules and an invoice record. The `invoices` bucket exists and is private with no policy |
@@ -1409,10 +1464,10 @@ never written. The `customers` / `professionals` counter columns
 (`total_bookings`, `completed_bookings`, `cancelled_bookings`, `lifetime_value`,
 `total_offers`, `accepted_offers`, `completed_jobs`, `cancelled_jobs`,
 `no_shows`) used to be in this list; Phase 2 began moving them and Phase 4 moves
-the professional's (`sweep_new_bookings` bumps `total_offers`, `accept_offer`
-bumps `accepted_offers`, `complete_job` bumps `completed_jobs`, `no_show_job`
-bumps `no_shows`). They are written only by the service role, as a side effect of
-a real state move.
+the professional's (`run_matching_sweep` bumps `total_offers` through
+`match_booking`, `accept_offer` bumps `accepted_offers`, `complete_job` bumps
+`completed_jobs`, `no_show_job` bumps `no_shows`). They are written only by the
+service role, as a side effect of a real state move.
 
 `audit_logs.action` and `entity_type` are free text, and their column comments use
 `'booking.create'`, `'refund.execute'`, `'bookings'` and `'payments'` as examples.
@@ -1435,7 +1490,7 @@ Those are notation, not an allow-list.
 
 ## 13. What is verified, and what is not
 
-`npm run test:db` runs 96 tests across seven files against a real database and
+`npm run test:db` runs 99 tests across eight files against a real database and
 skips loudly without one. It is not a substitute for reading the migrations, but
 it does prove some things nothing else can.
 
@@ -1468,6 +1523,13 @@ it does prove some things nothing else can.
   `complete_job` is idempotent (a second call adds no second `professional_earnings`
   row and does not double-count `completed_jobs`); `no_show_job` writes **no**
   `refunds`, `wallets` or `wallet_transactions` row.
+- The matching engine (`0032`): **twenty concurrent `match_booking` calls on one
+  booking produce exactly one offer** — the advisory lock serialises the matchers
+  and the loser no-ops against the winner's live offer — while the booking reaches
+  `assigned` with exactly one live assignment; a past-TTL offer becomes an
+  `expired` tombstone; and a booking whose ranked list is empty past its search
+  window reaches `cancelled` / `no_professional_available` with the `assigned →
+  searching` and `searching → cancelled` edges the state machine now permits.
 - `bookings.otp_hash` is **invisible to the `authenticated` role** after the `0029`
   column re-grant: a query naming it raises a permission error, while every other
   column is still readable.

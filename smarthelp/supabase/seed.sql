@@ -5,9 +5,9 @@
 -- via `supabase db reset`. Idempotent: re-running refreshes the demo
 -- passwords and tops the catalogue back up; it never duplicates a row.
 --
--- This file creates FOUR auth.users so that "login works for all three
--- role types" (§31.1 Phase 0 exit criteria) is verifiable without a
--- phone provider. Real customers and professionals authenticate by phone
+-- This file creates FIVE auth.users (one per role type) so that "login works
+-- for all three role types" (§31.1 Phase 0 exit criteria) is verifiable without
+-- a phone provider. Real customers and professionals authenticate by phone
 -- OTP; demo accounts get an email + password so the flow is testable
 -- on a laptop.
 --
@@ -20,7 +20,7 @@
 --   ops           demo.ops@smarthelp.test        Demo@12345
 --
 -- The super_admin (owner) account is NOT seeded: it is created by
--- signing in with the login named in NEXT_PUBLIC_SUPARTHELP_OWNER_LOGIN,
+-- signing in with the login named in SMARTHELP_OWNER_LOGIN,
 -- which the auth route promotes to super_admin. See docs/SETUP.md.
 --
 -- !! NOT FOR PRODUCTION. Delete this file before the first real launch.

@@ -40,13 +40,18 @@ export const TRANSITIONS: Record<BookingStatus, readonly BookingStatus[]> = {
   // the database would have allowed.
   paid: ['searching', 'cancelled', 'refund_pending'],
   searching: ['assigned', 'cancelled'],
+  // `assigned -> searching` is Phase 5's reassignment edge (§8.2: "offer expired
+  // or professional declined"). Phase 4 dropped it because nothing re-offered,
+  // leaving a declined offer a dead end; the matching engine builds the other
+  // side of it, so the hop and the trigger that guards it were restored together.
+  //
   // Deliberately no `refund_pending`: §8.2 reaches `refund_pending` from
   // cancelled, paid, accepted, on_the_way, arrived and disputed — an *offer* is
   // not one of them. From `assigned` the professional has to decline (or accept,
   // and then something goes wrong later in the job), so the offer route is
   // `assigned -> cancelled -> refund_pending`, which is also the route the
   // cancellation fee is calculated on.
-  assigned: ['accepted', 'cancelled'],
+  assigned: ['accepted', 'searching', 'cancelled'],
   accepted: ['on_the_way', 'cancelled', 'refund_pending', 'disputed', 'no_show'],
   on_the_way: ['arrived', 'cancelled', 'refund_pending', 'disputed', 'no_show'],
   arrived: ['otp_verified', 'cancelled', 'refund_pending', 'disputed', 'no_show'],

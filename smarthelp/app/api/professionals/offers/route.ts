@@ -1,6 +1,8 @@
 import { handle, ok } from '@/lib/api';
 import { createServerClient } from '@/lib/supabaseServer';
 import { requireVerifiedProfessional, PRO_JOB_COLUMNS, stripProBooking } from '@/lib/professionalServer';
+import { runMatchingSweep } from '@/lib/matchingServer';
+import { clientIp } from '@/lib/audit';
 import type { Offer } from '@/lib/professionalClient';
 
 export const runtime = 'nodejs';
@@ -14,12 +16,17 @@ export const dynamic = 'force-dynamic';
  * unbypassable with `requireVerifiedProfessional`.
  *
  * Three steps, in order:
- *   1. `sweep_new_bookings()` turns any paid, unassigned booking into one offer
- *      (D1). It is invoked on the read so a professional who opens the app after
- *      a payment sees the offer without waiting for a cron Phase 4 does not have.
- *   2. The caller's stale offers are lazily expired (Pitfall 6): no background
- *      job flips `offered` to `expired`, so the read does it, and the countdown
- *      the card renders is never against an offer the accept path would refuse.
+ *   1. `runMatchingSweep()` (0032) is Phase 5's producer: it expires every stale
+ *      offer, then matches every waiting booking and re-offers the ones whose
+ *      offer was declined or timed out. It is invoked on the read so a
+ *      professional who opens the app after a payment sees the offer without
+ *      waiting for the §25.11 cron this codebase does not run yet. It is
+ *      idempotent — a booking with a live offer is a noop — so the cron, when it
+ *      exists, calls the same RPC.
+ *   2. The caller's stale offers are still expired lazily here too (Pitfall 6):
+ *      the sweep's global expiry already ran, but this is a belt against the
+ *      window between that statement and this read, and it keeps the countdown
+ *      the card renders from sitting against an offer the accept path would refuse.
  *   3. The live offers are read and joined in JS to the booking and its items —
  *      the repo joins in TypeScript (separate single-table queries), never with
  *      a PostgREST embedded select.
@@ -35,7 +42,7 @@ export async function GET(req: Request) {
     const { professional } = await requireVerifiedProfessional(req);
     const supabase = createServerClient();
 
-    await supabase.rpc('sweep_new_bookings');
+    await runMatchingSweep(supabase, { ipAddress: clientIp(req) });
 
     const nowIso = new Date().toISOString();
 

@@ -145,6 +145,8 @@ export type BookingStatus =
   | 'closed';
 
 export type DiscountType = 'percentage' | 'fixed';
+/** 0035. §11.1's three fee modes; the ladder row's `fee_value` unit follows. */
+export type CancellationFeeType = 'free' | 'percentage' | 'fixed';
 export type PaymentPurpose = 'booking' | 'extension' | 'wallet_topup' | 'penalty';
 export type ScheduleStatus = 'reserved' | 'in_progress' | 'completed' | 'released';
 
@@ -1214,6 +1216,119 @@ type RawTables = {
         };
         Update: Partial<RawTables['professional_earnings']['Row']>;
       };
+
+      // 0033. The editable business rules (§24.14). `value` is jsonb, so it is
+      // typed `unknown` here — the one typed reader, `lib/settingsServer.ts`,
+      // names each key, parses it and falls back to `PLATFORM_DEFAULTS`, so no
+      // call site ever handles a raw jsonb value. Reads go through RLS (staff);
+      // every write is a service-role Route Handler.
+      platform_settings: {
+        Row: {
+          key: string;
+          value: unknown;
+          updated_by: string | null;
+          updated_at: Timestamptz;
+        };
+        Insert: {
+          key: string;
+          value: unknown;
+          updated_by?: string | null;
+        };
+        Update: {
+          value?: unknown;
+          updated_by?: string | null;
+        };
+      };
+
+      // 0035. The §11.1 cancellation ladder as rows (§24). `hours_before` is the
+      // band ceiling — null is the unbounded "≥ 24h" row, matching
+      // `lib/cancellation.ts`. `service_id` null is the platform-wide default.
+      cancellation_policies: {
+        Row: {
+          id: string;
+          service_id: string | null;
+          hours_before: Numeric | null;
+          fee_type: CancellationFeeType;
+          fee_value: Numeric;
+          applies_when_arrived: boolean;
+          band: string | null;
+          sort_order: number;
+          is_active: boolean;
+          created_at: Timestamptz;
+          updated_at: Timestamptz;
+        };
+        Insert: {
+          service_id?: string | null;
+          hours_before?: Numeric | null;
+          fee_type: CancellationFeeType;
+          fee_value?: Numeric;
+          applies_when_arrived?: boolean;
+          band?: string | null;
+          sort_order?: number;
+          is_active?: boolean;
+        };
+        Update: {
+          service_id?: string | null;
+          hours_before?: Numeric | null;
+          fee_type?: CancellationFeeType;
+          fee_value?: Numeric;
+          applies_when_arrived?: boolean;
+          band?: string | null;
+          sort_order?: number;
+          is_active?: boolean;
+        };
+      };
+
+      // 0035. The §7.1 surge windows (§24): a multiplier over
+      // global/category/service scope, optionally bounded by days of the week
+      // and a minute-of-day window. Empty table = no surge (the prior behaviour).
+      pricing_rules: {
+        Row: {
+          id: string;
+          name: string;
+          scope: 'global' | 'category' | 'service';
+          category_id: string | null;
+          service_id: string | null;
+          multiplier: Numeric;
+          days_of_week: number[];
+          start_minute: number | null;
+          end_minute: number | null;
+          priority: number;
+          valid_from: Timestamptz | null;
+          valid_to: Timestamptz | null;
+          is_active: boolean;
+          created_at: Timestamptz;
+          updated_at: Timestamptz;
+        };
+        Insert: {
+          name: string;
+          scope?: 'global' | 'category' | 'service';
+          category_id?: string | null;
+          service_id?: string | null;
+          multiplier: Numeric;
+          days_of_week?: number[];
+          start_minute?: number | null;
+          end_minute?: number | null;
+          priority?: number;
+          valid_from?: Timestamptz | null;
+          valid_to?: Timestamptz | null;
+          is_active?: boolean;
+        };
+        Update: {
+          name?: string;
+          scope?: 'global' | 'category' | 'service';
+          category_id?: string | null;
+          service_id?: string | null;
+          multiplier?: Numeric;
+          days_of_week?: number[];
+          start_minute?: number | null;
+          end_minute?: number | null;
+          priority?: number;
+          valid_from?: Timestamptz | null;
+          valid_to?: Timestamptz | null;
+          is_active?: boolean;
+        };
+      };
 };
 
 type RawViews = {
@@ -1505,10 +1620,60 @@ export type Database = {
         Returns: Database['public']['Tables']['booking_assignments']['Row'] | null;
       };
 
-      /** 0012. Phase 4's minimal matcher. Returns the number of offers made. */
-      sweep_new_bookings: {
+      // ── Phase 5: the matching engine ─────────────────────────────────
+      //
+      // 0032. Every one is `security definer`, revoked from PUBLIC and granted
+      // to `service_role` only. The engine's guarantee — at most one live offer
+      // per booking under concurrency — is the advisory lock in `match_booking`
+      // plus 0012's `uniq_active_assignment_per_booking`.
+
+      /** 0032. Flip every offer past its TTL to `expired`; returns booking ids. */
+      expire_stale_offers: {
+        Args: { p_now?: string | null };
+        Returns: string[];
+      };
+
+      /**
+       * 0032. The ranked, eligible professionals for a booking, best first.
+       * `score` is null until distance/rating scoring lands (D3).
+       */
+      rank_candidates: {
+        Args: { p_booking_id: string };
+        Returns: Array<{
+          professional_id: string;
+          was_repeat: boolean;
+          load: number;
+          score: number | null;
+        }>;
+      };
+
+      /**
+       * 0032. Match one booking under the advisory lock. `outcome` is
+       * `offered | searching | exhausted | noop`; `exhausted` means the search
+       * window closed with no candidate and the booking is now `cancelled`
+       * `no_professional_available` for the caller to refund.
+       */
+      match_booking: {
+        Args: { p_booking_id: string };
+        Returns: {
+          outcome: string;
+          booking_id: string;
+          professional_id?: string;
+          assignment_id?: string;
+          round_no?: number;
+        };
+      };
+
+      /** 0032. The producer: expire stale offers, then match every waiting booking. */
+      run_matching_sweep: {
         Args: Record<PropertyKey, never>;
-        Returns: number;
+        Returns: Array<{
+          outcome: string;
+          booking_id: string;
+          professional_id?: string;
+          assignment_id?: string;
+          round_no?: number;
+        }>;
       };
 
       /** 0029. `on_the_way -> arrived`. NULL = stale version. */
@@ -1560,6 +1725,56 @@ export type Database = {
         };
         Returns: VerificationStatus | null;
       };
+
+      // ── Phase 6: the staff write paths ───────────────────────────────
+      //
+      // 0034. Both are `security definer`, revoked from PUBLIC and granted to
+      // `service_role` only; the caller is a Route Handler that has
+      // authenticated the staff member and checked the capability first. Both
+      // take the `assign:<booking_id>` advisory lock, so a manual action and
+      // the matching sweeper serialise on the same key.
+
+      /**
+       * 0034. Cancels on behalf of ops, recording the §11.1 fee the caller
+       * computed (`lib/cancellation.ts`) and withdrawing the holding
+       * professional in one statement. Legal moves only: 0011's trigger raises
+       * ILLEGAL_TRANSITION otherwise. Returns the cancelled row.
+       */
+      admin_cancel_booking: {
+        Args: {
+          p_booking_id: string;
+          p_reason_code: string;
+          p_fee: Numeric;
+          p_note: string | null;
+          p_actor: string | null;
+          p_actor_role: Database['public']['Enums']['user_role'] | null;
+        };
+        Returns: Database['public']['Tables']['bookings']['Row'];
+      };
+
+      /**
+       * 0034. Offers a booking to a chosen professional, or swaps the current
+       * one out, under the lock. `outcome` is `assigned | not_found |
+       * professional_not_found | professional_unverified | invalid_state`; the
+       * offer is an ordinary `offered` row the professional still accepts.
+       */
+      admin_assign_booking: {
+        Args: {
+          p_booking_id: string;
+          p_professional_id: string;
+          p_offer_ttl_minutes: number;
+          p_note: string | null;
+          p_actor: string | null;
+          p_actor_role: Database['public']['Enums']['user_role'] | null;
+        };
+        Returns: {
+          outcome: string;
+          booking_id?: string;
+          professional_id?: string;
+          assignment_id?: string;
+          status?: string;
+        };
+      };
     };
 
     Enums: {
@@ -1573,6 +1788,7 @@ export type Database = {
       booking_type: BookingType;
       booking_status: BookingStatus;
       discount_type: DiscountType;
+      cancellation_fee_type: CancellationFeeType;
       payment_purpose: PaymentPurpose;
       payment_status: PaymentStatus;
       payment_method: PaymentMethod;
@@ -1607,6 +1823,8 @@ export type BookingStatusHistory = Tables<'booking_status_history'>;
 export type ProfessionalSchedule = Tables<'professional_schedule'>;
 export type Coupon = Tables<'coupons'>;
 export type CouponUsage = Tables<'coupon_usage'>;
+export type CancellationPolicy = Tables<'cancellation_policies'>;
+export type PricingRule = Tables<'pricing_rules'>;
 export type Rating = Tables<'ratings'>;
 export type Payment = Tables<'payments'>;
 export type Refund = Tables<'refunds'>;

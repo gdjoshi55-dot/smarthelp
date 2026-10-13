@@ -74,10 +74,6 @@ export function created<T>(data: T, headers?: HeadersInit): NextResponse {
   return ok(data, 201, headers);
 }
 
-export function noContent(headers?: HeadersInit): NextResponse {
-  return new NextResponse(null, { status: 204, headers });
-}
-
 export function err(
   code: ApiErrorCode,
   message: string,

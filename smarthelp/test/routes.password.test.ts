@@ -168,6 +168,19 @@ describe('POST /api/auth/sign-in', () => {
     expect(body.data.role).toBe('admin');
   });
 
+  it('expands the owner wildcard so sign-in and /api/auth/me agree', async () => {
+    fake = fakeWithProfile(profile({ role: 'super_admin' }));
+    const { POST } = await import('@/app/api/auth/sign-in/route');
+    const res = await POST(jsonRequest('/api/auth/sign-in', { email: EMAIL, password: PASSWORD }));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.data.role).toBe('super_admin');
+    expect(body.data.capabilities).not.toContain('*');
+    expect(body.data.capabilities).toContain('role.manage');
+    expect(body.data.capabilities.length).toBeGreaterThan(10);
+  });
+
   it('refuses a wrong password with the same message as an unknown account', async () => {
     anonSignIn.mockResolvedValue({ data: { user: null, session: null }, error: { message: 'nope' } });
     const { POST } = await import('@/app/api/auth/sign-in/route');

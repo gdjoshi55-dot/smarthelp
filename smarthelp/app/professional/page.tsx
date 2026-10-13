@@ -199,6 +199,12 @@ export default function ProfessionalHome() {
               <p className="mt-1 text-sm text-gray-600">
                 Payouts appear once jobs start running. Commission is deducted from the service price.
               </p>
+              <Link
+                href="/professional/earnings"
+                className="mt-3 inline-block font-semibold text-blue-600 hover:text-blue-700"
+              >
+                View your ledger
+              </Link>
             </section>
           </div>
         </div>

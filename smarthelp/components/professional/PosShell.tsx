@@ -9,6 +9,7 @@ import { useAuth } from '@/contexts/AuthContext';
 const PRO_SECTIONS = [
   { label: 'Home', href: '/professional' },
   { label: 'Jobs', href: '/professional/jobs' },
+  { label: 'Earnings', href: '/professional/earnings' },
   { label: 'Availability', href: '/professional/availability' },
   { label: 'Verification', href: '/professional/kyc' },
 ];

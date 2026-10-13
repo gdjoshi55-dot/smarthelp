@@ -4,6 +4,7 @@ import {
   estimateInstant,
   etaLabel,
   formatClock,
+  leadMinutesForDay,
   weekdayOf,
   wallClockToInstant,
   zoneDate,
@@ -141,6 +142,8 @@ describe('computeSlots', () => {
       expect(slot.remaining).toBe(0);
     }
     expect(day.slots.find((s) => s.bookable)?.label).toBe('11:00');
+    // The day reports the lead it was gated by, so the client can quote it.
+    expect(day.leadMinutes).toBe(180);
   });
 
   it('counts how many professionals are free, capped by the capacity', () => {
@@ -263,6 +266,21 @@ describe('computeSlots', () => {
     expect(day.serverNow).toBe(now.toISOString());
     expect(day.date).toBe(WED);
     expect(day.timeZone).toBe(KOL);
+  });
+});
+
+describe('the per-day lead', () => {
+  it('dispenses with the lead on the day itself', () => {
+    // The dispatch path (Phase 5) broadcasts the moment a same-day booking is
+    // paid, so today's slots must not hold back a service whose prep/area lead
+    // is long — that is the "No slots — bookings need 1 hr notice" complaint.
+    expect(leadMinutesForDay(120, 60, true)).toBe(0);
+  });
+
+  it('takes the larger of the area lead and the service prep on other days', () => {
+    expect(leadMinutesForDay(120, 60, false)).toBe(120);
+    expect(leadMinutesForDay(15, 60, false)).toBe(60);
+    expect(leadMinutesForDay(15, 0, false)).toBe(15);
   });
 });
 

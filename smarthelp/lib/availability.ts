@@ -179,7 +179,30 @@ export interface SlotDay {
   bookableCount: number;
   /** The largest `remaining` anywhere in the day - how many could run at once. */
   maxRemaining: number;
+  /** The lead that gated this day, so the client can quote the real cutoff. */
+  leadMinutes: number;
   serverNow: string;
+}
+
+/**
+ * The lead that gates a day's slots.
+ *
+ * Today is different from every other day because of how the write path works:
+ * a same-day booking is dispatched the moment it is paid — Phase 5's matching
+ * broadcasts to every eligible professional with no holdback — so today's slots
+ * start at the next free professional window rather than after a lead. That is
+ * what keeps the slot list and the dispatch from disagreeing about whether a
+ * 45-minute job an hour from now is bookable.
+ *
+ * On future days the works' own lead (`max(area lead, service prep)`) still
+ * applies, though never near enough to today to hold a slot back.
+ */
+export function leadMinutesForDay(
+  serviceLeadMinutes: number,
+  servicePrepMinutes: number,
+  isToday: boolean
+): number {
+  return isToday ? 0 : Math.max(serviceLeadMinutes, servicePrepMinutes);
 }
 
 /**
@@ -359,6 +382,7 @@ export function computeSlots(query: SlotQuery): SlotDay {
     slots,
     bookableCount: slots.filter((s) => s.bookable).length,
     maxRemaining: slots.reduce((max, s) => Math.max(max, s.remaining), 0),
+    leadMinutes,
     serverNow: now.toISOString(),
   };
 }

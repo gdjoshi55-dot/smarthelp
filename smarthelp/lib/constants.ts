@@ -99,6 +99,13 @@ export const PLATFORM_DEFAULTS = {
   /** The floor, in rupees — the unit every other money constant here is in. */
   platformFeeMin: Number(process.env.DEFAULT_PLATFORM_FEE_MIN || 20),
   serviceOtpLength: Number(process.env.DEFAULT_SERVICE_OTP_LENGTH || 4),
+  /**
+   * No longer gates same-day availability. A same-day booking is dispatched the
+   * moment it is paid (Phase 5), so today's slots start at the next free
+   * professional window; see `leadMinutesForDay` in `lib/availability.ts`. Kept
+   * as a `platform_settings` default so the Phase 6 admin console still has the
+   * key.
+   */
   instantLeadMinutes: Number(process.env.DEFAULT_INSTANT_LEAD_MINUTES || 30),
   /** §6.4. Longer than this and it is two jobs or a recurring booking. */
   maxBookingMinutes: Number(process.env.DEFAULT_MAX_BOOKING_MINUTES || 480),
@@ -136,6 +143,14 @@ export const PLATFORM_DEFAULTS = {
    * refuse an offer past this (D1, Pitfall 6).
    */
   offerTtlMinutes: Number(process.env.DEFAULT_OFFER_TTL_MINUTES || 15),
+  /**
+   * §9.1 / §16 #20. How long a booking may stay `searching` before the engine
+   * gives up and the customer is refunded in full. The instant-match SLA is a
+   * target (§6.1), not a deadline; this is the deadline. Mirrored as
+   * `v_search_window_min` in `0032_matching_engine.sql`, which is the only
+   * reader today — Phase 6 moves both onto a `platform_settings` row.
+   */
+  searchWindowMinutes: Number(process.env.DEFAULT_SEARCH_WINDOW_MINUTES || 30),
   /**
    * §22.3. The service OTP's TTL, attempt cap, lockout and regeneration cap.
    * `serviceOtpLength` above is the digit count; these are the rest of the

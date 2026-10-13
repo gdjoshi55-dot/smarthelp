@@ -233,8 +233,8 @@ export function SlotPicker({
         ) : data && data.day.slots.filter((slot) => slot.bookable).length === 0 ? (
           <p className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-600">
             No slots for {durationLabel(durationMinutes)} on this day
-            {data.serviceable.leadMinutes > 0
-              ? ` — bookings need ${durationLabel(data.serviceable.leadMinutes)} notice.`
+            {data.day.leadMinutes > 0
+              ? ` — bookings need ${durationLabel(data.day.leadMinutes)} notice.`
               : '.'}
             Try another day.
           </p>

@@ -1,7 +1,7 @@
 -- ============================================================
 -- 0007_service_catalogue_seed.sql
 -- SmartHelp: the launch city, its localities, the five service
--- categories, twenty services, their duration ladder, their
+-- categories, twenty-three services, their duration ladder, their
 -- scope contract, and where each service is offered.
 --
 -- Everything here is a row an admin can edit. Nothing in the app
@@ -353,7 +353,7 @@ on conflict do nothing;
 
 -- ── Service areas (coverage) ────────────────────────────────
 -- A service is bookable only where an active service_areas row exists.
--- The ten core localities carry the full catalogue; the three outer
+-- The nine core localities carry the full catalogue; the three outer
 -- localities carry Cleaning and Kitchen only, so the
 -- SERVICE_UNAVAILABLE path (§25.2) is reachable with real data.
 insert into public.service_areas (locality_id, service_id, lead_minutes, slot_capacity)

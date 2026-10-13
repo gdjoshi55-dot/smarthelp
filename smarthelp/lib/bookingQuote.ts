@@ -20,6 +20,7 @@
 
 import { ApiHttpError } from './api';
 import { DEFAULT_DURATION_LADDER, PLATFORM_DEFAULTS } from './constants';
+import { getPlatformSettings } from './settingsServer';
 import { parseNumeric } from './money';
 import {
   priceQuote,
@@ -75,12 +76,21 @@ export interface QuoteExpectation {
   quoteToken?: string | null;
 }
 
-function settingsFrom(commissionPct?: number | null): PricingSettings {
+/**
+ * The quote-time pricing settings, from `platform_settings` (Wave C, D2).
+ *
+ * `PLATFORM_DEFAULTS` is the initial state; once a platform_settings row exists
+ * the live value wins and the constants are the fallback. Reads resolve through
+ * `getPlatformSettings()`, which parses each key and falls back row by row, so
+ * a knobs DB missing one key still quotes correctly.
+ */
+export async function loadPricingSettings(): Promise<PricingSettings> {
+  const live = await getPlatformSettings();
   return {
-    taxRate: PLATFORM_DEFAULTS.taxRate,
-    platformFeePct: PLATFORM_DEFAULTS.platformFeePct,
-    platformFeeMin: PLATFORM_DEFAULTS.platformFeeMin,
-    currency: PLATFORM_DEFAULTS.currency,
+    taxRate: live.taxRate,
+    platformFeePct: live.platformFeePct,
+    platformFeeMin: live.platformFeeMin,
+    currency: live.currency,
   };
 }
 
@@ -304,7 +314,8 @@ export async function buildQuote(request: BookingQuoteRequest): Promise<BookingQ
   }
 
   const coupon = await loadCoupon(request.couponCode ?? '', serviceIds);
-  const breakdown = priceQuote({ lines, settings: settingsFrom(), coupon });
+  const settings = await loadPricingSettings();
+  const breakdown = priceQuote({ lines, settings, coupon });
 
   return {
     breakdown,
@@ -323,7 +334,7 @@ export async function buildQuote(request: BookingQuoteRequest): Promise<BookingQ
     }),
     durationMinutes:
       resolved.reduce((sum, r) => sum + r.durationMinutes, 0) || DEFAULT_DURATION_LADDER[2],
-    settings: settingsFrom(),
+    settings,
   };
 }
 

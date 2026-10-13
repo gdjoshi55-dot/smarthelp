@@ -119,7 +119,11 @@ function build(overrides: Record<string, any> = {}, rpcs: Record<string, any> = 
       ...overrides,
     },
     {
-      sweep_new_bookings: () => ({ data: 1, error: null }),
+      run_matching_sweep: () => ({ data: [], error: null }),
+      match_booking: () => ({
+        data: { outcome: 'offered', booking_id: BOOKING_ID, professional_id: OTHER_PROF_ID },
+        error: null,
+      }),
       accept_offer: () => ({ data: assignment({ status: 'accepted' }), error: null }),
       decline_offer: () => ({ data: assignment({ status: 'rejected' }), error: null }),
       ...rpcs,
@@ -166,7 +170,7 @@ describe('GET /api/professionals/offers', () => {
   it('sweeps, lazily expires the caller\'s stale offers, then reads live ones', async () => {
     await listOffers(request('/api/professionals/offers', { token: TOKEN }));
 
-    expect(fake.rpcCalls.some((c) => c.fn === 'sweep_new_bookings')).toBe(true);
+    expect(fake.rpcCalls.some((c) => c.fn === 'run_matching_sweep')).toBe(true);
 
     const expire = fake.writesTo('booking_assignments').find((w) => w.op === 'update');
     expect(expire?.payload).toEqual({ status: 'expired' });
@@ -319,6 +323,40 @@ describe('POST /api/professionals/offers/[id]/decline', () => {
       p_professional_id: PROF_ID,
       p_reason: 'Too far from my area',
     });
+  });
+
+  it('cascades to the next-ranked professional through match_booking (§8.2)', async () => {
+    const res = await declineOffer(
+      request(`/api/professionals/offers/${ASSIGN_ID}/decline`, {
+        method: 'POST',
+        body: { reason: 'Too far from my area' },
+        token: TOKEN,
+      }),
+      params
+    );
+    const json = await body(res);
+    expect(res.status).toBe(200);
+    expect(json.data.reassigned).toBe(true);
+
+    const cascade = fake.rpcCalls.find((c) => c.fn === 'match_booking');
+    expect(cascade?.args).toEqual({ p_booking_id: BOOKING_ID });
+  });
+
+  it('reports a decline that exhausted the search (no reassignment)', async () => {
+    fake = build({}, {
+      match_booking: () => ({ data: { outcome: 'exhausted', booking_id: BOOKING_ID }, error: null }),
+    });
+    const res = await declineOffer(
+      request(`/api/professionals/offers/${ASSIGN_ID}/decline`, {
+        method: 'POST',
+        body: {},
+        token: TOKEN,
+      }),
+      params
+    );
+    const json = await body(res);
+    expect(res.status).toBe(200);
+    expect(json.data.reassigned).toBe(false);
   });
 
   it('allows a decline with no reason (the RPC defaults it to null)', async () => {

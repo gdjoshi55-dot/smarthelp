@@ -1337,7 +1337,7 @@ grant select, insert, update, delete on public.professional_skills to anon, auth
 -- ============================================================
 -- 0007_service_catalogue_seed.sql
 -- SmartHelp: the launch city, its localities, the five service
--- categories, twenty services, their duration ladder, their
+-- categories, twenty-three services, their duration ladder, their
 -- scope contract, and where each service is offered.
 --
 -- Everything here is a row an admin can edit. Nothing in the app
@@ -1689,7 +1689,7 @@ on conflict do nothing;
 
 -- ── Service areas (coverage) ────────────────────────────────
 -- A service is bookable only where an active service_areas row exists.
--- The ten core localities carry the full catalogue; the three outer
+-- The nine core localities carry the full catalogue; the three outer
 -- localities carry Cleaning and Kitchen only, so the
 -- SERVICE_UNAVAILABLE path (§25.2) is reachable with real data.
 insert into public.service_areas (locality_id, service_id, lead_minutes, slot_capacity)
@@ -2580,7 +2580,19 @@ begin
     v_actor := auth.uid();
   end if;
   if v_role is null then
-    v_role := nullif(auth.jwt() ->> 'role', '')::public.user_role;
+    -- The §8.2 fallback is for a direct browser write, where
+    -- `auth.jwt()->>'role'` is one of the `user_role` values. System roles are
+    -- not: over the service-role client `auth.jwt()->>'role'` is
+    -- 'service_role', and casting that raises — rolling back the caller's whole
+    -- transaction, not just this hop. So a role outside the enum stays null and
+    -- the caller's GUC, already read above, remains the actor.
+    v_role := nullif(
+      case when auth.jwt() ->> 'role' in (
+        'customer', 'professional', 'admin', 'support', 'ops', 'super_admin'
+      ) then auth.jwt() ->> 'role'
+      end,
+      ''
+    )::public.user_role;
   end if;
 
   insert into public.booking_status_history
@@ -5813,3 +5825,1724 @@ begin
     execute format('grant select (%I) on public.bookings to authenticated', c);
   end loop;
 end $$;
+
+
+-- ------------------------------------------------------------
+-- 0030_service_execution_fix.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0030_service_execution_fix.sql
+--
+-- Two corrections to `0029_service_execution.sql`, found by the Task C1
+-- live-database test (`test/db.jobs.test.ts`). 0029 is already applied
+-- and recorded in the SQL ledger, so a fresh file replaces the two
+-- functions rather than rewriting an applied migration.
+--
+--   1. `verify_service_otp` compared the submitted code with
+--      `encode(digest(p_code, 'sha256'), 'hex')`, but 0029 declared it
+--      with `set search_path = public`. Supabase installs pgcrypto in
+--      the `extensions` schema, so digest() was unresolvable and every
+--      verification raised
+--      'function digest(text, unknown) does not exist' — the whole
+--      start-job flow was dead on arrival. 0001 already documents this
+--      exact trap for `issue_otp`/`consume_otp` and names both schemas;
+--      0030 does the same here.
+--
+--   2. `complete_job` updated the row without a status guard. The 0011
+--      transition trigger returns early when `new.status` does not
+--      change, so a re-complete of an already-`completed` booking
+--      matched, bumped `professionals.completed_jobs` a second time and
+--      rewrote `ended_at`. Only the earnings row was safe (it is UNIQUE
+--      and inserted `on conflict do nothing`). Guarding the UPDATE with
+--      `status <> 'completed'` makes the retry a no-op that returns NULL
+--      while still letting the state machine raise ILLEGAL_TRANSITION
+--      for any other illegal origin.
+--
+-- Idempotent: create-or-replace only; safe to re-run on a live project.
+-- ============================================================
+
+-- ── verify_service_otp (digest() lives in extensions) ──────
+create or replace function public.verify_service_otp(
+  p_booking_id   uuid,
+  p_code         text,
+  p_max_attempts int
+) returns table (started_at timestamptz, ends_at timestamptz)
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  v_booking public.bookings;
+  v_profile uuid;
+begin
+  select pr.profile_id into v_profile
+    from public.professionals pr
+    join public.bookings b on b.professional_id = pr.id
+   where b.id = p_booking_id;
+
+  perform set_config('app.transition_actor', coalesce(v_profile::text, ''), true);
+  perform set_config('app.transition_actor_role', 'professional', true);
+  perform set_config('app.transition_note', 'service OTP verified', true);
+
+  -- Success: compare-and-set against the stored hash (the DB does the
+  -- constant-time comparison), with expiry, attempt and lockout gates.
+  update public.bookings b
+     set status          = 'otp_verified',
+         otp_verified_at = now(),
+         started_at      = now(),
+         ends_at         = now() + make_interval(mins => b.duration_minutes)
+   where b.id = p_booking_id
+     and b.status = 'arrived'
+     and b.otp_hash = encode(digest(p_code, 'sha256'), 'hex')
+     and b.otp_expires_at > now()
+     and b.otp_attempts < p_max_attempts
+     and (b.otp_locked_until is null or b.otp_locked_until <= now())
+  returning * into v_booking;
+
+  if not found then
+    -- Failure: count the attempt and lock out at the cap. Only a genuine
+    -- wrong/expired attempt at `arrived` counts; a booking in another
+    -- state is not an OTP failure at all.
+    update public.bookings b
+       set otp_attempts = b.otp_attempts + 1,
+           otp_locked_until = case
+             when b.otp_attempts + 1 >= p_max_attempts
+               then now() + interval '15 minutes'
+             else b.otp_locked_until
+           end
+     where b.id = p_booking_id
+       and b.status = 'arrived'
+       and b.otp_hash is not null
+       and b.otp_expires_at > now()
+       and (b.otp_locked_until is null or b.otp_locked_until <= now());
+    return;
+  end if;
+
+  -- otp_verified -> in_progress: the job is now running. A separate hop
+  -- keeps booking_status_history honest (0011 allows in_progress only
+  -- from otp_verified).
+  update public.bookings
+     set status = 'in_progress'
+   where id = p_booking_id and status = 'otp_verified';
+
+  return query select v_booking.started_at, v_booking.ends_at;
+end $$;
+
+comment on function public.verify_service_otp(uuid, text, int) is
+  'Verifies the service code and starts the job: arrived -> otp_verified
+   -> in_progress, stamping otp_verified_at/started_at/ends_at from the
+   server clock. Zero rows means invalid, expired or locked — the caller
+   answers one generic 403 (Pitfall 5). search_path includes `extensions`
+   because pgcrypto''s digest() lives there (0030).';
+
+-- ── complete_job ───────────────────────────────────────────
+-- `in_progress -> completed`. Closes the schedule window, bumps the
+-- counter and writes the pending earnings row (D4). The commission basis
+-- is the frozen one (see 0021's header): net is the engine's
+-- professionalGross, commission is the engine's commission, and
+-- gross = net + commission. §7.5's 24-hour hold is `available_at`.
+--
+-- The `status <> 'completed'` guard (0030) makes a retry idempotent: the
+-- same-status UPDATE would otherwise match and bump `completed_jobs`
+-- again, because the 0011 trigger ignores a non-transition.
+create or replace function public.complete_job(
+  p_booking_id       uuid,
+  p_professional_id  uuid,
+  p_expected_version int
+) returns public.bookings
+language plpgsql security definer set search_path = public as $$
+declare
+  v_booking    public.bookings;
+  v_profile    uuid;
+  v_net        numeric(12,2);
+  v_commission numeric(12,2);
+begin
+  select profile_id into v_profile
+    from public.professionals where id = p_professional_id;
+
+  perform set_config('app.transition_actor', coalesce(v_profile::text, ''), true);
+  perform set_config('app.transition_actor_role', 'professional', true);
+  perform set_config('app.transition_note', 'job completed', true);
+
+  update public.bookings
+     set status = 'completed',
+         completed_at = now(),
+         ended_at = coalesce(ended_at, now()),
+         actual_duration_minutes = greatest(
+           0,
+           floor(extract(epoch from (coalesce(ended_at, now()) - started_at)) / 60)::int
+         )
+   where id = p_booking_id
+     and professional_id = p_professional_id
+     and version = p_expected_version
+     and status <> 'completed'
+  returning * into v_booking;
+
+  if not found then
+    return null;
+  end if;
+
+  update public.professional_schedule
+     set status = 'completed'
+   where booking_id = p_booking_id and status = 'reserved';
+
+  update public.professionals
+     set completed_jobs = completed_jobs + 1
+   where id = p_professional_id;
+
+  -- Frozen commission basis (see 0021): prefer the snapshot, fall back to
+  -- the booking columns. net = professionalGross; gross = net + commission.
+  v_net := coalesce(
+    nullif(v_booking.pricing_snapshot->'totals'->>'professionalGross', '')::numeric,
+    v_booking.professional_gross
+  );
+  v_commission := coalesce(
+    nullif(v_booking.pricing_snapshot->'totals'->>'commission', '')::numeric,
+    0
+  );
+
+  insert into public.professional_earnings
+    (professional_id, booking_id, gross_amount, commission_pct,
+     commission_amount, net_amount, status, available_at)
+  values
+    (p_professional_id, p_booking_id, v_net + v_commission,
+     v_booking.commission_pct, v_commission, v_net,
+     'pending', now() + interval '24 hours')
+  on conflict (booking_id) do nothing;
+
+  return v_booking;
+end $$;
+
+comment on function public.complete_job(uuid, uuid, int) is
+  'Completes a job: in_progress -> completed, stamps ended_at and
+   actual_duration_minutes from the server clock, closes the schedule
+   window, bumps completed_jobs and inserts the pending earnings row
+   (D4). NULL means the version was stale or the job was already
+   completed (0030 guard).';
+
+-- Re-assert the service-role-only surface. `create or replace` keeps the
+-- existing ACL, but naming it here means 0030 is self-contained and the
+-- revoke cannot drift from the function it protects.
+revoke all on function public.verify_service_otp(uuid, text, int) from public, anon, authenticated;
+revoke all on function public.complete_job(uuid, uuid, int) from public, anon, authenticated;
+grant execute on function public.verify_service_otp(uuid, text, int) to service_role;
+grant execute on function public.complete_job(uuid, uuid, int) to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0031_pro_on_the_way.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0031_pro_on_the_way.sql
+-- SmartHelp: the missing first step of a job run.
+--
+-- The phase 4 execution chain reads `accepted -> on_the_way ->
+-- arrived -> otp_verified -> in_progress -> completed`, but only the
+-- last four hops had writers: `arrive_job` expects to start from
+-- `on_the_way` (0029), and nothing ever set `on_the_way`. A
+-- professional who accepted a job saw a sentence and no first button,
+-- and the arrival/Otp/complete actions after it were unreachable.
+--
+-- This file adds the compare-and-set `start_journey`, the single
+-- versioned `accepted -> on_the_way` hop, written in exactly the shape
+-- `arrive_job` is: the caller is the Route Handler already validated
+-- as the booking's professional, the trigger (0011) is the state
+-- authority, and `version` is the optimistic lock.
+--
+-- Idempotent: safe to re-run on a live project.
+-- Spec: §20.8, §8.2.
+-- ============================================================
+
+create or replace function public.start_journey(
+  p_booking_id       uuid,
+  p_professional_id  uuid,
+  p_expected_version int
+) returns public.bookings
+language plpgsql security definer set search_path = public as $$
+declare
+  v_booking public.bookings;
+  v_profile uuid;
+begin
+  select profile_id into v_profile
+    from public.professionals where id = p_professional_id;
+
+  perform set_config('app.transition_actor', coalesce(v_profile::text, ''), true);
+  perform set_config('app.transition_actor_role', 'professional', true);
+  perform set_config('app.transition_note', 'on the way to the job', true);
+
+  update public.bookings
+     set status = 'on_the_way'
+   where id = p_booking_id
+     and professional_id = p_professional_id
+     and version = p_expected_version
+  returning * into v_booking;
+
+  return v_booking;
+end $$;
+
+comment on function public.start_journey(uuid, uuid, int) is
+  'Moves accepted -> on_the_way in one versioned UPDATE. NULL means the
+   version was stale; a wrong state raises ILLEGAL_TRANSITION from the
+   0011 trigger. The professional is already the booking''s assignee, so
+   no geofence applies here - the address matters at arrival, not at
+   departure.';
+
+-- ── Grants ─────────────────────────────────────────────────
+-- security definer: the EXECUTE grant belongs to the *caller*. Only the
+-- service role (the Route Handler) may move a booking the professional
+-- has already accepted.
+revoke all on function public.start_journey(uuid, uuid, int) from public, anon, authenticated;
+grant execute on function public.start_journey(uuid, uuid, int) to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0032_matching_engine.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0032_matching_engine.sql
+-- SmartHelp Phase 5: the ranked matching engine.
+--
+-- Spec: §9.1 (candidate ranking), §9.4 (advisory lock), §8.2 (the
+--       assigned -> searching edge), §24.8 (the offer ledger),
+--       §16 #20 (hold/reassign), §25.11 (the sweeper).
+-- Depends on: 0005/0006 (professionals, skills), 0010/0011 (bookings +
+--             state machine), 0012 (booking_assignments + CAS RPCs),
+--             0013 (professional_schedule).
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- Phase 4 shipped the offer *ledger* but not the matcher: a one-line
+-- `sweep_new_bookings()` that offers a booking to the first eligible
+-- professional in `created_at` order. Its own header says Phase 5
+-- replaces it whole, and `booking_assignments`' comment reserves
+-- `attempt_no` and `round_no` for exactly this file.
+--
+-- Phase 5 adds the four things that make it an engine:
+--
+--   1. A ranked candidate list (`rank_candidates`), so "the next
+--      eligible professional" is a choice rather than a table scan.
+--   2. An advisory-locked single-booking matcher (`match_booking`), so
+--      two concurrent sweeps agree on who is next instead of racing.
+--   3. The reassignment cascade — a declined or expired offer puts the
+--      booking back in `searching` (the spec's §8.2 edge, absent from
+--      the Phase 4 table) and the next round offers the next candidate.
+--   4. Exhaustion: when the ranked list is empty and the search window
+--      has closed, the booking is cancelled `no_professional_available`
+--      and the JS caller refunds it (the Phase 3 cancel path, reused).
+--
+-- FAN-OUT IS ROUND-BASED, NOT SIMULTANEOUS
+-- ----------------------------------------
+-- `uniq_active_assignment_per_booking` (0012) permits at most one live
+-- (`offered`|`accepted`) assignment per booking, which is the whole of
+-- the double-assign guarantee. Offering the same booking to three
+-- professionals at once is therefore structurally impossible without
+-- dropping that index. The engine ranks and offers in *rounds*: a
+-- decline or expiry advances `round_no` and offers the next candidate.
+-- This is decision D1 in `05-PLAN.md`, and it is why `attempt_no` and
+-- `round_no` exist on the ledger.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+-- ── Restore the spec's assigned -> searching edge ──────────
+-- 0011's deployed `allowed` case omitted `'assigned'` from the
+-- predecessors of `searching`, on purpose: Phase 4 could not reassign,
+-- so allowing the hop would have been a door with no corridor behind
+-- it. Phase 5 builds the corridor. This is §8.2 row "assigned ->
+-- searching, actor system, offer expired or professional declined".
+--
+-- The body is 0011's verbatim with that one addition — the history
+-- write, the actor GUCs and the immutability guard are untouched.
+create or replace function public.enforce_booking_transition()
+returns trigger
+language plpgsql set search_path = public as $$
+declare
+  allowed text[];
+  v_note  text;
+  v_actor uuid;
+  v_role  public.user_role;
+begin
+  if tg_op = 'INSERT' then
+    return new;
+  end if;
+
+  if new.status is not distinct from old.status then
+    return new;
+  end if;
+
+  allowed := case new.status
+    when 'payment_pending'      then array['draft']
+    when 'paid'                 then array['payment_pending']
+    -- Phase 5 restores 'assigned' here (reassignment after a decline or
+    -- an expiry); the spec's §8.2 lists both predecessors.
+    when 'searching'            then array['paid','assigned']
+    when 'assigned'             then array['searching']
+    when 'accepted'             then array['assigned']
+    when 'on_the_way'           then array['accepted']
+    when 'arrived'              then array['on_the_way']
+    when 'otp_verified'         then array['arrived']
+    when 'in_progress'          then array['otp_verified','extension_requested']
+    when 'extension_requested'  then array['in_progress']
+    when 'completed'            then array['in_progress']
+    when 'cancelled'            then array['draft','payment_pending','paid','searching',
+                                              'assigned','accepted','on_the_way','arrived',
+                                              'otp_verified','in_progress','extension_requested']
+    when 'refund_pending'       then array['cancelled','paid','accepted','on_the_way',
+                                              'arrived','disputed']
+    when 'refunded'             then array['refund_pending']
+    when 'disputed'             then array['accepted','on_the_way','arrived',
+                                              'in_progress','completed']
+    when 'no_show'              then array['accepted','on_the_way','arrived',
+                                              'otp_verified','in_progress']
+    when 'closed'               then array['completed','refunded','no_show']
+    else array[]::text[]
+  end;
+
+  if not (old.status::text = any(allowed)) then
+    raise exception 'ILLEGAL_TRANSITION % -> % on booking %',
+      old.status, new.status, new.id
+      using errcode = 'check_violation',
+            detail = format('{"from":"%s","to":"%s"}', old.status, new.status);
+  end if;
+
+  v_note  := current_setting('app.transition_note', true);
+  v_actor := nullif(current_setting('app.transition_actor', true), '')::uuid;
+  v_role  := nullif(current_setting('app.transition_actor_role', true), '')::public.user_role;
+
+  if v_actor is null then
+    v_actor := auth.uid();
+  end if;
+  if v_role is null then
+    v_role := nullif(
+      case when auth.jwt() ->> 'role' in (
+        'customer', 'professional', 'admin', 'support', 'ops', 'super_admin'
+      ) then auth.jwt() ->> 'role'
+      end,
+      ''
+    )::public.user_role;
+  end if;
+
+  insert into public.booking_status_history
+    (booking_id, from_status, to_status, actor_id, actor_role, note)
+  values
+    (new.id, old.status, new.status, v_actor, v_role, v_note);
+
+  return new;
+end $$;
+
+comment on function public.enforce_booking_transition() is
+  'The §8.2 transition table, enforced in Postgres. Phase 5 restores the
+   assigned -> searching edge (§8.2: offer expired or professional declined) that
+   0011 omitted while reassignment did not exist. Raises ILLEGAL_TRANSITION for
+   any move outside the legal set and writes booking_status_history for every
+   legal one.';
+
+-- ── expire_stale_offers ────────────────────────────────────
+-- The sweeper's first half: every offer past its TTL becomes a tombstone,
+-- globally, and the affected bookings are returned so the caller can
+-- immediately re-match them. Phase 4 expired only the *caller's* offers on
+-- their inbox read (Pitfall 6); that left another professional's stale offer
+-- on the same booking nobody revisited. This is the eager half.
+create or replace function public.expire_stale_offers(p_now timestamptz default now())
+returns setof uuid
+language sql security definer set search_path = public as $$
+  update public.booking_assignments
+     set status = 'expired'
+   where status = 'offered'
+     and expires_at <= p_now
+  returning booking_id;
+$$;
+
+comment on function public.expire_stale_offers(timestamptz) is
+  'Expires every offer past its TTL and returns the affected booking ids, so the
+   sweeper can re-offer them in the same pass. A tombstone (expired) is never
+   picked up again; the reassignment cascade makes a fresh row.';
+
+-- ── rank_candidates ────────────────────────────────────────
+-- The ranked list of professionals who could take this booking, best first.
+-- Eligibility is the shape 0012's minimal producer used (the same facts Phase
+-- 5 keeps true), minus anyone who has already held an offer for this booking —
+-- `uniq_prof_booking_offer` makes a re-offer a bug, not a retry.
+--
+-- Ranking is decision D3: repeat first (this professional has completed a job
+-- for this customer), then load (fewest live windows — a busy professional is
+-- offered last), then tenure as a stable tie-break. Distance and rating are
+-- deliberately null: `earthdistance` is not installed (0002) and there is no
+-- ratings roll-up until Phase 8, so a fabricated score would be a lie. `score`
+-- is written as null, exactly as 0012 chose.
+create or replace function public.rank_candidates(p_booking_id uuid)
+returns table (
+  professional_id uuid,
+  was_repeat      boolean,
+  load            int,
+  score           numeric
+)
+language sql stable security definer set search_path = public as $$
+  with target as (
+    select b.customer_id,
+           coalesce(b.scheduled_start_at, now()) as v_start,
+           coalesce(
+             b.scheduled_end_at,
+             coalesce(b.scheduled_start_at, now()) + make_interval(mins => b.duration_minutes)
+           ) as v_end
+      from public.bookings b
+     where b.id = p_booking_id
+  )
+  select
+    p.id as professional_id,
+    -- The professional has finished a job for this customer before.
+    exists (
+      select 1 from public.bookings h
+       where h.professional_id = p.id
+         and h.customer_id = (select customer_id from target)
+         and h.status in ('completed', 'closed')
+    ) as was_repeat,
+    -- Live windows held right now; fewer is better.
+    (
+      select count(*)::int from public.professional_schedule s
+       where s.professional_id = p.id
+         and s.status in ('reserved', 'in_progress')
+    ) as load,
+    null::numeric as score
+  from public.professionals p
+  where p.verification_status = 'verified'
+    and p.availability_status = 'online'
+    and p.is_available_today
+    -- Skilled for every service on the booking.
+    and not exists (
+      select 1 from public.booking_items bi
+       where bi.booking_id = p_booking_id
+         and not exists (
+           select 1 from public.professional_skills ps
+            where ps.professional_id = p.id
+              and ps.service_id = bi.service_id
+         )
+    )
+    -- Not on a booked day off.
+    and not exists (
+      select 1 from public.professional_time_off t
+       where t.professional_id = p.id
+         and tstzrange(t.starts_at, t.ends_at, '[)')
+             && tstzrange((select v_start from target), (select v_end from target), '[)')
+    )
+    -- Calendar is clear.
+    and not exists (
+      select 1 from public.professional_schedule s
+       where s.professional_id = p.id
+         and s.status in ('reserved', 'in_progress')
+         and tstzrange(s.starts_at, s.ends_at, '[)')
+             && tstzrange((select v_start from target), (select v_end from target), '[)')
+    )
+    -- Never offered this booking before (one offer per pro per booking).
+    and not exists (
+      select 1 from public.booking_assignments a
+       where a.booking_id = p_booking_id
+         and a.professional_id = p.id
+    )
+  order by was_repeat desc, load asc, p.accepted_offers asc, p.created_at, p.id;
+$$;
+
+comment on function public.rank_candidates(uuid) is
+  'The ranked, eligible professionals for a booking, best first (§9.1). Repeat
+   before load before tenure; distance and rating are null until earthdistance
+   and the ratings roll-up exist. Excludes professionals already offered this
+   booking.';
+
+-- ── match_booking ──────────────────────────────────────────
+-- Match one booking, under the spec's advisory lock (§9.4):
+-- `pg_advisory_xact_lock(hashtext('assign:'||booking_id))`. Two concurrent
+-- sweeps serialise here, so the second sees the first's live offer and no-ops
+-- instead of issuing a second one. `uniq_active_assignment_per_booking` is the
+-- backstop; the lock is what makes the *choice* deterministic.
+--
+-- It walks the legal hops one at a time (the transition trigger is still the
+-- only thing that writes `status`), stamps the SLA columns, and returns a
+-- small outcome object so the JS caller knows whether to refund an exhaustion.
+create or replace function public.match_booking(p_booking_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  -- Mirrors PLATFORM_DEFAULTS in lib/constants.ts (offerTtlMinutes,
+  -- searchWindowMinutes). A `platform_settings` read lands in Phase 6.
+  v_offer_ttl_minutes   constant int := 15;
+  v_search_window_min   constant int := 30;
+  v_booking       public.bookings;
+  v_pro           uuid;
+  v_was_repeat    boolean;
+  v_score         numeric;
+  v_attempt       int;
+  v_round         int;
+  v_assignment_id uuid;
+  v_live          int;
+begin
+  perform pg_advisory_xact_lock(hashtext('assign:' || p_booking_id::text)::bigint);
+
+  select * into v_booking from public.bookings where id = p_booking_id;
+  if v_booking.id is null then
+    return jsonb_build_object('outcome', 'noop', 'booking_id', p_booking_id);
+  end if;
+
+  -- Tombstone this booking's stale offers before deciding anything.
+  update public.booking_assignments
+     set status = 'expired'
+   where booking_id = p_booking_id
+     and status = 'offered'
+     and expires_at <= now();
+
+  -- A live offer or acceptance means somebody already holds it.
+  select count(*) into v_live
+    from public.booking_assignments
+   where booking_id = p_booking_id
+     and status in ('offered', 'accepted');
+  if v_live > 0 then
+    return jsonb_build_object('outcome', 'noop', 'booking_id', p_booking_id);
+  end if;
+
+  -- paid -> searching, starting the SLA clock once.
+  if v_booking.status = 'paid' then
+    perform set_config('app.transition_actor', '', true);
+    perform set_config('app.transition_actor_role', '', true);
+    perform set_config('app.transition_note', 'matching started', true);
+
+    update public.bookings
+       set status = 'searching',
+           search_started_at = coalesce(search_started_at, now()),
+           search_expires_at = coalesce(
+             search_expires_at,
+             now() + make_interval(mins => v_search_window_min)
+           )
+     where id = p_booking_id and status = 'paid'
+    returning * into v_booking;
+
+    if v_booking.id is null then
+      select * into v_booking from public.bookings where id = p_booking_id;
+    end if;
+  end if;
+
+  if v_booking.status not in ('searching', 'assigned') then
+    return jsonb_build_object('outcome', 'noop', 'booking_id', p_booking_id);
+  end if;
+
+  -- Reassignment: a booking left `assigned` by a decline or an expiry
+  -- (Phase 4's deliberate dead-end) walks back into the search.
+  if v_booking.status = 'assigned' then
+    perform set_config('app.transition_actor', '', true);
+    perform set_config('app.transition_actor_role', '', true);
+    perform set_config('app.transition_note', 'reassignment after decline/expiry', true);
+
+    update public.bookings
+       set status = 'searching'
+     where id = p_booking_id and status = 'assigned'
+    returning * into v_booking;
+
+    if v_booking.id is null then
+      select * into v_booking from public.bookings where id = p_booking_id;
+    end if;
+  end if;
+
+  -- The best remaining candidate.
+  select r.professional_id, r.was_repeat, r.score
+    into v_pro, v_was_repeat, v_score
+    from public.rank_candidates(p_booking_id) r
+   limit 1;
+
+  if v_pro is not null then
+    select count(*)::int + 1 into v_attempt
+      from public.booking_assignments where booking_id = p_booking_id;
+    v_round := v_booking.assignment_rounds + 1;
+
+    perform set_config('app.transition_actor', '', true);
+    perform set_config('app.transition_actor_role', '', true);
+    perform set_config('app.transition_note', 'offer sent', true);
+
+    update public.bookings
+       set status = 'assigned',
+           professional_id = v_pro,
+           matched_at = now(),
+           assignment_rounds = assignment_rounds + 1
+     where id = p_booking_id and status = 'searching'
+    returning * into v_booking;
+
+    insert into public.booking_assignments
+      (booking_id, professional_id, status, attempt_no, round_no,
+       score, was_repeat, was_favourite, offered_at, expires_at)
+    values
+      (p_booking_id, v_pro, 'offered', v_attempt, v_round,
+       v_score, coalesce(v_was_repeat, false), false, now(),
+       now() + make_interval(mins => v_offer_ttl_minutes))
+    returning id into v_assignment_id;
+
+    update public.professionals
+       set total_offers = total_offers + 1
+     where id = v_pro;
+
+    return jsonb_build_object(
+      'outcome', 'offered',
+      'booking_id', p_booking_id,
+      'professional_id', v_pro,
+      'assignment_id', v_assignment_id,
+      'round_no', v_round
+    );
+  end if;
+
+  -- No candidate. The spec closes the search on a deadline: if it has
+  -- passed, the booking is cancelled for want of a professional and the JS
+  -- caller refunds it (D2); otherwise it stays searching for the sweeper.
+  if now() >= coalesce(v_booking.search_expires_at, now()) then
+    perform set_config('app.transition_actor', '', true);
+    perform set_config('app.transition_actor_role', '', true);
+    perform set_config('app.transition_note', 'no_professional_available', true);
+
+    update public.bookings
+       set status = 'cancelled',
+           cancelled_at = now(),
+           cancellation_reason_code = 'no_professional_available'
+     where id = p_booking_id and status = 'searching'
+    returning * into v_booking;
+
+    return jsonb_build_object('outcome', 'exhausted', 'booking_id', p_booking_id);
+  end if;
+
+  return jsonb_build_object('outcome', 'searching', 'booking_id', p_booking_id);
+end $$;
+
+comment on function public.match_booking(uuid) is
+  'Matches one booking under the §9.4 advisory lock. Walks paid -> searching ->
+   assigned, or assigned -> searching for a reassignment, making one ranked
+   offer (§9.1, round-based per D1). Returns {outcome: offered|searching|
+   exhausted|noop, ...}; exhausted means the search window closed with no
+   candidate and the booking is now cancelled no_professional_available for the
+   caller to refund.';
+
+-- ── run_matching_sweep ─────────────────────────────────────
+-- The producer. Expires every stale offer, then matches every booking that is
+-- waiting: a fresh `paid` booking, a `searching` booking still inside its
+-- window (retry), or an `assigned` booking whose offer was declined or expired.
+-- Called by the offers inbox read today and by the §25.11 cron when one exists.
+create or replace function public.run_matching_sweep()
+returns setof jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_id uuid;
+begin
+  perform public.expire_stale_offers(now());
+
+  for v_id in
+    select b.id
+      from public.bookings b
+     where not exists (
+             select 1 from public.booking_assignments a
+              where a.booking_id = b.id and a.status in ('offered', 'accepted')
+           )
+       and (
+         b.status = 'paid'
+         or b.status = 'searching'
+         or (
+           b.status = 'assigned'
+           and exists (
+             select 1 from public.booking_assignments a2
+              where a2.booking_id = b.id and a2.status in ('rejected', 'expired')
+           )
+         )
+       )
+     order by b.created_at
+  loop
+    return next public.match_booking(v_id);
+  end loop;
+end $$;
+
+comment on function public.run_matching_sweep() is
+  'The matching producer: expire stale offers, then match every waiting booking
+   and return one {outcome,...} per booking. Idempotent — a booking with a live
+   offer is a noop, so the inbox read and a cron can both call it.';
+
+-- ── Retire the Phase 4 producer ────────────────────────────
+drop function if exists public.sweep_new_bookings();
+
+-- ── Grants ─────────────────────────────────────────────────
+-- security definer: the EXECUTE grant belongs to the *caller*. These write
+-- the offer ledger and the booking's state, so anon and authenticated get
+-- nothing; only the service role (Route Handlers, cron) may.
+revoke all on function public.expire_stale_offers(timestamptz) from public, anon, authenticated;
+revoke all on function public.rank_candidates(uuid) from public, anon, authenticated;
+revoke all on function public.match_booking(uuid) from public, anon, authenticated;
+revoke all on function public.run_matching_sweep() from public, anon, authenticated;
+
+grant execute on function public.expire_stale_offers(timestamptz) to service_role;
+grant execute on function public.rank_candidates(uuid) to service_role;
+grant execute on function public.match_booking(uuid) to service_role;
+grant execute on function public.run_matching_sweep() to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0033_platform_settings.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0033_platform_settings.sql
+-- SmartHelp Phase 6: the editable platform settings table.
+--
+-- Spec: §24.14 (platform_settings), §22 (the settings API),
+--       §31.1 (Phase 6), §7.1 / §11.1 / §12.3 (the rules it feeds).
+-- Depends on: 0001 (profiles, is_staff/is_admin, touch_updated_at).
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- Every rule the business can retune — the tax rate, the commission,
+-- the platform fee, the offer TTL, the search window, the support
+-- refund limit — has until now been a constant in `lib/constants.ts`.
+-- The header of that file says it exactly: "Anything that a business
+-- can change lives in a database row, not here." This is that row.
+--
+-- Shape: `(key text primary key, value jsonb, updated_by, updated_at)`.
+-- A single jsonb column rather than one column per setting, because the
+-- set of tunables grows and a migration per knob is how a settings table
+-- becomes a table nobody adds to. `lib/settingsServer.ts` is the one
+-- typed reader: it names each key, gives it a default from
+-- `PLATFORM_DEFAULTS`, and parses the jsonb, so no call site ever sees
+-- raw jsonb and a missing row is not an error.
+--
+-- The rows are seeded with today's `PLATFORM_DEFAULTS`, so nothing
+-- changes until an admin edits one — which is the wave's whole point.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+create table if not exists public.platform_settings (
+  key        text primary key,
+  value      jsonb not null,
+  updated_by uuid references public.profiles(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+comment on table public.platform_settings is
+  'Editable business rules (§24.14). One row per setting, value as jsonb. Read
+   through `lib/settingsServer.ts`, which types each key and falls back to
+   `PLATFORM_DEFAULTS`; the constants in `lib/constants.ts` describe the
+   initial state, not the rule.';
+comment on column public.platform_settings.value is
+  'jsonb rather than a column per knob: the tunable set grows, and a migration
+   per setting is how this table stops being updated. The typed reader is the
+   contract, not the column type.';
+comment on column public.platform_settings.updated_by is
+  'The staff profile that last wrote this row, stamped by the Route Handler
+   (there is no DB-authoritative actor here the way there is for a booking).';
+
+-- ── Seed the current defaults ──────────────────────────────
+-- The numbers are `PLATFORM_DEFAULTS`' documented defaults, not the
+-- environment-derived values: an env override was always described as a
+-- fallback "until platform_settings lands", and this is it landing.
+insert into public.platform_settings (key, value)
+select key, value
+  from jsonb_each(
+    '{
+      "currency": "INR",
+      "taxRate": 0.18,
+      "commissionPct": 0.2,
+      "platformFeePct": 0.04,
+      "platformFeeMin": 20,
+      "serviceOtpLength": 4,
+      "instantLeadMinutes": 30,
+      "maxBookingMinutes": 480,
+      "maxSchedulingDaysAhead": 30,
+      "instantMatchTargetSeconds": 120,
+      "lateArrivalThresholdMin": 15,
+      "noShowAfterMin": 45,
+      "supportRefundLimit": 1500,
+      "offerTtlMinutes": 15,
+      "searchWindowMinutes": 30,
+      "otpTtlMinutes": 10,
+      "otpMaxAttempts": 3,
+      "otpLockoutMinutes": 15,
+      "otpMaxGenerations": 3,
+      "defaultArrivalRadiusM": 100,
+      "proLocationFreshMinutes": 15,
+      "proLocationThrottleSeconds": 30
+    }'::jsonb
+  )
+on conflict (key) do nothing;
+
+-- ── updated_at maintenance ─────────────────────────────────
+drop trigger if exists trg_platform_settings_touch on public.platform_settings;
+create trigger trg_platform_settings_touch before update on public.platform_settings
+  for each row execute function public.touch_updated_at();
+
+-- ── Row level security ─────────────────────────────────────
+-- Every write goes through a Route Handler on the service role; the
+-- browser only ever reads, and only as staff. The read policy is the
+-- belt to that brace: even if a client somehow reached the table as
+-- itself, a customer sees nothing.
+alter table public.platform_settings enable row level security;
+
+do $$ begin
+  create policy platform_settings_read_staff on public.platform_settings for select
+    using (public.is_staff(
+      array['support','ops','admin','super_admin']::public.user_role[]
+    ));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy platform_settings_write_admin on public.platform_settings for all
+    using (public.is_admin())
+    with check (public.is_admin());
+exception when duplicate_object then null; end $$;
+
+-- A setting is never public (the tax rate and the support limit are
+-- business facts, not catalogue facts), so anon gets nothing.
+revoke all on public.platform_settings from anon;
+grant select on public.platform_settings to authenticated;
+grant all on public.platform_settings to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0034_admin_write_paths.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0034_admin_write_paths.sql
+-- SmartHelp Phase 6: the two staff write paths that need to be
+-- more than one statement.
+--
+-- Spec: §8.2 (transitions), §9.4 (the advisory lock), §11.1
+--       (the cancellation fee), §20.12 (every action audited),
+--       §22 (the admin booking actions), §31.1 (Phase 6).
+-- Depends on: 0010/0011 (bookings + state machine), 0012
+--       (booking_assignments), 0013 (professional_schedule),
+--       0032 (the `assign:<id>` advisory lock and its shape).
+--
+-- WHY THESE ARE FUNCTIONS
+-- -----------------------
+-- Both are "change the booking's status and the rows around it at
+-- once", which is exactly the argument 0028 makes: PostgREST cannot
+-- run an UPDATE, an assignment withdrawal and a schedule release in
+-- one transaction across three HTTP requests, and a half-applied
+-- staff action is the kind of state a refund dispute is made of.
+--
+-- Neither decides whether a move is legal: 0011's trigger still
+-- refuses anything outside §8.2, and these only set the actor
+-- settings and write `status`. `admin_cancel_booking` reuses the
+-- §11.1 fee the *route* computed (the ladder lives in
+-- `lib/cancellation.ts`, not in SQL) — the function records it, it
+-- does not calculate it.
+--
+-- Both take the same `assign:<booking_id>` advisory lock Phase 5's
+-- `match_booking` takes, so a manual action and the matching sweeper
+-- serialise on the same key instead of racing for the last offer.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+-- ── admin_cancel_booking ───────────────────────────────────
+-- Cancel on behalf of ops, and clean up the professional's hold in
+-- the same statement: the live offer/acceptance is withdrawn and the
+-- reserved window released, so a cancelled booking does not pin a
+-- professional's calendar. `cancel_booking` (0028) does neither — it
+-- is the customer path, where no professional is usually assigned.
+--
+-- The fee is passed in, already computed by `quoteCancellation()`
+-- over the booking's total; §11.1 is a ladder of percentages and the
+-- arithmetic belongs in the tested TypeScript, not duplicated here.
+create or replace function public.admin_cancel_booking(
+  p_booking_id  uuid,
+  p_reason_code text,
+  p_fee         numeric,
+  p_note        text,
+  p_actor       uuid,
+  p_actor_role  public.user_role
+) returns public.bookings
+language plpgsql security definer set search_path = public as $$
+declare
+  v_booking public.bookings;
+begin
+  perform pg_advisory_xact_lock(hashtext('assign:' || p_booking_id::text)::bigint);
+
+  -- Free whoever holds the booking. A live offer or acceptance becomes a
+  -- tombstone (`withdrawn`), the same way a decline or expiry does; the
+  -- reserved window is deleted outright because a cancelled booking has no
+  -- window to keep.
+  update public.booking_assignments
+     set status = 'withdrawn',
+         responded_at = now()
+   where booking_id = p_booking_id
+     and status in ('offered', 'accepted');
+
+  delete from public.professional_schedule
+   where booking_id = p_booking_id
+     and status = 'reserved';
+
+  perform set_config('app.transition_actor', coalesce(p_actor::text, ''), true);
+  perform set_config('app.transition_actor_role', coalesce(p_actor_role::text, ''), true);
+  perform set_config('app.transition_note', coalesce(p_note, ''), true);
+
+  update public.bookings
+     set status                   = 'cancelled',
+         cancelled_at             = now(),
+         cancellation_reason_code = p_reason_code,
+         cancellation_fee         = coalesce(p_fee, 0)
+   where id = p_booking_id
+  returning * into v_booking;
+
+  return v_booking;
+end $$;
+
+comment on function public.admin_cancel_booking(uuid, text, numeric, text, uuid, public.user_role) is
+  'Cancels a booking as a staff actor, recording the §11.1 fee the caller computed
+   and withdrawing the holding professional in the same statement. The fee is not
+   derived here — the ladder lives in lib/cancellation.ts. Returns NULL when the
+   booking does not exist; an illegal cancel raises ILLEGAL_TRANSITION from 0011.';
+
+-- ── admin_assign_booking ───────────────────────────────────
+-- Put a chosen professional on a booking (or swap one out), walking
+-- the §8.2 edges one legal hop at a time under the §9.4 lock. The
+-- offer it writes is the ordinary `offered` row, so the professional
+-- can accept it through the normal flow — this raises the chance, it
+-- does not forge an acceptance.
+--
+-- Only a booking that has not started service can be assigned: from
+-- `accepted` onwards somebody is already on the road, and swapping
+-- them is a different operation (a cancellation, then a re-match),
+-- not a reassignment.
+create or replace function public.admin_assign_booking(
+  p_booking_id        uuid,
+  p_professional_id   uuid,
+  p_offer_ttl_minutes int,
+  p_note              text,
+  p_actor             uuid,
+  p_actor_role        public.user_role
+) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_booking       public.bookings;
+  v_pro           public.professionals;
+  v_attempt       int;
+  v_round         int;
+  v_assignment_id uuid;
+begin
+  perform pg_advisory_xact_lock(hashtext('assign:' || p_booking_id::text)::bigint);
+
+  select * into v_booking from public.bookings where id = p_booking_id;
+  if v_booking.id is null then
+    return jsonb_build_object('outcome', 'not_found');
+  end if;
+
+  select * into v_pro from public.professionals where id = p_professional_id;
+  if v_pro.id is null then
+    return jsonb_build_object('outcome', 'professional_not_found');
+  end if;
+  if v_pro.verification_status <> 'verified' then
+    return jsonb_build_object('outcome', 'professional_unverified');
+  end if;
+
+  if v_booking.status not in ('paid', 'searching', 'assigned') then
+    return jsonb_build_object('outcome', 'invalid_state', 'status', v_booking.status);
+  end if;
+
+  -- Free the current holder (if any) before offering to the chosen one.
+  update public.booking_assignments
+     set status = 'withdrawn',
+         responded_at = now()
+   where booking_id = p_booking_id
+     and status in ('offered', 'accepted');
+
+  delete from public.professional_schedule
+   where booking_id = p_booking_id
+     and status = 'reserved';
+
+  -- paid -> searching, starting the SLA clock once.
+  if v_booking.status = 'paid' then
+    perform set_config('app.transition_actor', '', true);
+    perform set_config('app.transition_actor_role', '', true);
+    perform set_config('app.transition_note', 'manual assignment', true);
+
+    update public.bookings
+       set status            = 'searching',
+           search_started_at = coalesce(search_started_at, now()),
+           search_expires_at = coalesce(search_expires_at, now() + make_interval(mins => 30))
+     where id = p_booking_id and status = 'paid'
+    returning * into v_booking;
+
+    if v_booking.id is null then
+      select * into v_booking from public.bookings where id = p_booking_id;
+    end if;
+  end if;
+
+  -- searching -> assigned, naming the ops actor; a booking already `assigned`
+  -- keeps its status and only swaps the professional.
+  if v_booking.status = 'searching' then
+    perform set_config('app.transition_actor', coalesce(p_actor::text, ''), true);
+    perform set_config('app.transition_actor_role', coalesce(p_actor_role::text, ''), true);
+    perform set_config('app.transition_note', coalesce(p_note, 'manually assigned'), true);
+
+    update public.bookings
+       set status            = 'assigned',
+           professional_id   = p_professional_id,
+           matched_at        = coalesce(matched_at, now()),
+           assignment_rounds = assignment_rounds + 1
+     where id = p_booking_id and status = 'searching'
+    returning * into v_booking;
+  else
+    update public.bookings
+       set professional_id = p_professional_id,
+           matched_at      = coalesce(matched_at, now())
+     where id = p_booking_id
+    returning * into v_booking;
+  end if;
+
+  if v_booking.id is null then
+    select * into v_booking from public.bookings where id = p_booking_id;
+  end if;
+
+  select count(*)::int + 1 into v_attempt
+    from public.booking_assignments where booking_id = p_booking_id;
+  v_round := greatest(v_booking.assignment_rounds, 1);
+
+  -- A professional can hold only one offer per booking ever (0012's
+  -- uniq_prof_booking_offer), so a re-offer to the same person updates their
+  -- tombstone back to `offered` rather than inserting a second row.
+  insert into public.booking_assignments
+    (booking_id, professional_id, status, attempt_no, round_no, offered_at, expires_at)
+  values
+    (p_booking_id, p_professional_id, 'offered', v_attempt, v_round, now(),
+     now() + make_interval(mins => coalesce(p_offer_ttl_minutes, 15)))
+  on conflict (professional_id, booking_id) do update
+    set status         = 'offered',
+        offered_at     = now(),
+        expires_at     = excluded.expires_at,
+        responded_at   = null,
+        decline_reason = null
+  returning id into v_assignment_id;
+
+  update public.professionals
+     set total_offers = total_offers + 1
+   where id = p_professional_id;
+
+  return jsonb_build_object(
+    'outcome',         'assigned',
+    'booking_id',      p_booking_id,
+    'professional_id', p_professional_id,
+    'assignment_id',   v_assignment_id
+  );
+end $$;
+
+comment on function public.admin_assign_booking(uuid, uuid, int, text, uuid, public.user_role) is
+  'Manually offers a booking to a chosen professional, or swaps the current one
+   out, under the §9.4 advisory lock. Returns {outcome: assigned|not_found|
+   professional_not_found|professional_unverified|invalid_state}. The offer is an
+   ordinary `offered` row so the professional still accepts it normally; the
+   booking is only reassignable before service has started.';
+
+-- ── Grants ─────────────────────────────────────────────────
+-- 0024/0028's rule verbatim: these write bookings and the offer ledger, so
+-- only the service role (Route Handlers) may call them. The caller has
+-- authenticated the staff member and checked the capability first.
+revoke all on function public.admin_cancel_booking(uuid, text, numeric, text, uuid, public.user_role) from public, anon, authenticated;
+revoke all on function public.admin_assign_booking(uuid, uuid, int, text, uuid, public.user_role) from public, anon, authenticated;
+
+grant execute on function public.admin_cancel_booking(uuid, text, numeric, text, uuid, public.user_role) to service_role;
+grant execute on function public.admin_assign_booking(uuid, uuid, int, text, uuid, public.user_role) to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0035_pricing_policies.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0035_pricing_policies.sql
+-- SmartHelp Phase 6: the editable pricing rules and the
+-- cancellation ladder as rows.
+--
+-- Spec: §24 (pricing_rules, cancellation_policies), §7.1 (surge),
+--       §11.1 (the cancellation table), §31.1 (Phase 6).
+-- Depends on: 0001 (is_staff/is_admin, touch_updated_at),
+--             0003 (service_categories, services).
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- Two rules the business can retune have until now been code:
+--
+--   §11.1's cancellation ladder is `DEFAULT_CANCELLATION_POLICIES` in
+--   `lib/cancellation.ts` — a five-row table frozen in a constant. It
+--   is exactly the kind of number a business wants to change without a
+--   deploy ("the 2–6h band should be 30% this quarter"), and §24 already
+--   names the table it should live in.
+--
+--   §7.1's surge is not implemented at all: the pricing engine has no
+--   notion of "this is a Sunday evening, multiply by 1.2". `pricing_rules`
+--   is the surge-window table the spec describes — a multiplier scoped to
+--   the whole catalogue, a category, or one service, optionally bounded to
+--   days of the week and a minute-of-day window.
+--
+-- Both tables are backfilled with today's behaviour (the cancellation
+-- ladder verbatim; no surge rules), so nothing changes until an admin
+-- edits one.
+--
+-- Read model: staff read, admin write — the same split as
+-- `platform_settings` (0033). Every write goes through a Route Handler on
+-- the service role; the policies are projected for the browser.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+-- ── cancellation_policies ──────────────────────────────────
+-- One row per band. `hours_before` is the band **ceiling**, matching
+-- `lib/cancellation.ts`'s `resolveCancellationPolicy` and §11.1's SQL
+-- (`where $2 <= hours_before order by hours_before asc limit 1`). Storing
+-- the floor instead is the classic way to get this table wrong: a request
+-- four hours out would match the 24 and 6 rows and be charged 10% when
+-- §11.1 says 25%. `hours_before is null` is the unbounded row ("≥ 24h").
+--
+-- `applies_when_arrived` is the arrival row, which §11.1 keys on arrival
+-- rather than on time. `service_id is null` is the platform-wide default;
+-- a service-specific set can override it per service (§11.1's `ORDER BY
+-- (service_id is not null) desc`).
+do $$ begin
+  create type public.cancellation_fee_type as enum ('free', 'percentage', 'fixed');
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.cancellation_policies (
+  id                   uuid primary key default gen_random_uuid(),
+  -- NULL = the platform-wide default ladder; a service id overrides it.
+  service_id           uuid references public.services(id) on delete cascade,
+  -- The band ceiling in hours; NULL = no upper bound ("≥ 24h").
+  hours_before         numeric(6,2),
+  fee_type             public.cancellation_fee_type not null,
+  -- Percent (0–100) for percentage, rupees for fixed, ignored for free.
+  fee_value            numeric(10,2) not null default 0 check (fee_value >= 0),
+  applies_when_arrived boolean not null default false,
+  -- Shown to the operator and carried onto the quote, so a band cannot be
+  -- misnamed in the console.
+  band                 text,
+  sort_order           int not null default 0,
+  is_active            boolean not null default true,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now(),
+  constraint cancellation_percentage_is_sane
+    check (fee_type <> 'percentage' or (fee_value >= 0 and fee_value <= 100)),
+  constraint cancellation_arrival_has_no_hours
+    check (not applies_when_arrived or hours_before is null)
+);
+
+create index if not exists idx_cancellation_policies_scope
+  on public.cancellation_policies (service_id, sort_order) where is_active;
+
+comment on table public.cancellation_policies is
+  'The §11.1 cancellation ladder as rows (§24). hours_before is the band
+   ceiling, matching lib/cancellation.ts; NULL is the unbounded "≥ 24h" row.
+   service_id NULL is the platform default. Backfilled with the previous
+   DEFAULT_CANCELLATION_POLICIES, so behaviour is unchanged until edited.';
+comment on column public.cancellation_policies.hours_before is
+  'The band CEILING in hours, not the floor: a request is charged the smallest
+   ceiling that still covers it. Storing the floor silently undercharges.';
+comment on column public.cancellation_policies.applies_when_arrived is
+  'The arrival row: keyed on arrival, not on hours. Once the professional is at
+   the door, how long ago the slot was booked is irrelevant.';
+
+-- Backfill, only when the platform default ladder is absent, so a re-run of
+-- this migration on a live project that has since been edited does not
+-- clobber the admin's rows.
+insert into public.cancellation_policies
+  (service_id, hours_before, fee_type, fee_value, applies_when_arrived, band, sort_order)
+select * from (values
+  (null::uuid, null::numeric, 'free'::public.cancellation_fee_type,       0::numeric, false, 'over_24h', 10),
+  (null::uuid, 24::numeric,   'percentage'::public.cancellation_fee_type, 10::numeric, false, '6_to_24h', 20),
+  (null::uuid, 6::numeric,    'percentage'::public.cancellation_fee_type, 25::numeric, false, '2_to_6h', 30),
+  (null::uuid, 2::numeric,    'percentage'::public.cancellation_fee_type, 50::numeric, false, 'under_2h', 40),
+  (null::uuid, null::numeric, 'percentage'::public.cancellation_fee_type, 100::numeric, true, 'after_arrival', 50)
+) as seed(service_id, hours_before, fee_type, fee_value, applies_when_arrived, band, sort_order)
+where not exists (
+  select 1 from public.cancellation_policies
+   where service_id is null
+);
+
+-- ── pricing_rules ──────────────────────────────────────────
+-- The §7.1 surge windows. A rule is a multiplier over a scope:
+--
+--   scope = 'global'   → whole catalogue
+--   scope = 'category' → one top-level category
+--   scope = 'service'  → one service
+--
+-- Optionally bounded to a set of days of the week (0=Sunday…6=Saturday,
+-- empty = every day) and a minute-of-day window in local time
+-- (start_minute inclusive, end_minute exclusive; a window that wraps
+-- midnight is expressed with end_minute < start_minute). `priority`
+-- breaks ties between overlapping rules — the highest priority wins, and
+-- a narrower scope should carry a higher priority.
+--
+-- No rules are seeded: "no surge" is the empty table, which is the current
+-- behaviour. The pricing engine applies the resolved multiplier only when
+-- a caller asks it to.
+create table if not exists public.pricing_rules (
+  id           uuid primary key default gen_random_uuid(),
+  name         text not null,
+  scope        text not null default 'global'
+               check (scope in ('global', 'category', 'service')),
+  category_id  uuid references public.service_categories(id) on delete cascade,
+  service_id   uuid references public.services(id) on delete cascade,
+  multiplier   numeric(6,3) not null check (multiplier > 0),
+  -- 0=Sunday … 6=Saturday. Empty means every day.
+  days_of_week smallint[] not null default '{}',
+  -- Minutes from local midnight. NULL pair means "all day".
+  start_minute smallint check (start_minute between 0 and 1439),
+  end_minute   smallint check (end_minute between 0 and 1439),
+  priority     int not null default 0,
+  valid_from   timestamptz,
+  valid_to     timestamptz,
+  is_active    boolean not null default true,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  constraint pricing_rule_scope_target check (
+    (scope = 'global'   and category_id is null     and service_id is null) or
+    (scope = 'category' and category_id is not null and service_id is null) or
+    (scope = 'service'  and service_id is not null)
+  ),
+  constraint pricing_rule_window_is_ordered
+    check (start_minute is null or end_minute is null or start_minute <> end_minute),
+  constraint pricing_rule_days_are_valid
+    check (days_of_week <@ array[0,1,2,3,4,5,6]::smallint[]),
+  constraint pricing_rule_validity_is_forward
+    check (valid_to is null or valid_from is null or valid_to > valid_from)
+);
+
+create index if not exists idx_pricing_rules_active
+  on public.pricing_rules (scope, priority desc) where is_active;
+
+comment on table public.pricing_rules is
+  'The §7.1 surge windows (§24): a multiplier scoped global/category/service,
+   optionally bounded by days_of_week and a minute-of-day window. Empty table =
+   no surge, which is the prior behaviour. lib/pricingServer.ts resolves the
+   winning rule for a service at a moment in time.';
+comment on column public.pricing_rules.days_of_week is
+  '0=Sunday…6=Saturday; empty array means every day, the same "empty = all"
+   convention coupons use for their applicable_services.';
+
+drop trigger if exists trg_cancellation_policies_touch on public.cancellation_policies;
+create trigger trg_cancellation_policies_touch before update on public.cancellation_policies
+  for each row execute function public.touch_updated_at();
+
+drop trigger if exists trg_pricing_rules_touch on public.pricing_rules;
+create trigger trg_pricing_rules_touch before update on public.pricing_rules
+  for each row execute function public.touch_updated_at();
+
+-- ── Row level security ─────────────────────────────────────
+-- Staff read both; only admins write. The browser never writes these — the
+-- console goes through the service role and re-checks the capability itself
+-- (D3) — but the policy is the backstop, exactly as on platform_settings.
+alter table public.cancellation_policies enable row level security;
+alter table public.pricing_rules         enable row level security;
+
+do $$ begin
+  create policy cancellation_policies_read_staff on public.cancellation_policies for select
+    using (public.is_staff(
+      array['support','ops','admin','super_admin']::public.user_role[]
+    ));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy cancellation_policies_write_admin on public.cancellation_policies for all
+    using (public.is_admin()) with check (public.is_admin());
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy pricing_rules_read_staff on public.pricing_rules for select
+    using (public.is_staff(
+      array['support','ops','admin','super_admin']::public.user_role[]
+    ));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy pricing_rules_write_admin on public.pricing_rules for all
+    using (public.is_admin()) with check (public.is_admin());
+exception when duplicate_object then null; end $$;
+
+revoke all on public.cancellation_policies from anon;
+revoke all on public.pricing_rules from anon;
+grant select on public.cancellation_policies to authenticated;
+grant select on public.pricing_rules to authenticated;
+grant all on public.cancellation_policies to service_role;
+grant all on public.pricing_rules to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0036_broadcast_matching.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0036_broadcast_matching.sql
+-- SmartHelp: broadcast matching — one booking, every eligible
+-- professional at once, first accept wins.
+--
+-- Spec: §8.2 (transitions), §9.1 (candidate eligibility), §9.4
+--       (the advisory lock), §24.8 (the offer ledger).
+-- Depends on: 0010/0011 (bookings + state machine), 0012
+--       (booking_assignments + CAS RPCs), 0032 (the engine this
+--       replaces), 0034 (the `assign:<id>` lock's other users).
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- 0032's engine was deliberately round-based. `uniq_active_assignment_per_booking`
+-- (0012) permitted at most one live (`offered`|`accepted`) row per booking, so
+-- "offer this job to three professionals at once" was structurally impossible
+-- without dropping that index, and the engine ranked and offered in rounds
+-- instead (decision D1 in 05-PLAN.md).
+--
+-- The product decision is now the other one: a booking is *broadcast* to every
+-- eligible professional at the same time, and the first acceptance wins — the
+-- job disappears from everyone else's inbox the instant it is taken. That is
+-- why this file exists, and it is the only thing it changes:
+--
+--   1. The double-accept guarantee moves from the *live* row to the
+--      *accepted* row. Many offers may be live on one booking; only one
+--      acceptance ever can be. `uniq_accepted_assignment_per_booking`
+--      replaces `uniq_active_assignment_per_booking`.
+--   2. `match_booking` offers to the whole ranked candidate list instead of
+--      `limit 1`. The booking still walks `searching -> assigned`, but it
+--      carries no `professional_id` while the round is open: nobody owns it
+--      until they accept.
+--   3. `accept_offer` is unchanged in spirit — still a compare-and-set — but
+--      it now takes the §9.4 advisory lock, sets the booking's `professional_id`
+--      to the winner, and withdraws every other live offer for the booking in
+--      the same transaction.
+--
+-- The state machine is untouched. `assigned` keeps its meaning of "the job has
+-- been dispatched and awaits an answer"; the only difference is that many
+-- professionals can be awaiting it rather than one. An exhaustion still walks
+-- `searching -> cancelled` and the JS caller refunds it, exactly as 0032 built.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+-- ── Allow many live offers, still only one acceptance ──────
+-- The old index watched `offered` and `accepted` together. Broadcast needs
+-- `offered` to be many, so the guarantee is narrowed to the state that must
+-- stay unique: a booking can be accepted by at most one professional, ever.
+--
+-- Round-based re-offers were the old reason a second `offered` row was a bug;
+-- with a broadcast, every eligible professional legitimately holds one at the
+-- same time. `uniq_prof_booking_offer` (0012) still holds: one professional
+-- never holds two rows for the same booking, broadcast or not.
+drop index if exists public.uniq_active_assignment_per_booking;
+
+create unique index if not exists uniq_accepted_assignment_per_booking
+  on public.booking_assignments (booking_id)
+  where status = 'accepted';
+
+comment on index public.uniq_accepted_assignment_per_booking is
+  'The double-accept guarantee (§24.8), narrowed for broadcast matching: a
+   booking may carry many live offers but is accepted by at most one
+   professional. Combined with accept_offer''s compare-and-set under the §9.4
+   advisory lock, the second of two concurrent accepts affects zero rows.';
+
+-- ── match_booking: broadcast to the whole ranked list ──────
+-- Same shape as 0032's matcher, with the fan-out decision changed: it offers
+-- to *every* eligible professional, best-ranked first, rather than to one.
+-- The advisory lock, the stale-offer tombstoning, the `paid -> searching`
+-- clock, the `assigned -> searching` reassignment edge and the exhaustion
+-- branch are all 0032's, unchanged.
+--
+-- `rank_candidates` remains the eligibility gate (verified, online, available
+-- today, skilled for every service, free on the calendar, never offered this
+-- booking) and the sort: repeat, then load, then tenure. Broadcast changes the
+-- *count* offered, not who is eligible for an offer in the first place.
+--
+-- The booking leaves `searching` on the first offer and stays `assigned` for
+-- the life of the round, but keeps `professional_id = null`: during a
+-- broadcast nobody owns the job yet, and naming one of many offered pros would
+-- be a lie the customer's track screen would then have to un-tell. The winner
+-- is written by `accept_offer` below.
+create or replace function public.match_booking(p_booking_id uuid)
+returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  -- Mirrors PLATFORM_DEFAULTS in lib/constants.ts (offerTtlMinutes,
+  -- searchWindowMinutes). A `platform_settings` read lands in Phase 6.
+  v_offer_ttl_minutes   constant int := 15;
+  v_search_window_min   constant int := 30;
+  v_booking       public.bookings;
+  v_round         int;
+  v_attempt_base  int;
+  v_offered       int := 0;
+  v_first_pro     uuid;
+  v_professional_ids jsonb := '[]'::jsonb;
+  r               record;
+  v_live          int;
+  v_candidates    int;
+begin
+  perform pg_advisory_xact_lock(hashtext('assign:' || p_booking_id::text)::bigint);
+
+  select * into v_booking from public.bookings where id = p_booking_id;
+  if v_booking.id is null then
+    return jsonb_build_object('outcome', 'noop', 'booking_id', p_booking_id);
+  end if;
+
+  -- Tombstone this booking's stale offers before deciding anything.
+  update public.booking_assignments
+     set status = 'expired'
+   where booking_id = p_booking_id
+     and status = 'offered'
+     and expires_at <= now();
+
+  -- Any live offer means the round is still open: no top-up while it runs.
+  -- The next broadcast happens only once every offer has been answered.
+  select count(*) into v_live
+    from public.booking_assignments
+   where booking_id = p_booking_id
+     and status in ('offered', 'accepted');
+  if v_live > 0 then
+    return jsonb_build_object('outcome', 'noop', 'booking_id', p_booking_id);
+  end if;
+
+  -- paid -> searching, starting the SLA clock once.
+  if v_booking.status = 'paid' then
+    perform set_config('app.transition_actor', '', true);
+    perform set_config('app.transition_actor_role', '', true);
+    perform set_config('app.transition_note', 'matching started', true);
+
+    update public.bookings
+       set status = 'searching',
+           search_started_at = coalesce(search_started_at, now()),
+           search_expires_at = coalesce(
+             search_expires_at,
+             now() + make_interval(mins => v_search_window_min)
+           )
+     where id = p_booking_id and status = 'paid'
+    returning * into v_booking;
+
+    if v_booking.id is null then
+      select * into v_booking from public.bookings where id = p_booking_id;
+    end if;
+  end if;
+
+  if v_booking.status not in ('searching', 'assigned') then
+    return jsonb_build_object('outcome', 'noop', 'booking_id', p_booking_id);
+  end if;
+
+  -- Reassignment: a booking left `assigned` by a round that expired or was
+  -- declined walks back into the search for a fresh broadcast.
+  if v_booking.status = 'assigned' then
+    perform set_config('app.transition_actor', '', true);
+    perform set_config('app.transition_actor_role', '', true);
+    perform set_config('app.transition_note', 'reassignment after decline/expiry', true);
+
+    update public.bookings
+       set status = 'searching'
+     where id = p_booking_id and status = 'assigned'
+    returning * into v_booking;
+
+    if v_booking.id is null then
+      select * into v_booking from public.bookings where id = p_booking_id;
+    end if;
+  end if;
+
+  select count(*)::int into v_candidates from public.rank_candidates(p_booking_id);
+
+  if v_candidates > 0 then
+    v_round := v_booking.assignment_rounds + 1;
+
+    select count(*)::int into v_attempt_base
+      from public.booking_assignments where booking_id = p_booking_id;
+
+    perform set_config('app.transition_actor', '', true);
+    perform set_config('app.transition_actor_role', '', true);
+    perform set_config('app.transition_note', 'offers broadcast', true);
+
+    -- searching -> assigned once for the whole round. No `professional_id`:
+    -- the job is dispatched but unowned until somebody accepts it.
+    update public.bookings
+       set status = 'assigned',
+           matched_at = now(),
+           assignment_rounds = assignment_rounds + 1
+     where id = p_booking_id and status = 'searching'
+    returning * into v_booking;
+
+    if v_booking.id is null then
+      select * into v_booking from public.bookings where id = p_booking_id;
+    end if;
+
+    -- One offer per eligible professional, best-ranked first.
+    for r in
+      select professional_id, was_repeat, score
+        from public.rank_candidates(p_booking_id)
+    loop
+      v_offered := v_offered + 1;
+      if v_first_pro is null then
+        v_first_pro := r.professional_id;
+      end if;
+      v_professional_ids := v_professional_ids || to_jsonb(r.professional_id);
+
+      insert into public.booking_assignments
+        (booking_id, professional_id, status, attempt_no, round_no,
+         score, was_repeat, was_favourite, offered_at, expires_at)
+      values
+        (p_booking_id, r.professional_id, 'offered',
+         v_attempt_base + v_offered, v_round,
+         r.score, coalesce(r.was_repeat, false), false, now(),
+         now() + make_interval(mins => v_offer_ttl_minutes));
+
+      update public.professionals
+         set total_offers = total_offers + 1
+       where id = r.professional_id;
+    end loop;
+
+    return jsonb_build_object(
+      'outcome', 'offered',
+      'booking_id', p_booking_id,
+      'offered_count', v_offered,
+      'professional_ids', v_professional_ids,
+      'professional_id', v_first_pro,
+      'round_no', v_round
+    );
+  end if;
+
+  -- No candidate. The spec closes the search on a deadline: if it has
+  -- passed, the booking is cancelled for want of a professional and the JS
+  -- caller refunds it (D2); otherwise it stays searching for the sweeper.
+  if now() >= coalesce(v_booking.search_expires_at, now()) then
+    perform set_config('app.transition_actor', '', true);
+    perform set_config('app.transition_actor_role', '', true);
+    perform set_config('app.transition_note', 'no_professional_available', true);
+
+    update public.bookings
+       set status = 'cancelled',
+           cancelled_at = now(),
+           cancellation_reason_code = 'no_professional_available'
+     where id = p_booking_id and status = 'searching'
+    returning * into v_booking;
+
+    return jsonb_build_object('outcome', 'exhausted', 'booking_id', p_booking_id);
+  end if;
+
+  return jsonb_build_object('outcome', 'searching', 'booking_id', p_booking_id);
+end $$;
+
+comment on function public.match_booking(uuid) is
+  'Matches one booking under the §9.4 advisory lock, broadcasting one ranked
+   offer to *every* eligible professional (§9.1) rather than offering in rounds.
+   Walks paid -> searching -> assigned, or assigned -> searching for a
+   reassignment; the booking carries no professional_id until somebody accepts.
+   Returns {outcome: offered|searching|exhausted|noop, ...}; `offered` carries
+   offered_count and professional_ids, and `exhausted` means the search window
+   closed with no candidate and the booking is now cancelled
+   no_professional_available for the caller to refund.';
+
+-- ── accept_offer: first accept wins, the rest are withdrawn ──
+-- The compare-and-set is 0012's, with three additions broadcast requires:
+--
+--   1. It resolves the booking first and takes the same `assign:<booking_id>`
+--      advisory lock `match_booking` and 0034's staff paths take, so an accept
+--      and a broadcast serialise on one key instead of racing.
+--   2. It withdraws every other live offer on the booking in the same
+--      transaction, so the job leaves the other professionals' inboxes the
+--      instant it is taken.
+--   3. It writes the winner onto `bookings.professional_id`, which broadcast's
+--      matcher deliberately leaves null.
+--
+-- Two accepts racing on different offers resolve cleanly: the lock serialises
+-- them, the first accepts and withdraws the second's offer, and the second's
+-- compare-and-set then matches nothing and returns null (the route's 409).
+create or replace function public.accept_offer(
+  p_assignment_id   uuid,
+  p_professional_id uuid
+) returns public.booking_assignments
+language plpgsql security definer set search_path = public as $$
+declare
+  v_assignment public.booking_assignments;
+  v_booking    public.bookings;
+  v_profile    uuid;
+  v_start      timestamptz;
+  v_end        timestamptz;
+  v_booking_id uuid;
+begin
+  -- Resolve the booking before locking: the lock is on the booking, not the
+  -- offer, so it is the same key the matcher and the staff paths hold.
+  select booking_id into v_booking_id
+    from public.booking_assignments
+   where id = p_assignment_id
+     and professional_id = p_professional_id;
+
+  if v_booking_id is null then
+    return null;
+  end if;
+
+  perform pg_advisory_xact_lock(hashtext('assign:' || v_booking_id::text)::bigint);
+
+  update public.booking_assignments
+     set status = 'accepted',
+         responded_at = now()
+   where id = p_assignment_id
+     and professional_id = p_professional_id
+     and status = 'offered'
+     and expires_at > now()
+  returning * into v_assignment;
+
+  if not found then
+    return null;
+  end if;
+
+  -- The winner is in. Every other professional still holding an offer for this
+  -- booking loses it now, so the job disappears from their inbox at once.
+  update public.booking_assignments
+     set status = 'withdrawn',
+         responded_at = now()
+   where booking_id = v_assignment.booking_id
+     and id <> p_assignment_id
+     and status = 'offered';
+
+  select * into v_booking from public.bookings where id = v_assignment.booking_id;
+
+  v_start := coalesce(v_booking.scheduled_start_at, now());
+  v_end   := coalesce(
+    v_booking.scheduled_end_at,
+    v_start + make_interval(mins => v_booking.duration_minutes)
+  );
+
+  begin
+    insert into public.professional_schedule
+      (professional_id, booking_id, starts_at, ends_at, status)
+    values
+      (p_professional_id, v_assignment.booking_id, v_start, v_end, 'reserved');
+  exception when exclusion_violation then
+    raise exception 'PROFESSIONAL_UNAVAILABLE'
+      using errcode = '23P01',
+            detail = 'the professional already has a booking in this window';
+  end;
+
+  -- booking_status_history.actor_id references profiles, so record the
+  -- professional's *profile*, not their professionals row.
+  select profile_id into v_profile
+    from public.professionals where id = p_professional_id;
+
+  perform set_config('app.transition_actor', coalesce(v_profile::text, ''), true);
+  perform set_config('app.transition_actor_role', 'professional', true);
+  perform set_config('app.transition_note', 'offer accepted', true);
+
+  update public.bookings
+     set status = 'accepted',
+         professional_id = p_professional_id,
+         accepted_at = now()
+   where id = v_assignment.booking_id
+   returning * into v_booking;
+
+  update public.professionals
+     set accepted_offers = accepted_offers + 1
+   where id = p_professional_id;
+
+  return v_assignment;
+end $$;
+
+comment on function public.accept_offer(uuid, uuid) is
+  'Accepts an offer by compare-and-set (§24.8), under the §9.4 advisory lock.
+   Returns the assignment on success, or NULL if the offer was not live (already
+   answered, expired, a different professional, or withdrawn because somebody
+   else accepted first). On success it withdraws every other live offer on the
+   booking and writes the winner onto bookings.professional_id. Reserves the
+   booking window through the professional_schedule exclusion constraint; an
+   overlap surfaces as PROFESSIONAL_UNAVAILABLE (23P01).';
+
+-- ── Grants ─────────────────────────────────────────────────
+-- Unchanged from 0012/0032: these write the offer ledger and the booking's
+-- state, so only the service role (Route Handlers, cron) may call them.
+revoke all on function public.match_booking(uuid) from public, anon, authenticated;
+revoke all on function public.accept_offer(uuid, uuid) from public, anon, authenticated;
+
+grant execute on function public.match_booking(uuid) to service_role;
+grant execute on function public.accept_offer(uuid, uuid) to service_role;

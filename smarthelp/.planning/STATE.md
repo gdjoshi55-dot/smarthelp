@@ -3,19 +3,41 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in_progress
-last_updated: "2026-10-10T00:00:00.000Z"
-last_activity: "2026-10-10 - **Phase 4 (Professional app) fully complete.** All four waves built, the Wave A schema push (`0012`/`0021`/`0029`, plus the `0030` fix) applied to the live project, and the D1 phase gate passed: typecheck/lint/build exit 0, `npm test` 798/46 (floor 655/38), `npm run test:db` 96/7 (floor 77/5), §31.1's exit criterion hand-checked, and the three manual verifications (live bucket upload, on-device geofence override, §30 smoke) passed. The four house docs updated; `phases/04-professional-app/04-SUMMARY.md` written; ROADMAP Phase 4 marked complete."
+last_updated: "2026-10-12T00:00:00.000Z"
+last_activity: "2026-10-12 - **Phase 5 (Matching engine) complete.** `0032_matching_engine.sql` built and applied to the live project (29 files, 30 applied, 0 outstanding): it restores the spec's `assigned -> searching` edge and adds `expire_stale_offers` / `rank_candidates` / `match_booking` / `run_matching_sweep`, dropping `sweep_new_bookings`. The app mirror (`lib/matchingServer.ts`, `refundCapturedBooking`, `searchWindowMinutes`, the offers/decline route wiring) and the tests landed, and both exit criteria are proven by `test/db.matching.test.ts` (20-way concurrency yields exactly one offer; an exhausted search is cancelled `no_professional_available` and refunds). Gates: typecheck/lint/build exit 0, `npm test` 824/50 (floor 798/46), `npm run test:db` 99/8 (floor 96/7). House docs and `phases/05-matching-engine/05-SUMMARY.md` written; ROADMAP Phase 5 marked complete."
 progress:
-  total_phases: 4
-  completed_phases: 2
-  total_plans: 4
-  completed_plans: 2
-  percent: 50
+  total_phases: 10
+  completed_phases: 6
+  total_plans: 5
+  completed_plans: 5
+  percent: 60
 ---
 
 # SmartHelp — Project State
 
 ## Current Phase
+
+Phase 5 — Matching engine. **Complete.** Built and verified 2026-10-12.
+`0032_matching_engine.sql` restores the spec's `assigned -> searching` edge and
+adds four `security definer`, service-role-only functions —
+`expire_stale_offers`, `rank_candidates`, `match_booking` (under an advisory lock)
+and `run_matching_sweep` — and drops Phase 4's `sweep_new_bookings`. The app
+mirror is `lib/matchingServer.ts` (the sweep and single-booking wrappers plus the
+exhaustion refund), `refundCapturedBooking` extracted from the cancel route, the
+`searchWindowMinutes` constant, and the offers/decline route rewiring. Both
+§31.1 exit criteria are proven: **no double assignment under concurrency** (the
+`test/db.matching.test.ts` race opens 20 connections against one booking and
+exactly one offer results) and **an exhausted search auto-refunds** (the booking
+reaches `cancelled` / `no_professional_available` and the captured payment is
+refunded in full). Applied to the live project (29 files, **30 applied, 0
+outstanding**). typecheck/lint/build exit 0, `npm test` **824/50** (floor
+798/46), `npm run test:db` **99/8** (floor 96/7). `README.md` now says "at Phase
+5", and `docs/API.md` §4.7, `docs/FEATURES.md` §7, `docs/DATABASE.md` §11 record
+the phase. Plan and record:
+[`phases/05-matching-engine/05-PLAN.md`](phases/05-matching-engine/05-PLAN.md),
+[`05-SUMMARY.md`](phases/05-matching-engine/05-SUMMARY.md).
+
+**Next:** Phase 6 — the admin console (see [`ROADMAP.md`](ROADMAP.md)).
 
 Phase 4 — Professional app. **Complete.** D1 phase gate passed 2026-10-10: all
 four waves built, the Wave A schema push (`0012`/`0021`/`0029`, plus the `0030`
@@ -23,12 +45,10 @@ fix) applied to the live project (28 applied, 0 outstanding), typecheck/lint/bui
 exit 0, `npm test` **798/46** (floor 655/38), `npm run test:db` **96/7** (floor
 77/5), §31.1's exit criterion hand-checked, and the three manual verifications
 (live bucket upload, on-device geofence override, §30 smoke) passed. `README.md`
-now says "at Phase 4", and `docs/API.md` §4.7, `docs/FEATURES.md` §6,
-`docs/DATABASE.md` §11 record the phase. Plan and record:
+said "at Phase 4", and `docs/API.md` §4.7, `docs/FEATURES.md` §6,
+`docs/DATABASE.md` §11 recorded the phase. Plan and record:
 [`phases/04-professional-app/04-PLAN.md`](phases/04-professional-app/04-PLAN.md),
 [`04-SUMMARY.md`](phases/04-professional-app/04-SUMMARY.md).
-
-**Next:** Phase 5 — the matching engine (see [`ROADMAP.md`](ROADMAP.md)).
 
 Phase 3 — Payments, refunds & wallet. **Complete.** B-GATE passed 2026-10-08:
 unexcluded suite 655/38, `npm run test:db` 77/5, §31.1's exit criteria
@@ -65,6 +85,14 @@ read model.
   endpoint, the professional console and the customer's live booking screen, and
   §31.1's exit criterion (take and complete a job). Recorded 2026-10-10; plan and
   record in `phases/04-professional-app/`.
+
+- Phase 5 — Matching engine. Migration `0032` (the restored `assigned -> searching`
+  edge; `expire_stale_offers`, `rank_candidates`, `match_booking`,
+  `run_matching_sweep`; `sweep_new_bookings` dropped), `lib/matchingServer.ts`, the
+  shared `refundCapturedBooking`, the `searchWindowMinutes` constant and the
+  offers/decline route rewiring, and §31.1's exit criteria (no double assignment
+  under concurrency; exhausted search auto-refunds). Recorded 2026-10-12; plan and
+  record in `phases/05-matching-engine/`.
 
 ## Phase 2 progress
 
@@ -424,9 +452,9 @@ Both were in the harness, and both had been passing by luck.
 
 ## Blockers/Concerns
 
-- None outstanding. Migrations through `0030` are applied to the live project
-  (28 applied, 0 outstanding) and `npm run test:db` passes against it (96 tests
-  across 7 files).
+- None outstanding. Migrations through `0032` are applied to the live project
+  (29 files, 30 applied, 0 outstanding) and `npm run test:db` passes against it
+  (99 tests across 8 files).
 
 - The database tests need a migrated, seeded database and `SUPABASE_DB_URL`. Without
   one they skip loudly rather than passing quietly.
@@ -447,4 +475,4 @@ Both were in the harness, and both had been passing by luck.
 
 ---
 
-Last activity: 2026-10-10 - **Phase 4 (Professional app) complete.** All four waves built; the Wave A schema push (`0012`/`0021`/`0029`, plus the `0030` fix) applied to the live project (28 applied, 0 outstanding); D1 phase gate passed — typecheck/lint/build exit 0, `npm test` 798/46 (floor 655/38), `npm run test:db` 96/7 (floor 77/5), §31.1's exit criterion hand-checked, and the three manual verifications (live bucket upload, on-device geofence override, §30 smoke) passed. `docs/API.md` §4.7, `docs/FEATURES.md` §6 and `docs/DATABASE.md` §11 written, `README.md` updated, `phases/04-professional-app/04-SUMMARY.md` recorded, ROADMAP Phase 4 marked complete.
+Last activity: 2026-10-12 - **Phase 5 (Matching engine) complete.** `0032_matching_engine.sql` built and applied to the live project (29 files, 30 applied, 0 outstanding): the restored `assigned -> searching` edge, `expire_stale_offers` / `rank_candidates` / `match_booking` / `run_matching_sweep`, and `sweep_new_bookings` dropped. The app mirror (`lib/matchingServer.ts`, `refundCapturedBooking`, `searchWindowMinutes`, the offers/decline route wiring) and tests landed; both §31.1 exit criteria proven by `test/db.matching.test.ts`. Gates green — typecheck/lint/build exit 0, `npm test` 824/50 (floor 798/46), `npm run test:db` 99/8 (floor 96/7). `docs/API.md` §4.7, `docs/FEATURES.md` §7 and `docs/DATABASE.md` §11 written, `README.md` updated to "at Phase 5", `phases/05-matching-engine/05-SUMMARY.md` recorded, ROADMAP Phase 5 marked complete.

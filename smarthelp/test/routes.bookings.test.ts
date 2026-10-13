@@ -150,6 +150,30 @@ const ADDRESS = {
   updated_at: '2026-10-01T00:00:00.000Z',
 };
 
+/** One 0035 ladder row, as the DB stores it (numeric columns as strings). */
+function defaultPolicy(
+  feeType: string,
+  feeValue: string,
+  hoursBefore: string | null,
+  arrived: boolean | null,
+  band: string,
+  sortOrder: number
+) {
+  return {
+    id: `cp-${sortOrder}`,
+    service_id: null,
+    hours_before: hoursBefore,
+    fee_type: feeType,
+    fee_value: feeValue,
+    applies_when_arrived: arrived,
+    band,
+    sort_order: sortOrder,
+    is_active: true,
+    created_at: '2026-10-01T00:00:00.000Z',
+    updated_at: '2026-10-01T00:00:00.000Z',
+  };
+}
+
 function req(body: unknown, headers: Record<string, string> = {}): Request {
   return new Request('http://localhost/api/bookings', {
     method: 'POST',
@@ -180,6 +204,19 @@ function prime(over: {
     services: () => ({ data: over.services ?? [service()], error: null }),
     service_durations: () => ({ data: [], error: null }),
     coupons: () => ({ data: [], error: null }),
+    // 0035. The platform default ladder, mirroring lib/cancellation.ts's
+    // DEFAULT_CANCELLATION_POLICIES so a cancel quote through the route agrees
+    // with the pure function the unit tests assert against.
+    cancellation_policies: () => ({
+      data: [
+        defaultPolicy('free', '0.00', null, null, 'over_24h', 10),
+        defaultPolicy('percentage', '10.00', '24', null, '6_to_24h', 20),
+        defaultPolicy('percentage', '25.00', '6', null, '2_to_6h', 30),
+        defaultPolicy('percentage', '50.00', '2', null, 'under_2h', 40),
+        defaultPolicy('percentage', '100.00', null, true, 'after_arrival', 50),
+      ],
+      error: null,
+    }),
     // `booking_id` has to be on the fixture: the fake applies `.eq()`, and a row
     // without it is filtered away — which the route would correctly read as a
     // booking with no items on it.

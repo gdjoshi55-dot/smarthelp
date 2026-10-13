@@ -411,7 +411,7 @@ describe('GET /api/availability', () => {
     );
     const json = await body(res);
     expect(res.status).toBe(422);
-    expect(json.code).toBe('VALIDATION_ERROR');
+    expect(json.code).toBe('SERVICE_UNAVAILABLE');
     expect(json.error).toMatch(/not one we serve/i);
     expect(json.details.reason).toBe('outside_coverage');
     expect(json.details.location.localityName).toBeNull();

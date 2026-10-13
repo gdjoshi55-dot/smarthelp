@@ -336,7 +336,7 @@ Six states, all of which exist:
 | Loading | Spinner and "Checking availability for {duration}" |
 | Uncovered area | Amber panel, `MapPinOff` icon, and the server's own sentence. A 422 whose `details.reason` is `outside_coverage` |
 | Other error | Red panel with the server's message |
-| Served, nothing bookable | "No slots for {duration} on this day — bookings need {lead} notice. Try another day." The lead time is quoted from the response |
+| Served, nothing bookable | "No slots for {duration} on this day — bookings need {lead} notice. Try another day." The lead is quoted from `day.leadMinutes`. Today that is 0 — a same-day booking is dispatched immediately — so today's empty message carries no "notice" clause |
 | Served, slots | The grid |
 
 The results container is `aria-live="polite"` with `aria-busy` while in flight,
@@ -912,25 +912,27 @@ accept two bookings that overlap, because `accept_offer` writes a `reserved`
 `professional_schedule` window and the GiST exclusion constraint vetoes the
 overlap.
 
-`GET /api/professionals/offers` is the inbox. It runs `sweep_new_bookings()`
-first — Phase 4's minimal matcher, which picks **one** eligible professional
-(verified, online, available, skilled for every service on the booking, free on
-the time-off calendar and the schedule) and makes **one** offer with a 15-minute
-TTL. There is no ranking and no fan-out; Phase 5 replaces this producer whole. It
-then **lazily expires** the caller's stale offers, because no sweeper cron exists,
-so the countdown on a card is never against an offer the accept path would refuse.
-The payload is the OfferCard contract exactly — service name, window, area only,
-quoted price, `expiresAt` — and carries no phone, no full address and no customer
-name. `stripProBooking(..., 'offered')` enforces the §14.3 privacy gate even
-before the fields are picked.
+`GET /api/professionals/offers` is the inbox. It runs **Phase 5's**
+`run_matching_sweep()` first (Phase 4 shipped only a minimal producer; §7 is the
+engine that replaced it whole), which ranks the candidates for every waiting
+booking, issues **one** offer per booking under an advisory lock, and refunds any
+search that closed empty — so opening the inbox is what drives the marketplace
+forward until the §25.11 cron exists. It then **lazily expires** the caller's own
+stale offers as a belt, so the countdown on a card is never against an offer the
+accept path would refuse. The payload is the OfferCard contract exactly — service
+name, window, area only, quoted price, `expiresAt` — and carries no phone, no full
+address and no customer name. `stripProBooking(..., 'offered')` enforces the §14.3
+privacy gate even before the fields are picked.
 
 `POST …/offers/:id/accept` is the compare-and-set. A second tap, an expired offer
 or a stale id makes the RPC affect zero rows ⇒ 409; an overlap with another job
 raises `PROFESSIONAL_UNAVAILABLE` ⇒ 409; a cross-professional id is a 404 with
 zero writes because ownership is re-checked through the service role before the
 RPC. On success the address unlocks — the job is theirs now. `POST …/decline`
-records the reason as a tombstone (`rejected`); the booking deliberately stays
-`assigned`, because `0011` permits no reassign hop, so re-offering is Phase 5's.
+records the reason as a tombstone (`rejected`) and then — the Phase 5 cascade —
+re-offers the job to the next-ranked professional immediately rather than waiting
+for the next inbox open (§7); the response carries `reassigned`, false when the
+field was empty.
 
 ### 6.4 Job execution: arrive, OTP, complete, no-show
 
@@ -1025,8 +1027,9 @@ only while the booking is `arrived`; the code itself is never here.
 - **No extension flow.** The timer shows the original window; the client field is
   hard-coded false.
 - **No ETA.** `proLocation` is coordinates or `null`, never a number of minutes.
-- **No reassignment, ranking or fan-out.** One offer per booking, one
-  professional, no ranking — Phase 5.
+- **No reassignment, ranking or fan-out.** Phase 4's producer made one offer per
+  booking to the first eligible professional, no ranking — Phase 5's engine
+  replaces it whole (§7).
 - **No professional-facing refund or cancel-to-refund path.** A no-show is a
   detection signal; ops owns the resolution.
 - Toasts on `/login` come from `react-hot-toast`, whose live-region semantics
@@ -1034,3 +1037,79 @@ only while the booking is `arrived`; the code itself is never here.
 - `docs/DATABASE.md` and `docs/API.md` are named in the Phase 1 plan and do not
   exist. So does `components/ui/EmptyState.tsx`, and the catalogue's empty and
   error states are bespoke markup instead.
+
+## 7. The matching engine (Phase 5, built)
+
+Phase 4 shipped the offer *ledger* but not the matcher: one line that offered a
+paid booking to the first eligible professional in `created_at` order, no ranking.
+Phase 5 replaces that producer whole with a ranked engine, a reassignment cascade,
+an advisory lock and an exhaustion refund. Migration `0032`, the JS boundary in
+`lib/matchingServer.ts`.
+
+### 7.1 A ranked offer, not a table scan
+
+`rank_candidates` returns the professionals who could take a booking, best first.
+Eligibility is the same set Phase 4 used — verified, online, available today,
+skilled for every service on the booking, free on the time-off calendar and the
+schedule — minus anyone already offered this booking. The order is what the schema
+can actually justify: **repeat** first (this professional has completed a job for
+this customer before), then **load** (fewest live schedule windows — a busy
+professional is offered last), then tenure as a stable tie-break.
+
+**Distance and rating are deliberately absent.** Distance needs the
+`earthdistance` extension, which `0002` does not install, and there is no ratings
+roll-up until Phase 8. A premium for "nearest" or "highest rated" would therefore
+be a fabricated number, so `score` and `distance_km` are written as `null` — the
+same honest choice `0012` made when it created the columns. This is the phase's
+one visible departure from §9.1's scoring list, and it is recorded rather than
+papered over.
+
+### 7.2 Fan-out is round-based, and the lock is the choice
+
+§9.1 speaks of "fan-out" — offering one booking to several professionals at once.
+That is **structurally impossible** here: `uniq_active_assignment_per_booking`
+permits at most one live (`offered`|`accepted`) assignment per booking, and that
+index *is* this phase's exit criterion ("no double assignment under concurrency").
+Dropping it to fan out would be the opposite of the goal.
+
+So the engine offers in **rounds**. One professional holds the live offer; if they
+decline or let it expire, the offer becomes a tombstone and the next-ranked
+candidate is offered in a new round. `match_booking` runs under
+`pg_advisory_xact_lock(hashtext('assign:' || booking_id))`, so two sweeps racing on
+the same booking serialise — the second sees the first's live offer and no-ops
+rather than issuing a second. The lock makes the *choice* deterministic; the
+partial unique index remains the backstop. `test/db.matching.test.ts` opens twenty
+concurrent connections against one booking and asserts exactly one offer.
+
+### 7.3 The reassignment cascade
+
+Phase 4's decline left the booking `assigned` forever, because `0011`'s deployed
+transition table had no `assigned -> searching` edge — reassignment did not exist,
+so the door had no corridor. `0032` restores that edge (§8.2: "offer expired or
+professional declined") and the decline route calls `match_booking` immediately
+after tombstoning the offer, so the job is re-offered to the next candidate in the
+same request. It never waits for a cron or the next inbox open.
+
+### 7.4 Exhaustion, and the one money path
+
+When the ranked list is empty and the search window (`searchWindowMinutes`, 30
+minutes, §16 #20) has closed, the booking walks `searching -> cancelled` with
+`cancellation_reason_code = 'no_professional_available'`. The engine stops there;
+the refund is a separate, idempotent step in `lib/matchingServer.ts`, because
+reaching Razorpay is an HTTP call that must not sit inside a transaction holding
+the advisory lock. It is the Phase 3 cancel-of-paid auto-refund, extracted into
+one shared `refundCapturedBooking`, called with **fee 0** — nobody provided a
+service, so no fee is withheld. One money path, reused and already tested.
+
+### 7.5 What is not here yet
+
+- **Distance and rating scoring** — waits on `earthdistance` and the Phase 8
+  ratings roll-up.
+- **The true §25.11 cron** — the sweep is invoked on the inbox read and is
+  idempotent, so the day a scheduler exists it calls the same RPC unchanged.
+- **The 30-minute hold at `arrived` and reassign (§16 #20)** — needs the
+  location-ping history and a timer.
+- **The `professional_schedule` slot-picker input** — the offer path honours
+  reservations; the customer-facing slot list still ignores the table.
+- **The instant-booking entry path** — Phase 10 (v2.0) builds auto-assign on top
+  of this engine.

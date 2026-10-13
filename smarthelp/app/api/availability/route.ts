@@ -33,7 +33,7 @@ export async function GET(req: Request) {
     const { summary, locality } = await resolveLocationForRequest(req, url);
     if (!locality) {
       throw new ApiHttpError(
-        'VALIDATION_ERROR',
+        'SERVICE_UNAVAILABLE',
         'That location is not one we serve yet, so there are no slots to show.',
         422,
         { location: summary, reason: 'outside_coverage' }

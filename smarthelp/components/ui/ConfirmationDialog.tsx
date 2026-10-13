@@ -1,6 +1,7 @@
 'use client';
 
 import { AlertTriangle } from 'lucide-react';
+import type { ReactNode } from 'react';
 import LoadingSpinner from './LoadingSpinner';
 
 interface ConfirmationDialogProps {
@@ -13,6 +14,12 @@ interface ConfirmationDialogProps {
   cancelText?: string;
   type?: 'danger' | 'warning' | 'info';
   isLoading?: boolean;
+  /**
+   * Free-form body rendered between the message and the buttons — used where a
+   * confirmation needs one more input, such as the reason a KYC document was
+   * rejected. A dialog that needs a form is still a dialog, not a page.
+   */
+  children?: ReactNode;
 }
 
 export default function ConfirmationDialog({
@@ -25,6 +32,7 @@ export default function ConfirmationDialog({
   cancelText = 'Cancel',
   type = 'danger',
   isLoading = false,
+  children,
 }: ConfirmationDialogProps) {
   if (!isOpen) return null;
 
@@ -51,6 +59,7 @@ export default function ConfirmationDialog({
           <h3 className="text-lg font-medium text-gray-900">{title}</h3>
         </div>
         <p className="text-gray-600 mb-6">{message}</p>
+        {children && <div className="mb-6">{children}</div>}
         <div className="flex justify-end space-x-3">
           <button
             onClick={onClose}
@@ -67,7 +76,7 @@ export default function ConfirmationDialog({
             {isLoading ? (
               <>
                 <LoadingSpinner size="sm" />
-                <span className="ml-2">Deleting...</span>
+                <span className="ml-2">Working…</span>
               </>
             ) : (
               confirmText

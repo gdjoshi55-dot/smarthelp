@@ -52,6 +52,7 @@ const CALLS: Record<string, () => Promise<unknown>> = {
       size: 1024,
     }),
   fetchJobs: () => client.fetchJobs(),
+  fetchEarnings: () => client.fetchEarnings(),
   fetchOffers: () => client.fetchOffers(),
   acceptOffer: () => client.acceptOffer(ID),
   declineOffer: () => client.declineOffer(ID, 'Already on a job'),

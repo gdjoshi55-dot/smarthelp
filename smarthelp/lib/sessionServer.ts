@@ -3,7 +3,7 @@ import { ApiHttpError } from './api';
 import { createServerClient } from './supabaseServer';
 import { audit, clientIp } from './audit';
 import { isOwnerLogin } from './owner';
-import { CAPABILITIES, ROLE_LABELS, isStaffRole } from './roles';
+import { capabilitiesFor, ROLE_LABELS, isStaffRole } from './roles';
 import type { Profile, UserRole } from './supabase';
 
 /**
@@ -131,7 +131,9 @@ export async function grantSessionForUser(params: {
     profile: { ...profile, role },
     role,
     roleLabel: ROLE_LABELS[role],
-    capabilities: CAPABILITIES[role],
+    // Expanded, never the '*' wildcard — `me` and `sign-in` must agree, or a
+    // client that tests the array with `includes` sees '*' as a denial.
+    capabilities: capabilitiesFor(role),
   };
 }
 

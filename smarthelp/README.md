@@ -3,12 +3,13 @@
 A service marketplace for home services: customers book, professionals get
 jobs, and four staff roles run the platform.
 
-**This repository is at Phase 4.** The database schema, the sign-in flows for every
+**This repository is at Phase 5.** The database schema, the sign-in flows for every
 role, the authorisation model, the public catalogue, bookings and pricing, the
-payments, refunds and wallet money paths, and the professional app — KYC,
-availability, the offers inbox, and the arrive/OTP/complete job flow — are built
-and tested. What is not built is the matching engine, and the admin and ops
-dashboards — they remain role-gated placeholder shells.
+payments, refunds and wallet money paths, the professional app — KYC,
+availability, the offers inbox, and the arrive/OTP/complete job flow — and the
+matching engine (ranked offers, the reassignment cascade, the advisory-locked
+sweeper and the exhausted-search refund) are built and tested. What is not built
+is the admin and ops dashboards — they remain role-gated placeholder shells.
 
 The public surface is real and usable today — the landing page, `/services`, a
 service detail page with live slots, and saved addresses behind a session.
@@ -24,7 +25,8 @@ real over the anon key.
 | 2 | Booking & pricing | done |
 | 3 | Payments | done |
 | 4 | Professional app | done |
-| 5–9 | Matching, admin, realtime, growth, launch | planned |
+| 5 | Matching engine | done |
+| 6–9 | Admin, realtime, growth, launch | planned |
 
 `.planning/ROADMAP.md` is the full list with exit criteria.
 
@@ -55,8 +57,8 @@ accounts. `docs/DATABASE.md`, `docs/API.md`, `docs/FEATURES.md` and
 | `npm run build` | Production build |
 | `npm run lint` | ESLint |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | 798 tests. 702 are mocked and need nothing; the other 96 need a real database and skip loudly without one |
-| `npm run test:db` | The live-database tests — RLS, OTP ledger, triggers, the booking state machine, the atomic write paths, the offer ledger, the job-execution RPCs and connection recovery — against a real database. 96 tests across 7 files |
+| `npm test` | 824 tests. 725 are mocked and need nothing; the other 99 need a real database and skip loudly without one |
+| `npm run test:db` | The live-database tests — RLS, OTP ledger, triggers, the booking state machine, the atomic write paths, the offer ledger, the job-execution RPCs, the matching engine and connection recovery — against a real database. 99 tests across 8 files |
 | `npm run db:migrate` | Applies `supabase/migrations/*.sql` in filename order |
 | `npm run db:seed` | Demo accounts and the bookable catalogue |
 | `npm run db:verify` | Signs in as each demo account for real, over the anon key |
@@ -262,8 +264,9 @@ An unbookable slot is still returned, with a `reason` (`lead_time`,
 `no_professional_available`, `at_capacity`). The client filters on `remaining > 0`;
 the server does not hide a slot it cannot explain. "Not already reserved" is the one
 input Phase 1 cannot honour — `professional_schedule` arrives with the booking tables
-— so it sits behind a single parameter that Phase 5 fills without touching the
-algorithm.
+— so it sits behind a single parameter a later phase fills without touching the
+algorithm. (Phase 5's matching engine reads the table for candidate ranking; the
+customer-facing slot picker still does not.)
 
 ### Addresses are private
 
@@ -277,15 +280,15 @@ ticket — a path a browser session cannot take.
 
 ## Testing
 
-`npm test` runs 702 tests that need no database: the validators, the API envelope,
+`npm test` runs 725 tests that need no database: the validators, the API envelope,
 the role table, the OTP policy, the owner allow-list, the `NEXT_PUBLIC_` inlining
-guard, the geo and availability engines, the service OTP helpers, and the Route
-Handlers against a fake service-role client. The fake records every table a route
-touched, so a test can assert *which row was written*, not merely that something
-was. A further 96 run against a real database and are skipped, loudly, when there
-is not one.
+guard, the geo and availability engines, the service OTP helpers, the matching
+boundary, and the Route Handlers against a fake service-role client. The fake
+records every table a route touched, so a test can assert *which row was written*,
+not merely that something was. A further 99 run against a real database and are
+skipped, loudly, when there is not one.
 
-`npm run test:db` runs those 96 tests, which a fake cannot answer: whether RLS is
+`npm run test:db` runs those 99 tests, which a fake cannot answer: whether RLS is
 on every table in `public`, whether any policy exposes every profile, whether the
 six buckets exist, whether the OTP ledger throttles, locks, salts and expires as
 it claims, whether the audit trail refuses to be edited, whether one customer can
@@ -294,7 +297,10 @@ account, whether the booking state machine refuses an illegal move even when a
 function writes it, whether a booking and its item lines can be left half written,
 whether `otp_hash` is invisible to the `authenticated` role, whether 50 concurrent
 `accept_offer` calls produce exactly one winner, whether `verify_service_otp`
-expires and locks as it claims, and whether `complete_job` is idempotent on retry. It reads `SUPABASE_DB_URL` from the environment or from `.env.local`, and
+expires and locks as it claims, whether `complete_job` is idempotent on retry,
+whether 20 concurrent `match_booking` calls produce exactly one offer, and whether
+an exhausted search lands `cancelled` / `no_professional_available`. It reads
+`SUPABASE_DB_URL` from the environment or from `.env.local`, and
 skips loudly, with a warning, when there is neither. It runs its files
 sequentially — several live-database files in parallel against one remote link
 produce failures that have nothing to do with the code — and it needs a migrated

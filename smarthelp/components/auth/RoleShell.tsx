@@ -56,7 +56,10 @@ const SECTION_HREFS: Record<
   string,
   (role: 'customer' | 'professional' | 'admin') => string | null
 > = {
-  bookings: (role) => (role === 'customer' ? '/customer/bookings' : null),
+  dashboard: (role) => (role === 'admin' ? '/admin' : null),
+  bookings: (role) =>
+    role === 'customer' ? '/customer/bookings' : role === 'admin' ? '/admin/bookings' : null,
+  professionals: (role) => (role === 'admin' ? '/admin/professionals' : null),
   jobs: (role) => (role === 'professional' ? '/professional/jobs' : null),
   kyc: (role) => (role === 'professional' ? '/professional/kyc' : null),
   availability: (role) => (role === 'professional' ? '/professional/availability' : null),

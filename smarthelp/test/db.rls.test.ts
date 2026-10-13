@@ -750,8 +750,8 @@ describeDb(
       const customer = await demoCustomerIds();
       const bookingId = await seededBookingId('SH-20260101-90002');
 
-      // A fixture offer. Clear any live one first: `uniq_active_assignment_per_booking`
-      // allows only one offered/accepted row per booking, so a leftover from an
+      // A fixture offer. Clear any live one first: `uniq_prof_booking_offer`
+      // allows one row per (professional, booking), so a leftover from an
       // interrupted run would make the insert fail for the wrong reason.
       await sql(
         `delete from public.booking_assignments

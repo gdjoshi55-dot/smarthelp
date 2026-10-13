@@ -527,13 +527,16 @@ What remains unproven, and cannot be closed by this suite:
 
 `.planning/ROADMAP.md` holds the full phase table and the deferrals. In short:
 
-Phases 0 through 3 are done — schema, auth, roles, OTP ledger, the catalogue and
-availability surface, bookings and pricing, and now payments, refunds and the
-wallet. The public pages and the catalogue routes are Phase 1's, the booking
-surface is Phase 2's, and the money paths (orders, webhook, reconciliation cron,
-refunds, wallet ledger) are Phase 3's. Phases 4 through 9 — the professional app,
-matching, the admin console, realtime, growth features and the launch hardening
-pass — are planned and have nothing built for them yet.
+Phases 0 through 5 are done — schema, auth, roles, OTP ledger, the catalogue and
+availability surface, bookings and pricing, payments, refunds and the wallet, the
+professional app, and the matching engine. The public pages and the catalogue
+routes are Phase 1's, the booking surface is Phase 2's, the money paths (orders,
+webhook, reconciliation cron, refunds, wallet ledger) are Phase 3's, the
+professional job flow is Phase 4's, and Phase 5's ranked matcher
+(`run_matching_sweep` / `match_booking`, the `assigned -> searching` edge and the
+exhausted-search refund) sits behind the offers inbox. Phases 6 through 9 — the
+admin console, realtime, growth features and the launch hardening pass — are
+planned and have nothing built for them yet.
 
 Three architectural consequences are already visible and will only harden as the
 phases land:

@@ -67,6 +67,16 @@ export class FakeSupabase {
   storageCalls: { bucket: string; path: string }[] = [];
 
   /**
+   * The signed *read* URLs the storage stub minted, in order.
+   *
+   * The KYC review screen's whole trust story is which private object a staff
+   * route will expose; the test asserts on `{ bucket, path }` here, so a route
+   * that signed the wrong document (or the wrong bucket) is caught even though
+   * the returned URL is a fixture.
+   */
+  signedReads: { bucket: string; path: string; expiresIn: number | undefined }[] = [];
+
+  /**
    * A minimal stand-in for `supabase.storage`.
    *
    * Only `from(bucket).createSignedUploadUrl(path)` exists, because that is the
@@ -83,6 +93,16 @@ export class FakeSupabase {
             signedUrl: `https://storage.test/object/upload/sign/${bucket}/${path}?token=test-token`,
             path,
             token: 'test-token',
+          },
+          error: null,
+        };
+      },
+      createSignedUrl: async (path: string, expiresIn?: number) => {
+        this.signedReads.push({ bucket, path, expiresIn });
+        return {
+          data: {
+            signedUrl: `https://storage.test/object/sign/${bucket}/${path}?token=test-token`,
+            path,
           },
           error: null,
         };

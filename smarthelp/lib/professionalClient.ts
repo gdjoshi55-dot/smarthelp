@@ -150,6 +150,33 @@ export interface Offer {
   expiresAt: string;
 }
 
+export type EarningStatus = 'pending' | 'available' | 'paid' | 'reversed';
+
+export interface EarningsEntry {
+  id: string;
+  bookingId: string;
+  bookingNumber: string | null;
+  serviceName: string | null;
+  grossAmount: number;
+  commissionAmount: number;
+  netAmount: number;
+  bonusAmount: number;
+  status: EarningStatus;
+  availableAt: string | null;
+  reversedReason: string | null;
+  createdAt: string;
+}
+
+export interface EarningsSummary {
+  lifetimeGross: number;
+  lifetimeNet: number;
+  heldNet: number;
+  availableNet: number;
+  paidNet: number;
+  reversedNet: number;
+  counts: Record<EarningStatus, number>;
+}
+
 // ── Availability ─────────────────────────────────────────────
 
 export function fetchWorkingHours(): Promise<{ hours: WorkingHour[] }> {
@@ -327,5 +354,21 @@ export function reportNoShow(id: string, reason: string): Promise<{ job: ProJob 
   return request<{ job: ProJob }>(
     `/api/professionals/jobs/${encodeURIComponent(id)}/no-show`,
     { method: 'POST', body: JSON.stringify({ reason }) }
+  );
+}
+
+// ── Earnings ─────────────────────────────────────────────────
+
+/**
+ * The earnings ledger and its summary. The route computes both from the same
+ * rows, so the total is always a sum of what the list shows.
+ */
+export function fetchEarnings(): Promise<{
+  summary: EarningsSummary;
+  earnings: EarningsEntry[];
+  serverNow: string;
+}> {
+  return request<{ summary: EarningsSummary; earnings: EarningsEntry[]; serverNow: string }>(
+    '/api/professionals/me/earnings'
   );
 }
