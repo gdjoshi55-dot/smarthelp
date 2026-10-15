@@ -6,6 +6,7 @@ import {
   stripProBooking,
 } from '@/lib/professionalServer';
 import { audit, clientIp } from '@/lib/audit';
+import { notifyProArrived } from '@/lib/notificationHooks';
 import { haversineKm } from '@/lib/geo';
 import { PLATFORM_DEFAULTS } from '@/lib/constants';
 import { latitude, longitude, optionalStr, readJson, uuid } from '@/lib/validation';
@@ -105,6 +106,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         409
       );
     }
+
+    // "Professional arrived" reaches the customer (§27.5 PRO_ARRIVED).
+    await notifyProArrived(bookingId);
 
     const fresh = await getProBookingForCaller(bookingId, professional.id, auth.role);
     return ok({ job: stripProBooking(fresh as Record<string, unknown>, 'accepted') });

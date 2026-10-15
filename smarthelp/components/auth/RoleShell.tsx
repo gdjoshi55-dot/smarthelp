@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { LogOut, Wrench } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
+import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { usePoll } from '@/components/professional/usePoll';
 import { fetchOffers } from '@/lib/professionalClient';
 import type { UserRole } from '@/lib/supabase';
@@ -30,6 +31,9 @@ const SECTION_LABELS: Record<string, string> = {
   audit: 'Audit log',
   services: 'Services',
   pricing: 'Pricing',
+  coupons: 'Promo codes',
+  settings: 'Settings',
+  notifications: 'Notifications',
   categories: 'Categories',
   locations: 'Locations',
   staff: 'Staff',
@@ -61,8 +65,28 @@ const SECTION_HREFS: Record<
     role === 'customer' ? '/customer/bookings' : role === 'admin' ? '/admin/bookings' : null,
   professionals: (role) => (role === 'admin' ? '/admin/professionals' : null),
   jobs: (role) => (role === 'professional' ? '/professional/jobs' : null),
+  earnings: (role) => (role === 'professional' ? '/professional/earnings' : null),
   kyc: (role) => (role === 'professional' ? '/professional/kyc' : null),
   availability: (role) => (role === 'professional' ? '/professional/availability' : null),
+  training: (role) => (role === 'professional' ? '/professional/training' : null),
+  services: (role) => (role === 'admin' ? '/admin/services' : null),
+  pricing: (role) => (role === 'admin' ? '/admin/pricing' : null),
+  payments: (role) => (role === 'admin' ? '/admin/payments' : null),
+  coupons: (role) => (role === 'admin' ? '/admin/coupons' : null),
+  wallet: (role) => (role === 'customer' ? '/customer/wallet' : null),
+  favourites: (role) => (role === 'customer' ? '/customer/favourites' : null),
+  support: (role) =>
+    role === 'admin' ? '/admin/support' : role === 'customer' ? '/customer/support' : null,
+  profile: (role) =>
+    role === 'customer'
+      ? '/customer/profile'
+      : role === 'professional'
+        ? '/professional/profile'
+        : null,
+  disputes: (role) => (role === 'admin' ? '/admin/disputes' : null),
+  settings: (role) => (role === 'admin' ? '/admin/settings' : null),
+  notifications: (role) => (role === 'admin' ? '/admin/notifications' : null),
+  audit: (role) => (role === 'admin' ? '/admin/audit' : null),
 };
 
 /**
@@ -147,6 +171,7 @@ export default function RoleShell({
             </div>
 
             <div className="flex items-center gap-3">
+              <NotificationBell />
               <div className="hidden sm:block text-right">
                 <p className="text-sm font-medium text-gray-900">
                   {profile?.full_name ?? 'Account'}

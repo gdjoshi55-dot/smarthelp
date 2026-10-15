@@ -6,6 +6,7 @@ import {
   stripProBooking,
 } from '@/lib/professionalServer';
 import { audit, clientIp } from '@/lib/audit';
+import { notifyProOnTheWay } from '@/lib/notificationHooks';
 import { uuid } from '@/lib/validation';
 
 export const runtime = 'nodejs';
@@ -68,6 +69,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       ipAddress: clientIp(req),
       requestId,
     });
+
+    // "Professional on the way" reaches the customer (§27.5 PRO_ON_THE_WAY).
+    await notifyProOnTheWay(bookingId);
 
     const fresh = await getProBookingForCaller(bookingId, professional.id, auth.role);
     return ok({ job: stripProBooking(fresh as Record<string, unknown>, 'accepted') });

@@ -2,6 +2,7 @@ import { ApiHttpError, handle, ok } from '@/lib/api';
 import { createServerClient } from '@/lib/supabaseServer';
 import { requireVerifiedProfessional } from '@/lib/professionalServer';
 import { matchBooking } from '@/lib/matchingServer';
+import { notifyNewOffer } from '@/lib/notificationHooks';
 import { audit, clientIp } from '@/lib/audit';
 import { optionalStr, uuid } from '@/lib/validation';
 
@@ -81,6 +82,14 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     // This route stays a tombstone plus a nudge.
     const cascade = await matchBooking(supabase, assignment.booking_id, {
       ipAddress: clientIp(req),
+      // The fresh round a cascade issues announces itself just like the sweep's
+      // (§27.5 NEW_OFFER).
+      onOffered: async (outcome) => {
+        const ids =
+          outcome.professional_ids ??
+          (outcome.professional_id ? [outcome.professional_id] : []);
+        await Promise.all(ids.map((pid) => notifyNewOffer(pid, outcome.booking_id)));
+      },
     });
 
     return ok({ declined: true, reassigned: cascade.outcome === 'offered' });

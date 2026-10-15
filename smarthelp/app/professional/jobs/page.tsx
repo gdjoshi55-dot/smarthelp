@@ -2,10 +2,10 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { AlertCircle, Briefcase, Clock, Upload } from 'lucide-react';
+import { AlertCircle, Clock, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AuthGuard from '@/components/auth/AuthGuard';
-import { PosShell } from '@/components/professional/PosShell';
+import RoleShell from '@/components/auth/RoleShell';
 import ConfirmationDialog from '@/components/ui/ConfirmationDialog';
 import { EmptyState } from '@/components/catalogue/EmptyState';
 import { OfferCard } from '@/components/professional/OfferCard';
@@ -94,11 +94,7 @@ export default function ProfessionalJobsPage() {
 
   return (
     <AuthGuard role="professional">
-      <PosShell
-        icon={Briefcase}
-        title="Jobs"
-        subtitle="Offers waiting for you, and the jobs already in your schedule"
-      >
+      <RoleShell role="professional" eyebrow="Professional" title="Jobs">
         {!verified ? <VerificationGate status={status} /> : null}
 
         <section
@@ -186,7 +182,7 @@ export default function ProfessionalJobsPage() {
           type="warning"
           isLoading={busyId !== null}
         />
-      </PosShell>
+      </RoleShell>
     </AuthGuard>
   );
 }

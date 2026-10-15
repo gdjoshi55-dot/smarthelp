@@ -137,6 +137,7 @@ belong to phases that have not been built.
 | `SERVICE_UNAVAILABLE` | 422 | The locality is covered but this service does not run there. |
 | `NO_SLOT_AVAILABLE` | 422 | Nothing bookable on the requested day. Not raised today: `/api/availability` answers 200 with `slots: []` instead. |
 | `PROFESSIONAL_UNAVAILABLE` | 422 | A named professional cannot take the job. Phase 5. |
+| `SECOND_APPROVER_REQUIRED` | 422 | An above-limit refund whose requester is also the executor — the second approval must come from a different staff member. Phase 6. |
 | `OTP_INVALID` | 422 | The code is wrong, or was not recognised. |
 | `OTP_EXPIRED` | 422 | The code was issued and has timed out (`OTP_TTL_MINUTES`, 10). |
 | `OTP_LOCKED` | 429 | `OTP_MAX_ATTEMPTS` wrong answers. `details.retryAfterSeconds` is 900. |
@@ -1378,7 +1379,8 @@ profile to name.
 
 ### `GET /api/cron/reconcile-payments`
 
-The phase's only cron (§25.11). A customer who paid while the webhook was down
+The earliest cron (§25.11); Phase 7 added two more, and all three now share the one
+`assertCronSecret` guard (§4.9). A customer who paid while the webhook was down
 is invisible to every route and every screen: the booking sits
 `payment_pending` and no human inside the product can tell "paid but unreported"
 from "never paid". This pass looks at payments still waiting more than 10
@@ -1388,11 +1390,11 @@ minutes and asks the gateway, once per row, what happened.
 Bearer …`, then `x-cron-secret`, then `?secret=`. `CRON_SECRET` unset ⇒ **503
 `SERVICE_UNAVAILABLE`** (a deliberate deviation from the usual `if (secret)`
 pattern, which runs unauthenticated when the variable is missing); mismatch ⇒
-401.
+401. The two reminder crons use the same guard, factored into `lib/cronGuard.ts`.
 
 | Gateway says | Write |
 |---|---|
-| order `paid` | `confirm_booking_payment`, audit `payment.reconciled` |
+| order `paid` | `confirm_booking_payment`, audit `payment.reconciled`, a `BOOKING_CONFIRMED` notification (§4.9) |
 | order `expired` | `payments.status='failed'`, audit `payment.failed`; the booking stays `payment_pending` so the customer can pay again |
 | still `created` / `attempted` / `partially_paid` | **no write**, counted `stillPending` |
 | unreachable / 5xx / rate-limited / unreadable | **no write**, counted `unreachable` |
@@ -1629,8 +1631,9 @@ An audit row names the admin. A customer token gets 403 with zero writes.
 
 Runs `run_matching_sweep()` first (the Phase 5 engine, D4), lazily expires the
 caller's stale offers, then reads the live ones. The sweep expires every stale
-offer globally, ranks the candidates for every waiting booking, issues one offer
-per booking under an advisory lock, and refunds any search that closed empty —
+offer globally, ranks the candidates for every waiting booking, broadcasts one
+offer to every eligible professional under an advisory lock, and refunds any search
+that closed empty —
 all before this read returns, so opening the inbox is what drives the marketplace
 forward until the §25.11 cron exists. **200** — `{ "offers": [ { id, bookingId,
 serviceName, scheduledStartAt, scheduledEndAt, area, quotedPrice, expiresAt } ],
@@ -1646,9 +1649,11 @@ gate. A past-TTL offer is refused at read and is never in the list.
 | Action | `professionals.offers.accept` |
 
 **Body** — none. Ownership is re-checked (a cross-pro id is 404 with zero writes).
-The RPC is a compare-and-set: a second tap, an expired offer or a stale id makes it
-affect zero rows ⇒ 409 `ASSIGNMENT_TAKEN`; an overlap with another job raises
-`PROFESSIONAL_UNAVAILABLE` ⇒ 409. **200** — `{ "job": ProBooking }` with the
+The RPC is a compare-and-set under the §9.4 advisory lock: a second tap, an expired
+offer, a stale id, or another professional having accepted the booking first makes it
+affect zero rows ⇒ 409 `ASSIGNMENT_TAKEN`; on success it withdraws every other live
+offer and writes the winner onto `bookings.professional_id`. An overlap with another
+job raises `PROFESSIONAL_UNAVAILABLE` ⇒ 409. **200** — `{ "job": ProBooking }` with the
 address now unlocked. An audit row records the acceptance.
 
 ### `POST /api/professionals/offers/[id]/decline`
@@ -1660,8 +1665,8 @@ address now unlocked. An audit row records the acceptance.
 
 **Body** — `{ reason? }` (≤200 chars). The decline records the reason as a
 tombstone (`rejected`), then — the Phase 5 cascade — calls `match_booking` for the
-booking so the job is re-offered to the next-ranked professional immediately
-rather than sitting until the next inbox open. **200** — `{ "declined": true,
+booking so the job is re-broadcast to the ranked candidate list immediately rather
+than sitting until the next inbox open. **200** — `{ "declined": true,
 "reassigned": boolean }`, where `reassigned` is true when a fresh offer went out
 and false when the field was empty (the booking then stays `searching`, and is
 cancelled `no_professional_available` with a full refund if its window has
@@ -1795,6 +1800,654 @@ the code's life**: the client caches it in `sessionStorage`, and only its SHA-25
 digest reaches `bookings.otp_hash`, so it can never be read back. Nothing here is
 logged.
 
+## 4.8 The admin console
+
+The admin console is Phase 6's staff surface: the `/admin` shell and the ~33 Route
+Handlers under `app/api/admin/**`. They share one authorisation model. A request
+carries a bearer token; every handler opens with `requireAuth` — or
+`requireCapability`, which calls it first — and that resolves the caller from the
+token and loads their profile, so the role is the one the database holds and never
+one the client asserted.
+
+Reads pass `requireAuth(req, [...STAFF])`, an allow-list of staff roles, and name
+**no** capability. That allow-list is `['admin','ops','support','super_admin']`
+everywhere except the raw-KYC reads and the KYC verdicts, which are
+`['admin','super_admin','ops']` and so exclude `support`. Writes call
+`requireCapability(req, capability)`, which asks the same explicit table
+`lib/roles.ts` hands the client; there is no role hierarchy, so a capability is a
+flat grant. A caller who fails either gate is `FORBIDDEN` 403 with zero writes.
+
+Every handler runs through `handle()`, so an unexpected throw is a clean
+`INTERNAL_ERROR` 500 carrying an `x-request-id`, and every success is the standard
+envelope — `ok()` and `created()` in `lib/api.ts`, i.e. `{ "success": true,
+"data": … }`. Reads use the **service-role** client, which bypasses RLS, so scope
+is the route's job: the read modules in `lib/adminServer.ts`, `lib/supportServer.ts`,
+`lib/auditServer.ts` and `lib/adminCatalogServer.ts` filter explicitly, and a
+cross-tenant or unknown id resolves to `null` there and becomes a **404 with no
+write** — the D3 decision, never a 403 that confirms a row exists. State-changing
+writes leave one `audit_logs` row through `write_audit()` (`lib/audit.ts`), which
+redacts secrets on the way in; an audit failure is logged loudly but does not fail
+the business action.
+
+Two Phase 7 staff surfaces live with this console but are documented in §4.9: the
+notification-template editor (`/api/admin/notification-templates`, gated by
+`notification.manage`) and the read-only staff view of a booking's chat. The bell and
+the chat a customer or professional uses are §4.9 too — they are not admin surfaces,
+but they share the same page.
+
+### `GET` /api/admin/dashboard
+
+| | |
+|---|---|
+| Auth | Required — staff read, no capability |
+| Action | `['admin','ops','support','super_admin']` |
+
+The operations overview (§20.11). Counts only. **200** — `{ bookings: { today,
+completedToday, cancelledToday, awaitingProfessional, inProgress }, gmvToday,
+professionals: { total, verified, online, pendingKyc }, refunds: { pendingApproval } }`.
+`awaitingProfessional` is `paid`/`searching` bookings; `inProgress` is the seven
+live statuses (`assigned`…`extension_requested`). `gmvToday` is the day's gross
+booking value in **rupees**, excluding `cancelled`, `draft` and `payment_pending`;
+"today" is the platform zone (`Asia/Kolkata`), computed as an instant. `pendingKyc`
+counts `professional_documents` awaiting a verdict (`submitted`/`in_review`);
+`pendingApproval` counts `refunds` rows still `requested`. Failures:
+`UNAUTHENTICATED` 401, `FORBIDDEN` 403.
+
+### `GET` /api/admin/bookings
+
+| | |
+|---|---|
+| Auth | Required — staff read, no capability |
+| Action | `['admin','ops','support','super_admin']` |
+
+The booking queue (§20.12). Filters are validated before the service-role query
+runs: `status` must be one of the 18 `BookingStatus` values, `q` is a booking-number
+substring (≤ 40 chars), `from`/`to` are `created_at` instants, and paging comes from
+`parsePaging` (default 25, max 100). **200** — `{ bookings: [ { id, bookingNumber,
+status, bookingType, customerName, professionalName, serviceName, totalAmount,
+currency, scheduledStartAt, createdAt } ], total, limit, offset }`, newest first. A
+bad `status` or date is `VALIDATION_ERROR` 400; a `q` that matches no profile simply
+yields an empty page. Missing auth is 401, non-staff 403.
+
+### `GET` /api/admin/bookings/[id]
+
+| | |
+|---|---|
+| Auth | Required — staff read, no capability |
+| Action | `['admin','ops','support','super_admin']` |
+
+One booking with its whole evidentiary trail. **200** — `{ booking, customer,
+professional, items, history, assignments, payments, refunds }` (the raw rows;
+`booking_status_history` oldest-first, `booking_assignments` newest-offer-first). A
+malformed id is `VALIDATION_ERROR` 400; an id that matches nothing is `NOT_FOUND`
+404 and writes nothing.
+
+### `POST` /api/admin/bookings/[id]/cancel
+
+| | |
+|---|---|
+| Auth | Required — capability write |
+| Action | `booking.cancel.any` |
+
+Held by `ops`, `admin`, `super_admin`; **not** `support`, which is why a support
+agent cancels by asking ops. Body — `{ reasonCode?, note?, chargeCustomer? }` (all
+optional; `reasonCode` ≤ 60 chars defaults to `'ops_cancelled'`, `note` ≤ 500,
+`chargeCustomer` defaults `false`). The fee is computed with the same
+`quoteCancellation()` the customer path uses, so the two can never disagree. Because
+an ops cancellation is not the customer's fault, the **default is to waive** (§11.2:
+`cancelledBy: 'ops'` → fee 0); `chargeCustomer: true` applies §11.1's ladder instead.
+The RPC `admin_cancel_booking` (0034) withdraws the holding professional and releases
+their calendar in the same statement. **200** — `{ booking, fee, refund, waived,
+band }`. An unknown id is `NOT_FOUND` 404; a move §8.2 forbids (a completed job, a
+booking already refunded) surfaces as `ILLEGAL_TRANSITION` 409, never a 500. Writes
+audit `booking.cancel_admin` with the before/after status and the fee metadata. The
+local body reader tolerates a missing body (it becomes `{}`), so these writes do
+**not** 400 merely for an absent body.
+
+### `POST` /api/admin/bookings/[id]/assign
+
+| | |
+|---|---|
+| Auth | Required — capability write |
+| Action | `booking.assign` |
+
+Held by `ops`, `admin`, `super_admin`. Body — `{ professionalId, note? }`
+(`professionalId` a required uuid, `note` ≤ 500). The professional must be
+**verified**: an unverified one is refused here with `PROFESSIONAL_UNAVAILABLE` 422
+*before* the RPC, so the console shows a readable message instead of an `outcome`
+string (the RPC re-checks under its advisory lock regardless). `admin_assign_booking`
+(0034) raises an ordinary `offered` assignment with the platform's `offerTtlMinutes`
+(a `platform_settings` row, default 15) — **ops raises the chance; it does not forge
+an acceptance**, and the professional still accepts through the normal flow. Assign
+is legal only before the professional is on the way, else `INVALID_STATE` 409.
+**200** — `{ bookingId, professionalId, assignmentId }` (`assignmentId` null when
+none was raised). `NOT_FOUND` 404 for a missing booking or professional. Audits
+`booking.assign_admin`. Body reader tolerates an absent body.
+
+### `GET` /api/admin/professionals
+
+| | |
+|---|---|
+| Auth | Required — staff read, no capability |
+| Action | `['admin','ops','support','super_admin']` |
+
+The professional roster (§20.13). Filters: `verificationStatus` (one of six),
+`availabilityStatus` (`offline`/`online`/`busy`/`break`), a `q` name substring
+(≤ 80, resolved against `profiles` first, so an unmatched name is an empty page
+rather than a full one), `pendingKyc` (`1`/`true`, the review queue's join over
+`professional_documents`), paginated. **200** — `{ professionals: [ { id, name,
+phone, email, employeeCode, verificationStatus, availabilityStatus,
+isAvailableToday, rating, completedJobs, totalOffers, acceptedOffers, createdAt } ],
+total, limit, offset }`. Bad enum values are `VALIDATION_ERROR` 400.
+
+### `GET` /api/admin/professionals/[id]
+
+| | |
+|---|---|
+| Auth | Required — staff read, no capability |
+| Action | `['admin','ops','support','super_admin']` |
+
+One professional's file: `{ professional, profile, documents, skills,
+recentBookings }` (the last ten bookings, shaped like the list item). A missing id is
+`NOT_FOUND` 404 and writes nothing. This route carries document **metadata** only;
+the bytes are a separate, narrower read below.
+
+### `GET` /api/admin/professionals/[id]/kyc
+
+| | |
+|---|---|
+| Auth | Required — KYC allow-list (excludes `support`) |
+| Action | `['admin','super_admin','ops']` |
+
+The review payload: the professional, their profile, their declared skills, and each
+uploaded document **with a short-lived signed read URL** (TTL 300 s, `getKycReview`
+in `lib/adminServer.ts`). The `kyc-documents` bucket is private with no select policy,
+so this route is the **only** path to the bytes, and the role check happens before any
+URL is minted. A document whose object has since gone still returns a row with
+`signedUrl: null`, because a reviewer needs to see that something was uploaded and
+lost, not a blank page. A missing professional is `NOT_FOUND` 404 and mints nothing.
+`support` gets `FORBIDDEN` 403.
+
+### KYC verdicts
+
+| Method | Path | Action |
+|---|---|---|
+| `POST` | `/api/admin/professionals/[id]/kyc/[docId]/decision` | `['admin','super_admin','ops']` |
+| `POST` | `/api/admin/professionals/kyc/bulk-decision` | `['admin','super_admin','ops']` |
+
+Both use the staff allow-list (`admin`, `super_admin`, `ops`) rather than a
+capability; both write one audit row per document.
+
+The **single** endpoint (documented in §4.7 too; it shipped in Phase 4 without a UI)
+takes `{ verdict: 'verified' | 'rejected', note? }`. A present-but-wrong `verdict` is
+`VALIDATION_ERROR` **422**, not 400 — well-formed JSON with a bad value — and
+`details.fields` is still attached so the client's field-error path works. A document
+that does not belong to the professional named in the path is `NOT_FOUND` 404. The
+verdict write and the roll-up are one RPC (`kyc_document_decision`): any required
+document `rejected` ⇒ the professional is `rejected`; all required documents
+`verified` ⇒ `verified` with `kyc_verified_at`. The reviewer's note is prose the route
+owns, stored as `rejection_reason` on rejection and cleared on verification. **200** —
+`{ verificationStatus }`. Audits `kyc.document_verified` / `kyc.document_rejected`.
+
+The **bulk** endpoint takes `{ professionalIds: [uuid], verdict, note? }`; the unit is
+the **professional**, not the document: for each id, every document still awaiting a
+verdict (`submitted`/`in_review`) gets one `kyc_document_decision` call — the same RPC,
+so the roll-up rule is identical. An empty list or more than **100** ids is
+`VALIDATION_ERROR` 422, a malformed uuid is 400, a bad verdict is 422, and a `rejected`
+verdict with no `note` is 422 (a rejection must carry a reason the professional can act
+on; the note is applied to every document it rejects). **200** — `{ verdict, results: [
+{ professionalId, verificationStatus, documentsProcessed } ] }`. Audits carry
+`metadata.bulk: true` so the trail shows how the verdict arrived.
+
+### `POST` /api/admin/professionals/[id]/suspend
+
+| | |
+|---|---|
+| Auth | Required — capability write |
+| Action | `pro.suspend` |
+
+Held by `admin` and `super_admin` only; `ops` can read the roster but not pull someone
+off the marketplace. Body — `{ suspended?: boolean, reason? }` (`suspended` defaults
+true). Suspension is two rows and both matter: `profiles.status` becomes `suspended` —
+which is what `requireAuth` reads, so the professional cannot sign in — and
+`professionals.suspended_reason` records why, with availability forced
+`offline`/`is_available_today false` so they cannot be a matching candidate. A reason
+is required when suspending (`VALIDATION_ERROR` 400 if missing/too long). Reactivation
+clears the reason and restores the profile to `active`, but **does not put them back
+online** — that is theirs to choose. **200** — `{ professionalId, suspended,
+profileStatus }`. `NOT_FOUND` 404 for a missing id. Audits `professional.suspend` /
+`professional.reactivate`.
+
+### `GET` /api/admin/refunds
+
+| | |
+|---|---|
+| Auth | Required — staff read, no capability |
+| Action | `['admin','ops','support','super_admin']` |
+
+The refunds console (§22, §25.10). Any staff member reads the queue; only
+`refund.execute` runs one. Filters: `status`
+(`requested`/`approved`/`rejected`/`completed`/`failed`), a booking-number substring
+`q` (≤ 40; refunds carry no user-facing number, so it resolves against `bookings`
+first), a `requested_at` window, paginated. **200** — `{ refunds: [ { id, bookingId,
+bookingNumber, customerId, customerName, amount, currency, status, route, reasonCode,
+note, requestedById, requestedByName, processedById, completedAt, requestedAt } ],
+total }`, newest first. Money leaves as rupees. Bad filters are `VALIDATION_ERROR`
+400.
+
+### `POST` /api/admin/refunds/[id]/execute
+
+| | |
+|---|---|
+| Auth | Required — capability write |
+| Action | `refund.execute` |
+
+Held by `ops`, `admin`, `super_admin` (a `support` agent can **request** a refund
+under `refund.request` but cannot execute one). Body — `{ note? }` (≤ 500). §25.10's
+approver: an above-limit refund was left `requested` by the customer/refund path
+precisely so an approver could stamp it, and this route is that stamp.
+
+The row must exist or it is `NOT_FOUND` 404; the payment behind it must exist or
+`NOT_FOUND` 404; a row that is not `requested` or `approved` is `INVALID_STATE` 409
+(`'A <status> refund cannot be executed.'`).
+
+**The second-approver rule (§22):** the amount is compared, in paise, to
+`supportRefundLimit` (`platform_settings`, default ₹1500). When the refund is
+**above** the limit **and** `refund.requested_by` equals the caller's own id, the
+route answers `SECOND_APPROVER_REQUIRED` **422** — dual approval requires a second
+person, so the same staff member cannot both request and approve. Otherwise execution
+is delegated to `executePendingRefund` (`lib/refundServer.ts`), which stamps
+`status: 'approved'` and `approved_by` **before** the money moves (so an approval is
+never implied by a completed refund alone), then goes gateway-first,
+wallet-on-a-definite-refusal, and raises an ops ticket if the gateway is unreachable.
+It audits `refund.approved_and_completed` (plus `refund.wallet_fallback` or
+`refund.ops_ticket` where those branches fire). **200** — `{ refund }`.
+
+### Services (catalogue editor)
+
+| Method | Path | Action |
+|---|---|---|
+| `GET` | `/api/admin/services` | `['admin','ops','support','super_admin']` |
+| `POST` | `/api/admin/services` | `service.manage` |
+| `GET` | `/api/admin/services/[id]` | `['admin','ops','support','super_admin']` |
+| `PATCH` | `/api/admin/services/[id]` | `service.manage` |
+| `POST` | `/api/admin/services/[id]/areas` | `service.manage` |
+| `PATCH` | `/api/admin/services/[id]/areas/[areaId]` | `service.manage` |
+| `DELETE` | `/api/admin/services/[id]/areas/[areaId]` | `service.manage` |
+| `POST` | `/api/admin/services/[id]/durations` | `service.manage` |
+| `PATCH` | `/api/admin/services/[id]/durations/[durationId]` | `service.manage` |
+| `DELETE` | `/api/admin/services/[id]/durations/[durationId]` | `service.manage` |
+
+`service.manage` is held by `admin` and `super_admin` only. The list filters by `q`,
+`categoryId` and `isActive`, paginated; the detail returns `{ service, categoryName,
+durations, areas }`, with each area carrying its `localityName`.
+
+The write validators mirror what the booking-quote engine reads, so a service the
+console saves can be quoted. A `per_unit` service **must** carry a `unitLabel` and
+`unitPrice`, and `maxDurationMin` may not be shorter than `minDurationMin` (400
+otherwise). Creating a service derives the **slug** from the name and uniquifies it
+against the table, so no one types `computer-repair` by hand; `POST` also accepts an
+inline `durations` array. A duration rung must carry either a `price` or a
+`priceMultiplier` (400 without). Adding an area requires both the service and the
+named **locality** to exist (`NOT_FOUND` 404 for either). **201** on creations
+(`{ service }` / `{ duration }` / `{ area }`), **200** on updates; deletes answer
+`{ deleted: true }`.
+
+All six write paths check existence first, so a bad id is `NOT_FOUND` 404 with no
+write. One precision point: on the `areas/[areaId]` and `durations/[durationId]`
+`PATCH`/`DELETE` verbs, the `:id` in the path is **not** cross-checked — the key is
+the area/duration id in the sub-path. Every write audits (`service.create`/`update`,
+`service.area.create`/`update`/`delete`, `service.duration.create`/`update`/`delete`).
+
+### Pricing rules and the cancellation ladder
+
+| Method | Path | Action |
+|---|---|---|
+| `GET` | `/api/admin/pricing-rules` | `['admin','ops','support','super_admin']` |
+| `POST` | `/api/admin/pricing-rules` | `pricing.manage` |
+| `PATCH` | `/api/admin/pricing-rules/[id]` | `pricing.manage` |
+| `DELETE` | `/api/admin/pricing-rules/[id]` | `pricing.manage` |
+| `GET` | `/api/admin/cancellation-policies` | `['admin','ops','support','super_admin']` |
+| `POST` | `/api/admin/cancellation-policies` | `pricing.manage` |
+| `PATCH` | `/api/admin/cancellation-policies/[id]` | `pricing.manage` |
+| `DELETE` | `/api/admin/cancellation-policies/[id]` | `pricing.manage` |
+
+`pricing.manage` is `admin`/`super_admin` only. These are the §7.1 surge-window editor
+and the §11.1 cancellation-ladder editor.
+
+A **pricing rule** has a `scope` of `global`/`category`/`service`; the validator pairs
+the scope with its target id (`categoryId` for category scope, `serviceId` for service
+scope) so the table's `pricing_rule_scope_target` constraint is never the thing that
+rejects it a level deeper. `multiplier` is 0.01–100, `daysOfWeek` runs `0`–`6`,
+`startMinute`/`endMinute` are minutes of the day (0–1439) and may not be equal.
+**PATCH carries the same full validated shape as POST and replaces the whole rule**.
+The winning multiplier is resolved by the pure `resolveSurgeMultiplier` — narrower
+scope wins, then higher `priority`, then oldest — so the dialog and the engine agree.
+(Note: the rule editor is built and stored, but nothing yet *applies* a surge
+multiplier inside `buildQuote`; see §7 and `docs/FEATURES.md` §8.)
+
+A **cancellation policy** row is a ladder band. `hoursBefore` is the band **ceiling**
+(`null` = the unbounded "≥ 24 h" row), kept that way so the console and
+`quoteCancellation()` can never disagree about which band a request falls in.
+`feeType` is `free`/`percentage`/`fixed`; a `percentage` may not exceed 100, a `free`
+band charges 0, and the arrival band (`appliesWhenArrived`) must have **no** hour
+ceiling (400 otherwise). A fixed fee is stored paise-exact.
+
+Both families check existence first: a missing id is `NOT_FOUND` 404 with no write on
+`PATCH`/`DELETE`. **201** on create, **200** on update, `{ deleted: true }` on delete.
+Each write audits (`pricing_rule.*`, `cancellation_policy.*`).
+
+### Coupons
+
+| Method | Path | Action |
+|---|---|---|
+| `GET` | `/api/admin/coupons` | `['admin','ops','support','super_admin']` |
+| `POST` | `/api/admin/coupons` | `coupon.manage` |
+| `GET` | `/api/admin/coupons/[id]` | `['admin','ops','support','super_admin']` |
+| `PATCH` | `/api/admin/coupons/[id]` | `coupon.manage` |
+
+`coupon.manage` is `admin`/`super_admin` only. **There is no delete verb** — a coupon
+is deactivated via `isActive`, not removed. The list filters by a `code` substring `q`
+and a derived `status` (`active` = enabled **and** not past `valid_to`; `expired` =
+past `valid_to`), paginated. The detail adds `maxDiscountPctOfTotal`,
+`applicableServices`, `applicableCities` and the actual `coupon_usage` rows (the row's
+`usage_count` is only a cache; `coupon_usage` is the truth).
+
+The validators mirror what `loadCoupon`/`lib/pricing.ts` enforce on the customer path,
+so a coupon the console saves is one the cart cannot quietly ignore. `code` is
+uppercased and ≤ 32 chars; `discountValue` is a `percentage` (≤ 100) or `fixed`
+rupees; `validTo`, when given, must fall **after** `validFrom`; `applicableCities` are
+six-digit pincodes. On `PATCH` the console sends `discountType` and `discountValue`
+**together** (the update helper throws if only one arrives), so a value can never be
+re-typed under the wrong unit. **201** on create, **200** on update; `NOT_FOUND` 404 on
+an unknown id; a missing JSON body is `VALIDATION_ERROR` 400. Audits
+`coupon.create`/`coupon.update`.
+
+### Disputes
+
+| Method | Path | Action |
+|---|---|---|
+| `GET` | `/api/admin/disputes` | `['admin','ops','support','super_admin']` |
+| `POST` | `/api/admin/disputes/[id]/resolve` | `dispute.resolve` |
+
+`dispute.resolve` is `ops`/`admin`/`super_admin`. A dispute is "this outcome is wrong
+and I want it adjudicated", distinct from a support ticket's "help me" — the two only
+share the screen. The list filters by `status`
+(`open`/`investigating`/`resolved`/`rejected`) and a booking-number substring `q`,
+paginated.
+
+The resolve body is `{ status: 'investigating' | 'resolved' | 'rejected', resolution? }`
+(≤ 2000). `open` is a filterable status but **not** an adjudication decision.
+`resolved_by` and `resolved_at` are stamped by the server, not the caller, and
+reopening to `investigating` clears the stamp, so "resolved" and "resolved by X at T"
+can never disagree. The dispute must exist first (`NOT_FOUND` 404 with no write); a bad
+status is `VALIDATION_ERROR` 400. **200** — `{ dispute }`. Audits `dispute.resolve`.
+
+### Support tickets
+
+| Method | Path | Action |
+|---|---|---|
+| `GET` | `/api/admin/support` | `['admin','ops','support','super_admin']` |
+| `GET` | `/api/admin/support/[id]` | `['admin','ops','support','super_admin']` |
+| `PATCH` | `/api/admin/support/[id]` | `ticket.write` |
+| `POST` | `/api/admin/support/[id]/messages` | `ticket.write` |
+
+The read gate is the staff allow-list; writes need `ticket.write` (held by all four
+staff roles). The list filters by `status` (`open`/`pending`/`resolved`/`closed`),
+`priority` (`low`/`normal`/`high`/`urgent`), `assignedTo` and a `subject` substring
+`q`, paginated. The detail returns `{ ticket, messages }`, the thread oldest-first.
+
+`PATCH` moves **only** the triage fields — `status`, `priority`, `assignedTo`,
+`resolution` — and `resolved_at` is derived by the server module: it is stamped once
+when a ticket reaches `resolved`/`closed` (a re-save does not move it) and cleared
+when one is reopened to `open`/`pending`, so a "resolved at" cannot disagree with the
+status. `POST messages` body is `{ body (1–4000), isInternal? }`; `isInternal` is
+stored, not derived, marking a staff-only note. A message on a missing ticket is
+`NOT_FOUND` 404 with no write. `PATCH` answers `{ ticket, messages }`; the message
+answers **201** `{ message }`. Audits `support.update`, and `support.note` (internal)
+or `support.reply` (public) for messages.
+
+### Settings
+
+| | |
+|---|---|
+| Auth | `GET` — staff read; `PUT` — capability write |
+| Action | `GET` `['admin','ops','support','super_admin']`; `PUT` `role.manage` |
+
+`GET` is a staff read (support needs `supportRefundLimit` to know when a refund needs
+a second approver). **200** — `{ settings }`, the resolved `platform_settings`, every
+key filled from `PLATFORM_DEFAULTS` when the row is missing.
+
+`PUT` requires **`role.manage`** (`admin`/`super_admin` only — these are platform-wide
+numbers, the same class of change as a role grant). It writes **only the keys present
+in the body**, each validated against the type its entry in `PLATFORM_SETTING_KEYS`
+declares (a number ≥ 0, or a string 1–200), so a partial save cannot blank the rest.
+Unknown keys are collected; if **no** recognised key remains the request is
+`VALIDATION_ERROR` 400 (`'No recognised settings to update'`), and an empty body is
+400 (`'Nothing to update'`). **200** — `{ settings, updated: [key…] }`. The whole
+batch is audited as one `settings.update` event carrying the per-key before/after.
+
+### `GET` /api/admin/audit
+
+| | |
+|---|---|
+| Auth | Required — capability read |
+| Action | `audit.read` |
+
+`audit.read` is held by `admin` and `super_admin` **only** — unlike every other read
+on this page, this one is **not** open to `ops`/`support`, because the trail names
+actors and carries before/after state. Filters: an `action` **substring** (so `refund.`
+catches the whole family), an `entityType`/`entityId` pair, an `actorProfileId`, and a
+`created_at` window. Paging defaults to **50**, max **200**. **200** — `{ logs: [ { id,
+actorProfileId, actorName, actorRole, action, entityType, entityId, before, after,
+metadata, ipAddress, requestId, createdAt } ], total }`, newest first. The
+`before`/`after`/`metadata` blobs are carried through untouched — they were redacted on
+the way in — so the viewer shows exactly what was recorded. Bad filters are
+`VALIDATION_ERROR` 400.
+
+### `GET` /api/admin/localities
+
+| | |
+|---|---|
+| Auth | Required — staff read, no capability |
+| Action | `['admin','ops','support','super_admin']` |
+
+The picker behind the service-areas editor. Any staff member reads it; only
+`service.manage` can attach one. Returns **only active** localities, capped at 100,
+name-ordered, with an optional `q` name substring (≤ 60): **200** — `{ localities: [
+{ id, name, city } ] }`. `city` is the resolved city name (empty string when the city
+row is gone). Bad `q` is `VALIDATION_ERROR` 400.
+
+---
+
+## 4.9 Notifications and chat
+
+Phase 7. Two read surfaces a person's own account owns (their bell and their
+booking chat), one admin surface over the message catalogue, and two reminder
+crons. The dispatcher that writes notification rows is not an endpoint — it is
+called from the lifecycle routes and the crons, and is described at the end of
+this section.
+
+### `GET` /api/notifications
+
+| | |
+|---|---|
+| Auth | Required — any signed-in account |
+| Action | `notifications.list` |
+
+The bell's page and its badge. **Scoped to the caller's own `recipient_id`** — there
+is no id in the path and no way to ask for someone else's rows. Defaults to the
+`in_app` channel, because that is the surface "read" means anything for; `?channel=`
+names another channel to see the delivery history (a debug or support view).
+`unreadOnly=true` filters to unread; paging defaults to **25**, max **100**.
+
+**200** — `{ items: [ { id, channel, code, title, body, status, bookingId, readAt,
+createdAt } ], unread, total }`. `unread` is counted over `in_app` rows regardless of
+the requested channel — an unread email is not a bell item. A `channel` that is not
+one of the five is **200** with `{ items: [], unread: 0, total: 0, ignoredChannel }`
+rather than a silent empty page.
+
+### `POST` /api/notifications/[id]/read
+
+| | |
+|---|---|
+| Auth | Required — any signed-in account |
+| Action | `notifications.read` |
+
+Marks one notification read, **scoped to the caller**: a guessed id returns the same
+**404** as an id that never existed (`NOT_FOUND`), so the endpoint is not a way to
+probe whose notifications exist. **200** — `{ id, status, readAt }` (`status` becomes
+`read`).
+
+### `POST` /api/notifications/read-all
+
+| | |
+|---|---|
+| Auth | Required — any signed-in account |
+| Action | `notifications.readAll` |
+
+The companion to the per-id read, and a **documented addition** (§25.9 names only the
+per-id endpoint): clearing a badge one request per row is the kind of thing that works
+in a demo and disappoints in production. Marks every unread `in_app` row for the
+caller. **200** — `{ marked }`.
+
+### `POST` / `DELETE` /api/notifications/push-token
+
+| | |
+|---|---|
+| Auth | Required — any signed-in account |
+| Action | `notifications.pushToken` / `notifications.pushToken.delete` |
+
+The push-token registry (table `notification_devices`, a documented addition — §24.11
+has no home for the token). **There is no FCM/APNs provider yet**, so registering a
+token does not by itself deliver anything; it fills the registry a later integration
+reads. `POST` validates `token` (8–4096) and `platform` (`web`/`ios`/`android`,
+default `web`) and upserts on `(profile_id, token)`, refreshing `last_seen_at` on a
+repeat: **201** — `{ device }`. `DELETE` forgets a token on sign-out, scoped to its
+owner — the complement of the registration: **200** — `{ removed: true }`. A
+token-less body is `VALIDATION_ERROR` 400.
+
+### `GET` /api/bookings/[id]/chat
+
+| | |
+|---|---|
+| Auth | Required — the two participants, or staff (read-only) |
+| Action | `bookings.chat` |
+
+A booking's thread and its history. The thread is created lazily the first time it is
+read, and **only for a booking that has both participants**. A booking with no assigned
+professional has no chat, and the answer is the same **404** a stranger gets, so the
+endpoint is not a way to discover which bookings exist. Staff may read a thread but are
+not participants in it. **200** — `{ thread, messages, canPost }`, where `canPost` is
+`false` for staff. Message shape: `{ id, threadId, senderId, senderName, kind, body,
+imagePath, readAt, createdAt }`.
+
+### `GET` / `POST` /api/chat/threads/[id]/messages
+
+| | |
+|---|---|
+| Auth | `GET` — participants or staff; `POST` — participants only |
+| Action | `chat.messages.list` / `chat.messages.post` |
+
+`GET` returns the same `{ thread, messages, canPost }` shape by thread id; anyone who
+is neither a participant nor staff gets the same **404** as a thread that does not
+exist. `POST` appends a message: only the two participants may post — staff who may
+read are refused **403** (`FORBIDDEN`) — and a `system` message is server-only, so a
+client that asks for one is refused **403** rather than trusted. A `text` message needs
+a non-empty `body` (≤ 4000) and an `image` message needs an `imagePath` (≤ 1024);
+empty is `VALIDATION_ERROR` 400. Posting to a closed thread is `INVALID_STATE` **409**.
+**201** — `{ message }`. The thread's `last_message_at` moves in the same action.
+
+### `GET` /api/admin/notification-templates
+
+| | |
+|---|---|
+| Auth | Required — staff read |
+| Action | `['admin','ops','support','super_admin']` |
+
+The message catalogue behind `/admin/notifications` (§25.10). Any staff member reads it
+(support needs to know what a customer was sent). Filters: `code`, `channel`, `locale`,
+`isActive`; paging defaults to **100**, max **200**. **200** — `{ templates, total }`,
+ordered by code then channel.
+
+### `PUT` /api/admin/notification-templates/[id]
+
+| | |
+|---|---|
+| Auth | Required — capability write |
+| Action | `notification.manage` |
+
+**`notification.manage`** is held by `admin`/`super_admin` only (D6): a template is what
+every customer in the product reads, so it sits with the same class of change as a role
+grant. Writes **only the fields present** — a partial save cannot blank the rest — so
+`subject` (≤ 200, email only), `body` (≤ 4000), `variables` (a list of token names), and
+`isActive` are each optional. `updated_by` is stamped from the caller, never passed. An
+empty patch is `VALIDATION_ERROR` 400 (`'Nothing to update'`). **200** — `{ template }`.
+The change is audited as `notification_template.update` with the before/after copy.
+
+### Reminder crons
+
+| | |
+|---|---|
+| Auth | `CRON_SECRET` — fails closed |
+| Action | `cron.service-reminders` / `cron.rating-reminders` |
+
+Two new schedules alongside the payment reconciliation cron (see §4.5). Both are `GET`,
+both go through the one `assertCronSecret` guard — an unset `CRON_SECRET` is a **503**
+(`SERVICE_UNAVAILABLE`), never a silent skip — and both are thin shells over a
+`security definer` SQL function that does the whole pass in one transaction:
+
+- `/api/cron/service-reminders` → `run_service_reminders()`. `SERVICE_ENDING_SOON` for
+  an `in_progress` job ending within 15 minutes; `NEW_JOB_REMINDER` for an
+  `assigned`/`on_the_way`/`arrived` job starting within 60 minutes (a second, disjoint
+  15-minute window is de-duplicated separately). Both to the professional.
+- `/api/cron/rating-reminders` → `run_rating_reminders()`. `RATING_REMINDER` for a
+  customer whose booking completed today (Asia/Kolkata).
+
+Both return **200** — `{ sent }`. The reason the pass lives in SQL is that these codes
+are Realtime-only (`['in_app','push']`), and for those channels *writing the row is the
+delivery* — so the advisory lock, the idempotency guard and the inserts share one
+transaction and the lock actually holds. `vercel.json` schedules service reminders
+every 15 minutes and rating reminders once a day.
+
+### The dispatcher (`lib/notifications.ts`)
+
+Not an endpoint. `dispatch()` turns an event into one `notifications` row per channel
+and moves each through `queued → sent | failed`; it is the **only** place a notification
+row is written (the SQL reminder pass is the one documented exception, above). It never
+throws — a booking is confirmed whether or not the mail server is up (§28.4), and a
+failed delivery is recorded with its `error` rather than hidden. Delivery honesty (D1):
+`in_app` and `push` are `sent` because writing the row is the delivery; `email` is
+`failed` ("SMTP is not configured") when `SMTP_*` is unset; `sms`/`whatsapp` are
+`failed` ("no SMS provider configured") because no provider is wired. Every code except
+`OTP_LOGIN` also writes one `in_app` row.
+
+The lifecycle routes call one hook each (`lib/notificationHooks.ts`) right after the
+write they already make: confirm → `BOOKING_CONFIRMED`; accept → `PRO_ACCEPTED`; on the
+way / arrive / OTP-start / complete → the matching `PRO_*` / `SERVICE_*`; cancel →
+`BOOKING_CANCELLED`; refund execute → `REFUND_PROCESSED`; KYC verdict →
+`KYC_APPROVED`/`KYC_REJECTED`; support reply → `TICKET_UPDATE`; a matching round that
+offers a job → `NEW_OFFER` (`lib/matchingServer.ts` calls an optional `onOffered`
+seam, so the engine is unaware of notifications and its unit tests still pass with a
+fake database).
+
+### Realtime channels (§27.1)
+
+The browser subscribes through the anon client in `lib/supabase.ts` (`hooks/use-realtime.ts`).
+Realtime applies RLS exactly as REST does, so a subscriber receives only rows its role
+may SELECT — this widens *delivery*, never *visibility*.
+
+| Channel | Table | Event |
+|---|---|---|
+| `booking:{id}` | `bookings` | UPDATE, `id=eq.{id}` |
+| `me:{profileId}` | `notifications` | INSERT, `recipient_id=eq.{profileId}` |
+| `chat:{threadId}` | `chat_messages` | INSERT, `thread_id=eq.{threadId}` |
+| `pro:{id}` | Presence | the professional's `{lat,lng}` |
+
+Polling is the baseline and Realtime is the accelerator (D4, §27.3): the bell polls
+every 15 seconds and the chat the same, so a channel that never connects degrades the
+latency, not the feature.
+
 ---
 
 ## 5. Idempotency
@@ -1850,15 +2503,19 @@ duplicate costs real money: `POST /api/bookings` in Phase 2 and
 
 **No client component reads a table.** Every read the browser makes goes through
 a Route Handler, and that is not an accident of the current code — the schema
-makes it the only option for the private data.
+makes it the only option for the private data. The one table-shaped thing the
+browser does directly is **subscribe** (§4.9): a Realtime channel pushes rows the
+anon client may SELECT, and every one of those is re-fetched through a Route
+Handler before it is shown, so the read path is still the API's.
 
-The anon client in `lib/supabase.ts` is imported by exactly two files outside the
-API:
+The anon client in `lib/supabase.ts` is imported by exactly three files outside
+the API:
 
 | File | What it does |
 |---|---|
 | `contexts/AuthContext.tsx` | `supabase.auth.getSession()`, `onAuthStateChange`, `verifyOtp({ token_hash })`, `setSession`, `signOut`. Auth only, no tables |
 | `components/ui/ImageUpload.tsx` | `supabase.storage.from('menu-images')` to upload and to read back a URL. No tables |
+| `hooks/use-realtime.ts` | `.channel(...).on('postgres_changes', …)` for the §27.1 channels, and Presence. Subscriptions only — no direct `from(table).select()` |
 
 The catalogue could go direct. `services`, `service_categories`, `localities`,
 `cities` and `service_areas` are world-readable and their policies say `anon`, so
@@ -1882,12 +2539,11 @@ same isolation for an `authenticated` session, but using the service role keeps
 the ownership rule in one place — in the `eq('customer_id', customer.id)` filter
 in the query — rather than split between a policy and a query.
 
-One thing worth knowing: `components/ui/ImageUpload.tsx` targets a storage bucket
-called `menu-images`, which is a SmartPOS name. SmartHelp's six buckets are
-`service-media`, `pro-photos`, `kyc-documents`, `chat-media`, `support-media` and
-`invoices`. That component is not referenced by any other file, so it is dead
-code from the reference project rather than a live bug — but it will fail
-silently if anyone wires it up.
+One thing that used to be worth knowing: `components/ui/ImageUpload.tsx` targeted a
+storage bucket called `menu-images`, a SmartPOS name — dead code carried over from
+the reference project. Phase 6 deleted it, so there is nothing to wire up by mistake.
+SmartHelp's six buckets are `service-media`, `pro-photos`, `kyc-documents`,
+`chat-media`, `support-media` and `invoices`.
 
 ---
 
@@ -1895,9 +2551,9 @@ silently if anyone wires it up.
 
 So nobody goes looking. Cross-checked against `.planning/ROADMAP.md`.
 
-**Nothing exists for any of the following.** The error codes they would need are
-already defined in `lib/api.ts`, which is the main reason the union is so much
-longer than the route table.
+**Each row notes what has since been delivered and what is still open.** The error
+codes a delivery needs were already defined in `lib/api.ts`, which is one reason the
+union is so much longer than the route table.
 
 | Phase | Not built | Error codes reserved for it |
 |---|---|---|
@@ -1905,8 +2561,8 @@ longer than the route table.
 | 3 — Payments | **Delivered**: order create, webhook, verify, `GET /api/payments/[id]`, the reconcile cron (§4.5). Still open: refunds, the wallet ledger and the approval console on top of them | `PAYMENT_FAILED`, `PAYMENT_NOT_VERIFIED` |
 | 4 — Professional app | **Delivered**: KYC signed-upload trio, the verification workflow and staff verdict endpoint, working hours and time off, availability, the offer ledger (accept/decline), the job verbs (arrive, on-site OTP, complete, no-show) and the customer track/OTP read (§4.7). Still open: the earnings **page** and payouts (Phase 8), extensions, ETA and any professional-facing refund path | `PROFESSIONAL_UNAVAILABLE`, `ASSIGNMENT_TAKEN` are now in use |
 | 5 — Matching engine | **Delivered**: `run_matching_sweep` is invoked by the offers read, `rank_candidates` / `match_booking` drive the ranked offer and the reassignment cascade, and an exhausted search is cancelled and auto-refunded (§4.7). Still open: distance/rating scoring (needs `earthdistance` and the ratings roll-up), the true §25.11 cron, the 30-minute arrived hold and the `professional_schedule` slot-picker input | `ASSIGNMENT_TAKEN`, `PROFESSIONAL_UNAVAILABLE` |
-| 6 — Admin console | Everything under `/admin`: dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, analytics, notifications, settings, audit | — |
-| 7 — Realtime | Channels, presence, chat, notification dispatcher, templates, reminders | — |
+| 6 — Admin console | **Delivered**: dashboard, bookings (list/detail/cancel/assign), professionals (roster/detail/KYC review/bulk verdict/suspend), refunds (+ execute, with the second-approver rule), services/areas/durations, pricing rules, cancellation policies, coupons, disputes, support tickets, settings, audit, localities (§4.8). Still open: the notifications dispatcher and analytics report pages (Phase 7), and the payout run (Phase 8) | `SECOND_APPROVER_REQUIRED` is now in use |
+| 7 — Realtime | **Delivered**: the §27.1 channels and professional Presence, booking chat (lazy thread, participants-only, staff read-only), the notification bell + dispatcher + template editor, and the two reminder crons (§4.9). Still open: a real push transport (no FCM/APNs provider, so `push` rows are `sent` but nothing is delivered to a device) and an SMS provider | — (reuses `FORBIDDEN`, `NOT_FOUND`, `INVALID_STATE`, `VALIDATION_ERROR`, `SERVICE_UNAVAILABLE`) |
 | 8 — Growth | Recurring, wallet top-up, referrals, favourites, surge, PDF invoices, PWA | — |
 | 9 — Hardening | Edge caching for `/api/service-categories`, load and accessibility passes | — |
 
@@ -1919,17 +2575,21 @@ Concretely, the gaps a reader is most likely to trip over:
 - **No professional-facing API exists at all.** — **Superseded by Phase 4.**
   `/api/auth/professional/apply` is still the Phase 0 write, but the whole
   professional surface now exists (§4.7).
-- **No admin API exists.** There is no role-management endpoint, which is what
-  currently keeps the known gap in `README.md` — the `guard_profile_privileges()`
-  trigger lets an *admin* set `super_admin`, because it distinguishes admin from
-  everyone else rather than owner from admin. Whoever builds the admin
-  role-management screen must refuse `super_admin` explicitly.
-- **`platform_settings` is not read.** `taxRate`, `commissionPct` and
-  `platformFee` come from `PLATFORM_DEFAULTS` in
-  `lib/constants.ts`. `/api/availability` no longer pushes out today's first
-  slot: a same-day booking is dispatched immediately (`leadMinutesForDay` in
-  `lib/availability.ts`), so only future days gate on the works' lead. The table
-  lands in Phase 6.
+- **The admin API exists as of Phase 6 (§4.8).** There is still **no
+  role-management endpoint** — no route writes `profiles.role` — which is what keeps
+  the known gap in `README.md` open: the `guard_profile_privileges()` trigger lets an
+  *admin* set `super_admin`, because it distinguishes admin from everyone else rather
+  than owner from admin. Whoever builds the admin role-management screen must refuse
+  `super_admin` explicitly.
+- **`platform_settings` is read as of Phase 6.** `0033` creates and seeds it, and
+  `getPlatformSettings()` (`lib/settingsServer.ts`) is the one typed reader: the quote
+  path (`loadPricingSettings()` in `lib/bookingQuote.ts`), the settings route and the
+  bookings-assign route all read it, falling back to `PLATFORM_DEFAULTS` when a row is
+  missing. So `taxRate`, `commissionPct`, `platformFee`, `offerTtlMinutes` and
+  `supportRefundLimit` are now editable rows. (`/api/availability` still does not push
+  out today's first slot: a same-day booking is dispatched immediately
+  (`leadMinutesForDay` in `lib/availability.ts`), so only future days gate on the
+  works' lead.)
 - **Service-level aggregate ratings are always `null`.** `ratings` rows are written
   when a booking is reviewed, which is Phase 2.
 - **No caching headers anywhere.** Every route sets `dynamic = 'force-dynamic'`.
@@ -1940,9 +2600,12 @@ Not bugs, but worth a ticket so they are not mistaken for behaviour:
 
 | Symbol | Where | Why it is unused |
 |---|---|---|
-| `noContent()` | `lib/api.ts:77` | No route returns a 204 |
-| `requireCapability()`, `requireStaff()`, `requireAdmin()` | `lib/validation.ts:208–233` | No route calls them; the capability table is currently enforced only by the UI |
-| `isUuid()` | `lib/validation.ts:74` | `uuid()` does the validation |
-| `parsePaging()` | `lib/validation.ts:442` | Tested, but no route pages. The catalogue returns the whole matching set |
-| `maskEmail()` copy | `app/api/auth/send-otp/route.ts:113` | A byte-for-byte duplicate of `lib/authServer.ts:46`, which the other routes import |
-| `ImageUpload.tsx` | `components/ui/ImageUpload.tsx` | Unreferenced, and points at a `menu-images` bucket that does not exist in SmartHelp |
+| `noContent()` | `lib/api.ts` | No route returns a 204 |
+
+Everything else this table once listed has since been used. As of Phase 6,
+`requireCapability()` is the write-gate on every mutating route — the admin console
+*and* the customer/refund paths (`booking.create`, `booking.cancel.own`,
+`refund.request`) call it — `parsePaging()` pages every admin list, and `isUuid()`
+validates item ids in the quote and create paths. `requireStaff()` / `requireAdmin()`
+no longer exist, `send-otp` imports `maskEmail()` from `lib/authServer.ts` instead of
+keeping a copy, and `components/ui/ImageUpload.tsx` was deleted.

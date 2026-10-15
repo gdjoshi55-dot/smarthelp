@@ -217,8 +217,20 @@ export class FakeSupabase {
         state.eqFilters.push([column, value]);
         return chain;
       },
+      neq: (column: string, value: unknown) => {
+        state.filters.push([column, value]);
+        return chain;
+      },
       in: (column: string, values: unknown) => {
         state.filters.push([column, values]);
+        return chain;
+      },
+      ilike: (column: string, value: unknown) => {
+        state.filters.push([column, value]);
+        return chain;
+      },
+      or: (filter: unknown) => {
+        state.filters.push(['or', filter]);
         return chain;
       },
       // Ordering and ranges are part of the fluent surface the query builders

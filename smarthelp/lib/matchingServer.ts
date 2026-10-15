@@ -84,6 +84,15 @@ export interface MatchingOptions {
    * the assertion is "fee 0, this booking" without a gateway stand-in.
    */
   refund?: typeof refundCapturedBooking;
+  /**
+   * Called once for every `offered` outcome — a new round of offers, and the
+   * only moment a NEW_OFFER notification is truthful (§27.5). It lives here
+   * rather than in the route so the *sweep* and the *cascade* announce the same
+   * way, and it is optional so a unit test can drive the engine without it.
+   * The engine never awaits it into failure: the caller wraps it in a hook that
+   * cannot throw.
+   */
+  onOffered?: (outcome: MatchOutcome) => void | Promise<void>;
 }
 
 /**
@@ -134,6 +143,7 @@ export async function runMatchingSweep(
     switch (outcome.outcome) {
       case 'offered':
         summary.matched += 1;
+        if (opts.onOffered) await opts.onOffered(outcome);
         break;
       case 'searching':
         summary.searching += 1;
@@ -176,6 +186,9 @@ export async function matchBooking(
 
   if (outcome.outcome === 'exhausted') {
     await refundExhausted(supabase, outcome, opts);
+  }
+  if (outcome.outcome === 'offered' && opts.onOffered) {
+    await opts.onOffered(outcome);
   }
 
   return outcome;

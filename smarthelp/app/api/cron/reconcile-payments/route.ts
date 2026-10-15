@@ -1,7 +1,9 @@
-import { ok, handle, ApiHttpError } from '@/lib/api';
+import { ok, handle } from '@/lib/api';
 import { audit } from '@/lib/audit';
+import { assertCronSecret } from '@/lib/cronGuard';
 import { createServerClient } from '@/lib/supabaseServer';
 import { createRazorpayClient } from '@/lib/razorpayClient';
+import { notifyBookingConfirmed } from '@/lib/notificationHooks';
 import type { Payment } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
@@ -86,25 +88,8 @@ export async function GET(req: Request) {
 
 /** Split out so the guard and the pass are each independently tested. */
 async function handleCron(req: Request) {
-  // The fail-closed guard, in the reference's three-channel precedence. The
-  // route is only reachable by Vercel's schedule, but "only reachable by" is
-  // not an authentication boundary.
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    throw new ApiHttpError(
-      'SERVICE_UNAVAILABLE',
-      'CRON_SECRET is not set. The reconciliation cron will not run without it.',
-      503
-    );
-  }
-  const provided =
-    req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') ||
-    req.headers.get('x-cron-secret') ||
-    new URL(req.url).searchParams.get('secret') ||
-    '';
-  if (provided !== cronSecret) {
-    throw new ApiHttpError('UNAUTHENTICATED', 'The provided cron secret does not match.', 401);
-  }
+  // The fail-closed guard (§25.11, D5), shared with every other cron route.
+  assertCronSecret(req);
 
   const supabase = createServerClient();
 
@@ -169,7 +154,7 @@ async function handleCron(req: Request) {
     }
 
     if (order.status === 'paid') {
-      const { error } = await supabase.rpc('confirm_booking_payment', {
+      const { data: confirmed, error } = await supabase.rpc('confirm_booking_payment', {
         p_payment_id: row.id,
         p_gateway_order_id: row.gateway_order_id,
         p_booking_id: row.booking_id,
@@ -182,6 +167,10 @@ async function handleCron(req: Request) {
       });
       if (error) throw error;
       resolved += 1;
+      // Same race discipline as the webhook: only the call that actually moved
+      // the booking to `paid` announces it, so a reconciliation that raced a
+      // late webhook does not send a second BOOKING_CONFIRMED (§27.5).
+      if (confirmed) await notifyBookingConfirmed(row.booking_id);
       await audit(supabase, {
         actorProfileId: null,
         action: 'payment.reconciled',

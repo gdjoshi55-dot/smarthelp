@@ -1044,7 +1044,9 @@ Phase 4 shipped the offer *ledger* but not the matcher: one line that offered a
 paid booking to the first eligible professional in `created_at` order, no ranking.
 Phase 5 replaces that producer whole with a ranked engine, a reassignment cascade,
 an advisory lock and an exhaustion refund. Migration `0032`, the JS boundary in
-`lib/matchingServer.ts`.
+`lib/matchingServer.ts`. Phase 6's `0036` then reverses one of Phase 5's decisions —
+fan-out is a broadcast, not a round (§7.2) — and Phase 6's admin console (§8) is the
+other caller of the same `assign:<booking_id>` lock.
 
 ### 7.1 A ranked offer, not a table scan
 
@@ -1064,22 +1066,41 @@ same honest choice `0012` made when it created the columns. This is the phase's
 one visible departure from §9.1's scoring list, and it is recorded rather than
 papered over.
 
-### 7.2 Fan-out is round-based, and the lock is the choice
+### 7.2 Fan-out is a broadcast, and the lock is the choice
 
 §9.1 speaks of "fan-out" — offering one booking to several professionals at once.
-That is **structurally impossible** here: `uniq_active_assignment_per_booking`
-permits at most one live (`offered`|`accepted`) assignment per booking, and that
-index *is* this phase's exit criterion ("no double assignment under concurrency").
-Dropping it to fan out would be the opposite of the goal.
+`0032` read that as structurally impossible: `uniq_active_assignment_per_booking`
+(`0012`) permitted at most one live (`offered`|`accepted`) assignment per booking,
+and that index *was* the double-assign guarantee, so the engine offered in rounds.
+`0036` (Phase 6) reverses that product decision and makes the broadcast literal.
 
-So the engine offers in **rounds**. One professional holds the live offer; if they
-decline or let it expire, the offer becomes a tombstone and the next-ranked
-candidate is offered in a new round. `match_booking` runs under
-`pg_advisory_xact_lock(hashtext('assign:' || booking_id))`, so two sweeps racing on
-the same booking serialise — the second sees the first's live offer and no-ops
-rather than issuing a second. The lock makes the *choice* deterministic; the
-partial unique index remains the backstop. `test/db.matching.test.ts` opens twenty
-concurrent connections against one booking and asserts exactly one offer.
+Many offers may now be live on one booking at the same time. `match_booking` offers
+to the **whole ranked candidate list**, best first, instead of `limit 1`, and the
+first acceptance wins. The double-accept guarantee moves from the *live* row to the
+*accepted* row: `uniq_active_assignment_per_booking` is dropped and
+`uniq_accepted_assignment_per_booking` replaces it, so a booking may carry many
+`offered` rows but is `accepted` by **at most one professional, ever**.
+`uniq_prof_booking_offer` (`0012`) still holds — no professional holds two rows for
+the same booking — and the state machine is untouched: `assigned` keeps its meaning
+of "dispatched and awaiting an answer", only now many professionals await it.
+
+The lock is what makes the choice deterministic. `match_booking` still runs under
+`pg_advisory_xact_lock(hashtext('assign:' || booking_id))`, the same key Phase 4's
+`accept_offer`-era code and Phase 6's manual staff assign (`0034`) take, so a
+broadcast and a manual action serialise instead of racing for the last offer. An
+in-flight round no-ops the next sweep: `match_booking` tops up only once every
+offer has been answered. `accept_offer` now takes that lock, writes the winner onto
+`bookings.professional_id` (which the matcher deliberately leaves null during a
+broadcast), and **withdraws every other live offer on the booking in the same
+transaction** — so the job leaves the other inboxes the instant it is taken. Two
+accepts racing on different offers resolve cleanly: the lock serialises them, the
+first withdraws the second's offer, and the second's compare-and-set then matches
+nothing (the route's 409). The round/tombstone columns (`attempt_no`, `round_no`)
+stay exactly as the round-based engine used them; a decline or expiry still returns
+the booking to `searching` for a fresh broadcast. `test/db.matching.test.ts` keeps
+the twenty-concurrent-matchers assertion (exactly one broadcast per round, the
+booking `assigned`), and twenty concurrent `match_booking` calls still yield one
+offer per eligible professional rather than one per booking.
 
 ### 7.3 The reassignment cascade
 
@@ -1113,3 +1134,235 @@ service, so no fee is withheld. One money path, reused and already tested.
   reservations; the customer-facing slot list still ignores the table.
 - **The instant-booking entry path** — Phase 10 (v2.0) builds auto-assign on top
   of this engine.
+
+## 8. The admin console (Phase 6, built)
+
+Phase 6 is §31.1's exit criterion — *ops can run the marketplace without a database
+console* — and nothing more. Migrations `0033`–`0037` add the tables the console
+needs, `lib/adminServer.ts` is the staff read model, and ~33 Route Handlers under
+`app/api/admin/**` plus the `/admin` shell make the operator's daily loop real
+(§4.8 has the endpoint reference). Following Phase 3's precedent, sections whose
+*surface* belongs to a later phase ship as API-only rather than as screens (D1): the
+notification dispatcher and the analytics report pages wait for Phase 7, and the
+payout run for Phase 8.
+
+### 8.1 The shell is the role table, not a second copy of it
+
+`app/admin/layout.tsx` renders the sidebar from `ROLE_SECTIONS` in `lib/roles.ts` —
+the same table the browser and the Route Handlers already share — so a screen cannot
+appear for a role that the server would then refuse. The dashboard is a one-round
+board of counts: today's bookings, completed, cancelled, awaiting a professional
+(`paid`/`searching`) and in-progress, today's GMV in rupees, the professional counts
+(total/verified/online/pending-KYC) and refunds pending approval. "Today" is
+`Asia/Kolkata`, computed as an instant.
+
+### 8.2 Reads are broader than capabilities; writes are where they bite
+
+Every console **read** is gated by the staff allow-list
+`['admin','ops','support','super_admin']` rather than by a capability — support can
+read the booking queue even though it does not hold `booking.read.all`, because
+seeing is not acting. Two reads narrow it deliberately: raw KYC documents
+(`['admin','super_admin','ops']` — support is excluded from the private bucket) and
+the audit viewer (`audit.read`, admin/super_admin only, because the trail names actors
+and carries before/after state). Every **write** calls `requireCapability` and names
+its grant. Reads run on the service-role client, which bypasses RLS, so each read
+module filters explicitly, and a cross-tenant or unknown id is a **404 with zero
+writes** — never a 403 that confirms the row exists. This is the Phase 4 rule, applied
+to staff (D3). Every state change leaves one redacted `audit_logs` row (D4).
+
+### 8.3 Bookings: ops cancels by waiving, and assign only raises the chance
+
+`POST …/cancel` (`booking.cancel.any`, held by ops/admin/super_admin — not support)
+computes the fee with the same `quoteCancellation()` the customer path uses, but
+defaults to **waiving** it: an ops cancellation is not the customer's fault, so §11.2
+applies fee 0 unless the operator passes `chargeCustomer: true` to invoke §11.1's
+ladder. `admin_cancel_booking` (`0034`) withdraws the holding professional and
+releases their calendar in the same statement, under the §9.4 lock.
+
+`POST …/assign` (`booking.assign`) is the manual counterpart to Phase 5's matcher and
+differs from it in one deliberate way: **ops raises the chance, it does not forge an
+acceptance.** The chosen professional must already be verified (an unverified one is
+refused 422 before the RPC), the function raises an ordinary `offered` assignment with
+the platform's `offerTtlMinutes`, and the professional still accepts through the
+normal flow. It is legal only before the professional is on the way.
+
+### 8.4 KYC review, one verdict or a hundred, and suspension
+
+The review payload (`GET …/professionals/[id]/kyc`) is the only path to the private
+`kyc-documents` bucket: it mints short-lived (300 s) signed read URLs after the role
+check, and a document whose object has vanished still returns with `signedUrl: null`
+so the reviewer sees that something is missing rather than a blank page. A single
+verdict accepts only `verified`/`rejected` and refuses anything else with **422** (the
+body is well-formed JSON with a bad value). Bulk verdicts (`…/kyc/bulk-decision`) are
+counted **per professional, not per document** — every still-pending document for each
+id gets the same RPC — and a `rejected` batch must carry a reason (422 without) that is
+applied to every document it rejects; a batch is capped at 100 professionals.
+
+Suspension (`pro.suspend`, admin/super_admin only) is two rows and both matter:
+`profiles.status = suspended` is what blocks sign-in, and
+`professionals.suspended_reason` explains it with availability forced offline.
+Reactivation restores the profile but **does not put the professional back online** —
+that is theirs to choose.
+
+### 8.5 Refunds, and the second approver
+
+Any staff member reads the refund queue; only `refund.execute` (ops/admin/super_admin)
+runs one — a support agent can *request* under `refund.request` but not execute.
+Execution reuses the one money path (`executePendingRefund`), which stamps `approved`
+**before** the money moves, then goes gateway-first, wallet-on-a-definite-refusal, and
+raises an ops ticket if the gateway is unreachable.
+
+The rule worth its own paragraph is §22's dual approval. Above `supportRefundLimit`
+(default ₹1500, now a `platform_settings` row), the exporter must be someone **other**
+than the requester. If the refund's `requested_by` equals the caller's own id, the
+route refuses with `SECOND_APPROVER_REQUIRED` **422** — because a second stamp from the
+same person is not a second person.
+
+### 8.6 The catalogue, the pricing ladder, and coupons
+
+Services, service areas and durations are CRUD under `service.manage`. Slugs are
+**derived from the name and uniquified**, never hand-typed; a `per_unit` service must
+carry a unit label and price; a duration rung needs a price or a multiplier; and the
+write validators mirror what the quote engine reads, so a service the console saves can
+actually be quoted.
+
+`pricing_rules` is the §7.1 surge-window table — a multiplier scoped
+global/category/service, optionally bounded by days of the week and a minute-of-day
+window, resolved by the pure `resolveSurgeMultiplier` (narrower scope wins, then
+priority, then oldest). **It is built and editable but not yet applied**: nothing in
+`buildQuote`/`priceQuote` multiplies by a surge factor, and no rules are seeded — "no
+surge" is the empty table, which is the prior behaviour. `cancellation_policies` is the
+§11.1 ladder as rows, backfilled from the previous constant, with `hours_before` stored
+as the band **ceiling** (`null` = the unbounded "≥ 24 h" row) precisely so the console
+and `quoteCancellation()` can never disagree about which band a request falls in. Both
+are `pricing.manage` (admin only).
+
+Coupons are managed under `coupon.manage` and have **no delete verb** — a coupon is
+deactivated via `isActive`, not removed. Update sends `discountType` and
+`discountValue` together, so a discount cannot be reinterpreted under the wrong unit.
+The row's `usage_count` is only a cache; `coupon_usage` is the truth, and the detail
+shows the ledger.
+
+### 8.7 A ticket is "help me"; a dispute is "adjudicate this"
+
+They share a screen and nothing else. A **support ticket** (`ticket.write`) is triaged —
+status, priority, assignee, resolution — with an internal (staff-only) message flagged
+`is_internal` so it can never be projected to the customer. A **dispute**
+(`dispute.resolve`, ops/admin) is a decision: `investigating`/`resolved`/`rejected`,
+with `open` filterable but *not* a decision. In both, `resolved_at`/`resolved_by` are
+derived server-side, so a "resolved at" stamp can never disagree with the status.
+
+### 8.8 Settings and the audit trail
+
+The settings editor (`GET` staff-read, `PUT` `role.manage`) writes **only the keys in
+the body**, each validated against its declared type, so a partial save cannot blank
+the rest; the whole batch is one `settings.update` audit event with per-key
+before/after. Support needs to read `supportRefundLimit` to know when a refund needs a
+second approver, so the read is open and the write is admin-only. The audit viewer
+(`audit.read`) filters by a substring `action` — so `refund.` catches the whole family
+— plus entity, actor and a date window, and shows the redacted before/after exactly as
+recorded.
+
+### 8.9 What is deliberately not here yet
+
+- **The notification dispatcher and analytics report pages** — the dispatcher is
+  Phase 7 (§9); the analytics report pages are still deferred.
+- **The payout run** (`/admin/payouts/run`) — `payouts` is a Phase 8 table.
+- **Role management** — still no endpoint writes `profiles.role`, so the
+  `guard_profile_privileges()` gap in `README.md` remains open.
+- **Surge application** — the editor exists; the quote path does not multiply by it.
+- **A native admin mobile layout** — §20.14 makes the console desktop-only by
+  decision.
+
+## 9. Realtime and notifications (Phase 7, built)
+
+Phase 7 is the phase that makes the product feel alive and keeps people told. It is
+deliberately modest about transport: three channels carry change, one dispatcher
+writes the record of every message, and *nothing depends on the live socket being up*
+— polling is the baseline and Realtime is the accelerator.
+
+### 9.1 The bell, and the dispatcher behind it
+
+Every signed-in account has a bell in the header (`components/notifications/`). It
+polls a page of its own `in_app` rows every 15 seconds, badges the unread count, and
+opens a list that can mark one row read or all of them. Reads are scoped to
+`recipient_id` on the server (`GET /api/notifications`), so the bell can only ever
+show its owner's mail.
+
+Behind it, `lib/notifications.ts` is the **only writer** of notification rows in the
+application. `dispatch(event)` reads the event's plan — one entry per channel, with
+the template code — renders each row from the seeded `notification_templates`, and
+moves it `queued → sent | failed`. Two rules shape it:
+
+- **It never throws.** A booking confirms whether or not the mail server is up
+  (§28.4). A delivery that fails is *recorded as failed*, with its reason, not
+  swallowed and not allowed to break the business action.
+- **It tells the truth about delivery** (D1). `in_app` and `push` are `sent` because
+  writing the row *is* the delivery. `email` is `failed` — "SMTP is not configured" —
+  when the `SMTP_*` variables are unset. `sms` and `whatsapp` are `failed` — "no SMS
+  provider configured" — because no provider is wired. The row says what actually
+  happened, so "the customer was told" is never a claim the data contradicts.
+
+Every code except `OTP_LOGIN` (which is SMS-only) writes an `in_app` row, so the
+report of a notification and the bell always agree. Lifecycle routes call one hook
+each right after the write they already make, and the matching engine offers a job
+through an optional `onOffered` seam — so the engine stays unaware of notifications
+and its unit tests pass against a fake database.
+
+### 9.2 Booking chat
+
+A booking gets a thread, created lazily on first read and **only for a booking with
+both participants**. The customer and the assigned professional may read and post;
+staff may read but not post (D3). A stranger gets the same 404 a nonexistent booking
+gets, so a guessed id reveals nothing. Messages are `text` or `image` (`system` is
+server-only, and a client asking for one is refused rather than trusted); posting to
+a closed thread is a 409. The thread is **not** optimistically updated — the send
+awaits the server and re-reads, so what you see is what was stored.
+
+### 9.3 The three channels, and why polling survives
+
+`hooks/use-realtime.ts` subscribes the browser to `booking:{id}` (the booking row
+changes), `me:{profileId}` (a notification arrives) and `chat:{threadId}` (a message
+arrives), plus a Presence channel for the professional's live position. Realtime
+applies RLS exactly as REST does, so a subscriber receives only rows its role may
+SELECT — the publication widens *delivery*, never *visibility*.
+
+The decision that keeps this safe (D4): **Realtime is an optimisation.** Every
+subscriber has a polling fallback — 15 seconds generally, 5 seconds on the offers
+inbox — and each pushed signal triggers a re-fetch through a Route Handler rather
+than trusting the payload. A channel that never connects degrades latency, not the
+feature; and there is no path where the socket is the only source of truth.
+
+### 9.4 The template editor
+
+`/admin/notifications` (D6, §25.10) lists the seeded catalogue and lets an
+`admin`/`super_admin` edit a template's `subject` (email only), `body`, token list
+and active flag. The capability is `notification.manage`, held by those two roles
+only — a template is what every customer reads, the same class of change as a role
+grant. Edits are audited with the before/after copy. The page does not create or
+delete templates; the catalogue is seeded by migration.
+
+### 9.5 The reminders
+
+Two crons close the loop on jobs (D5). `run_service_reminders()` messages the
+professional when a job is about to end (`in_progress`, ending within 15 minutes) or
+about to start (within the hour, de-duplicated across two disjoint windows);
+`run_rating_reminders()` asks the customer to rate a job that completed today. Both
+run their whole pass — advisory lock, idempotency guard, inserts — **in one SQL
+transaction**, because these codes are Realtime-only and for those channels writing
+the row is the delivery, so the lock has to mean something. This is the one
+documented exception to "the dispatcher is the only writer".
+
+The crons share `lib/cronGuard.ts` with the Phase 3 payment reconciliation, and the
+guard **fails closed**: with `CRON_SECRET` unset the endpoint answers 503 rather than
+running open.
+
+### 9.6 What is deliberately not here yet
+
+- **A real push transport.** `notification_devices` registers a token, but there is
+  no FCM/APNs provider, so a `push` row records intent, not arrival. Wiring the
+  provider is the missing half.
+- **An SMS provider.** `sms` and `whatsapp` rows are recorded `failed` on purpose.
+- **Delivery retries and a dead-letter queue.** A `failed` row is a record, not a
+  queue; nothing re-sends it.
+- **Analytics report pages** — deferred with the rest of the Phase 6 reporting.

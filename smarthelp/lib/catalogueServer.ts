@@ -48,7 +48,7 @@ export async function getGeography(): Promise<Geography> {
     supabase.from('cities').select('id, name, state, time_zone, is_active').eq('is_active', true),
     supabase
       .from('localities')
-      .select('id, city_id, name, lat, lng, radius_km, is_active')
+      .select('id, city_id, name, lat, lng, radius_km, pincodes, is_active')
       .eq('is_active', true),
   ]);
 
@@ -635,7 +635,19 @@ export async function getLanding(featuredLimit = 6): Promise<LandingData> {
 
   if (verifiedRes.error) throw verifiedRes.error;
 
-  const city = geography.cities[0] ?? null;
+  // The landing page advertises one city, and "one" must not depend on the order
+  // Postgres happened to return rows in. The city with the most localities is the
+  // primary market; ties break on name so the answer is stable across runs.
+  const localityCounts = new Map<string, number>();
+  for (const l of geography.localities) {
+    localityCounts.set(l.city_id, (localityCounts.get(l.city_id) ?? 0) + 1);
+  }
+  const city =
+    [...geography.cities].sort(
+      (a, b) =>
+        (localityCounts.get(b.id) ?? 0) - (localityCounts.get(a.id) ?? 0) ||
+        a.name.localeCompare(b.name)
+    )[0] ?? null;
   const localities = geography.localities
     .filter((l) => !city || l.city_id === city.id)
     .map((l) => l.name)

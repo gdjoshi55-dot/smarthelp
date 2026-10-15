@@ -1,6 +1,7 @@
 import { ApiHttpError, handle, ok } from '@/lib/api';
 import { createServerClient } from '@/lib/supabaseServer';
 import { audit, clientIp } from '@/lib/audit';
+import { notifyKycDecision } from '@/lib/notificationHooks';
 import { optionalStr, requireAuth, uuid } from '@/lib/validation';
 import type { VerificationStatus } from '@/lib/supabase';
 
@@ -92,6 +93,16 @@ export async function POST(
       ipAddress: clientIp(req),
       requestId,
     });
+
+    // The professional hears the verdict (§27.5 KYC_APPROVED / KYC_REJECTED).
+    // A rejection is per-document and always speaks; an approval only when the
+    // roll-up actually reaches `verified`, so a second document does not
+    // re-announce a status the professional already had.
+    if (verdict === 'rejected') {
+      await notifyKycDecision(professionalId, false, note ?? '');
+    } else if (verificationStatus === 'verified') {
+      await notifyKycDecision(professionalId, true);
+    }
 
     return ok({ verificationStatus });
   });

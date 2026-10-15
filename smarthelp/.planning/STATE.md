@@ -3,19 +3,112 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in_progress
-last_updated: "2026-10-12T00:00:00.000Z"
-last_activity: "2026-10-12 - **Phase 5 (Matching engine) complete.** `0032_matching_engine.sql` built and applied to the live project (29 files, 30 applied, 0 outstanding): it restores the spec's `assigned -> searching` edge and adds `expire_stale_offers` / `rank_candidates` / `match_booking` / `run_matching_sweep`, dropping `sweep_new_bookings`. The app mirror (`lib/matchingServer.ts`, `refundCapturedBooking`, `searchWindowMinutes`, the offers/decline route wiring) and the tests landed, and both exit criteria are proven by `test/db.matching.test.ts` (20-way concurrency yields exactly one offer; an exhausted search is cancelled `no_professional_available` and refunds). Gates: typecheck/lint/build exit 0, `npm test` 824/50 (floor 798/46), `npm run test:db` 99/8 (floor 96/7). House docs and `phases/05-matching-engine/05-SUMMARY.md` written; ROADMAP Phase 5 marked complete."
+last_updated: "2026-10-14T00:00:00.000Z"
+last_activity: "2026-10-14 - **Phase 8 (Growth) started — Wave A (surge pricing) complete.** Wired the Phase-6 `resolveSurgeMultiplier` into the quote engine: `lib/pricing.ts` gains optional multipliers (`SURGE_MIN_FACTOR`/`SURGE_MAX_FACTOR`, `multipliers[]` on the breakdown, a `multiplier` snapshot rule, `PRICING_ENGINE_VERSION = 3`), `lib/bookingQuote.ts` gains `scheduledAt`, the pure `localWallClock(at)` and `resolveBookingMultipliers()` (highest factor across the booking's services, clamped to `min(2.00, surgeMaxFactor)`), the new `surgeMaxFactor` `platform_settings` key (default 1.50, `0043` seeds it), and the quote/create routes pass the scheduled start. Gates: typecheck/lint/build exit 0, `npm test` 1046/68 (was 1030/67), `npm run test:db` 117/10. Plan: `phases/08-growth/08-PLAN.md`. Waves B–G (wallet top-up UI, referrals, recurring, invoice PDF, PWA) remain."
 progress:
   total_phases: 10
-  completed_phases: 6
-  total_plans: 5
-  completed_plans: 5
-  percent: 60
+  completed_phases: 8
+  total_plans: 7
+  completed_plans: 7
+  percent: 80
 ---
 
 # SmartHelp — Project State
 
 ## Current Phase
+
+Phase 8 — Growth. **In progress** (Waves A & B complete, started 2026-10-14). The
+phase is a set of seven independent waves (see
+[`phases/08-growth/08-PLAN.md`](phases/08-growth/08-PLAN.md)); the §31.1 exit
+criteria are *recurring generates idempotently; surge is capped; the PWA
+installs*.
+
+**Wave A — surge pricing. Complete.** The Phase-6 pure resolver
+`resolveSurgeMultiplier` (`lib/policyServer.ts`) was built but never called by
+the engine. It is now wired in: `lib/pricing.ts` takes an optional
+`multipliers[]`, applies each factor to the **subtotal** before the platform fee
+and tax (per §7.1's normative formula — the spec's own illustrative JSON is
+arithmetically inconsistent and the formula wins, D1), itemises every applied
+factor as its own `multipliers[]` entry plus a `multiplier` snapshot rule, clamps
+to the absolute `[0.50, 2.00]` and throws otherwise (D2), and bumps
+`PRICING_ENGINE_VERSION` to 3. `lib/bookingQuote.ts` gains an optional
+`scheduledAt`, the pure exported `localWallClock(at)` (Asia/Kolkata) and
+`resolveBookingMultipliers()` — the highest factor across the booking's services,
+clamped to `min(2.00, surgeMaxFactor)`, resolved against the scheduled wall
+clock (D3). A new `platform_settings` key `surgeMaxFactor` (default **1.50**)
+tightens the ceiling; migration `0043_surge_max_factor.sql` seeds it (idempotent,
+applied live — 40 files, 40 applied). `POST /api/bookings/quote` accepts
+`scheduledAt`; `POST /api/bookings` passes `scheduledStartAt`. An empty
+`pricing_rules` table changes nothing — every prior quote and test is unchanged
+(D4). Gates green: typecheck/lint/build exit 0, `npm test` **1046/68** (was
+1030/67), `npm run test:db` **117/10** (the settings-count assertion moves 22 →
+23). New tests: `test/surge.test.ts` (resolver specificity/tie/window/midnight-
+wrap/validity + `localWallClock`), plus six surge cases in `test/pricing.test.ts`.
+
+**Wave B — wallet. Complete.** `POST /api/wallet/redeem` (existing) spends
+balance as a `debit` through `apply_wallet_delta`. `POST /api/wallet/topup` is
+new and is the ops lever §2/§25.8 call for: v1 is **promo/ops credit only** (an
+in-app card top-up is an explicit non-goal), so it is gated by a new
+**`wallet.credit`** capability (granted to `ops`, `admin`, and `super_admin` via
+`'*'`) and takes `{ customerId, amount, reason? }`, validating the customer
+exists, crediting through `creditWallet` — the one ledger path — and auditing
+the grant. Wiring redeem into the checkout/payment flow (a partial payment) is
+deferred: a booking money-path change that no screen consumes yet (D5). No
+customer UI is added; the wallet page still shows balance, ledger and refunds.
+New tests: `test/routes.walletTopup.test.ts` (5) plus the `roles` table. Gates
+green: typecheck/lint/build exit 0, `npm test` **1051/69** (was 1046/68),
+`npm run test:db` **117/10**.
+
+**Waves C–G:** C — favourites (done, `0042`); D — referrals
+(`referrals` table, code validation at signup, both-sided reward); E — recurring
+(`recurring_series` / `recurring_occurrences` +
+`/api/cron/recurring-generate`); F — invoice PDF (`invoices` table; a JSON
+receipt already exists at `GET /api/bookings/[id]/invoice`); G — PWA (manifest +
+service worker).
+
+Phase 7 — Realtime & notifications. **Complete.** Built and verified 2026-10-14.
+Migrations `0038`–`0041` give the phase its schema: `chat_threads` / `chat_messages`,
+`notification_templates`, `notifications` and `notification_devices` with the
+`notification_channel` enum (`0038`); the six §27.1 source tables added to
+`supabase_realtime` (`0039`); the 39-row `en-IN` template catalogue (`0040`, no
+`in_app` rows — those render from `push`); and the two reminder functions
+`run_service_reminders` / `run_rating_reminders`, `security definer`, advisory-locked,
+service-role-only (`0041`). The surface is `lib/notifications.ts` (the dispatcher, and
+**the only writer of notification rows**), `lib/notificationHooks.ts`,
+`lib/notificationServer.ts` / `lib/chatServer.ts`, `lib/cronGuard.ts`, eight
+endpoints (notifications, chat, push-token, admin templates), `hooks/use-realtime.ts`
+and the bell/chat/template-editor UI. §31.1's exit criterion — *status updates land in
+under a second; every catalogue notification fires* — is hand-checked: the pushed
+channels deliver in-request with a bounded 15 s / 5 s polling floor, and 16 of the 24
+catalogue codes fire from a live trigger (the other eight are catalogue-only because
+their feature is unbuilt, scoped out by D2). Applied to the live project (38 files,
+**39 applied, 0 outstanding**). typecheck/lint/build exit 0, `npm test` **1030/67**
+(floor 954/61), `npm run test:db` **117/10** (floor 104/9). `README.md` now says "at
+Phase 7", and `docs/API.md` §4.9, `docs/FEATURES.md` §9, `docs/DATABASE.md` §15 record
+the phase. Plan and record:
+[`phases/07-realtime-notifications/07-PLAN.md`](phases/07-realtime-notifications/07-PLAN.md),
+[`07-SUMMARY.md`](phases/07-realtime-notifications/07-SUMMARY.md).
+
+**Next:** Phase 8 — Growth, Waves D–G (see
+[`phases/08-growth/08-PLAN.md`](phases/08-growth/08-PLAN.md) and
+[`ROADMAP.md`](ROADMAP.md)).
+
+Phase 6 — Admin console. **Complete.** Built and verified 2026-10-14.
+Migrations `0033`–`0037` gave the console its tables: `platform_settings` (created
+and seeded; read through `lib/settingsServer.ts`), the two staff write paths
+(`admin_cancel_booking` / `admin_assign_booking`, `0034`, both under the `assign:`
+advisory lock), `pricing_rules` and `cancellation_policies` (`0035`), broadcast
+matching (`0036`, which re-creates `match_booking` / `accept_offer` to offer to the
+whole ranked list and moves the double-assign guarantee to
+`uniq_accepted_assignment_per_booking`), and `support_tickets` /
+`support_messages` / `disputes` (`0037`). The surface is `lib/adminServer.ts` plus
+~33 Route Handlers under `app/api/admin/**`, gated by the shared capability table —
+`requireCapability()` is now live on every mutating route, and the staff allow-list
+`['admin','ops','support','super_admin']` gates the reads. §31.1's exit criterion —
+*ops can run the marketplace without a database console* — was hand-checked by
+editing a price and a setting from the UI. Plan and record:
+[`phases/06-admin-console/06-PLAN.md`](phases/06-admin-console/06-PLAN.md),
+[`06-SUMMARY.md`](phases/06-admin-console/06-SUMMARY.md).
 
 Phase 5 — Matching engine. **Complete.** Built and verified 2026-10-12.
 `0032_matching_engine.sql` restores the spec's `assigned -> searching` edge and
@@ -29,15 +122,10 @@ exhaustion refund), `refundCapturedBooking` extracted from the cancel route, the
 `test/db.matching.test.ts` race opens 20 connections against one booking and
 exactly one offer results) and **an exhausted search auto-refunds** (the booking
 reaches `cancelled` / `no_professional_available` and the captured payment is
-refunded in full). Applied to the live project (29 files, **30 applied, 0
-outstanding**). typecheck/lint/build exit 0, `npm test` **824/50** (floor
-798/46), `npm run test:db` **99/8** (floor 96/7). `README.md` now says "at Phase
-5", and `docs/API.md` §4.7, `docs/FEATURES.md` §7, `docs/DATABASE.md` §11 record
-the phase. Plan and record:
+refunded in full). (Phase 6's `0036` then switched the fan-out from rounds to a
+broadcast.) Plan and record:
 [`phases/05-matching-engine/05-PLAN.md`](phases/05-matching-engine/05-PLAN.md),
 [`05-SUMMARY.md`](phases/05-matching-engine/05-SUMMARY.md).
-
-**Next:** Phase 6 — the admin console (see [`ROADMAP.md`](ROADMAP.md)).
 
 Phase 4 — Professional app. **Complete.** D1 phase gate passed 2026-10-10: all
 four waves built, the Wave A schema push (`0012`/`0021`/`0029`, plus the `0030`
@@ -93,6 +181,26 @@ read model.
   offers/decline route rewiring, and §31.1's exit criteria (no double assignment
   under concurrency; exhausted search auto-refunds). Recorded 2026-10-12; plan and
   record in `phases/05-matching-engine/`.
+
+- Phase 6 — Admin console. Migrations `0033`–`0037` (`platform_settings`; the
+  `admin_cancel_booking` / `admin_assign_booking` write paths; `pricing_rules` and
+  `cancellation_policies`; broadcast matching, which re-creates `match_booking` /
+  `accept_offer` and supersedes Phase 5's rounds; `support_tickets` /
+  `support_messages` / `disputes`), `lib/adminServer.ts` and the ~33 admin Route
+  Handlers, and §31.1's exit criterion (ops can run the marketplace without a
+  database console). Recorded 2026-10-14; plan and record in
+  `phases/06-admin-console/`.
+
+- Phase 7 — Realtime & notifications. Migrations `0038`–`0041` (`chat_threads` /
+  `chat_messages`, `notification_templates`, `notifications`, `notification_devices`;
+  the `supabase_realtime` publication; the template seed; `run_service_reminders` /
+  `run_rating_reminders`), `lib/notifications.ts` (the dispatcher),
+  `lib/notificationHooks.ts`, the notification/chat read models and `lib/cronGuard.ts`,
+  the eight notification/chat/template endpoints, `hooks/use-realtime.ts` and the
+  bell/chat/template-editor UI, and §31.1's exit criteria (status updates land in under
+  a second; every catalogue notification fires — 16 of 24 from a live trigger, the
+  rest catalogue-only pending their feature). Recorded 2026-10-14; plan and record in
+  `phases/07-realtime-notifications/`.
 
 ## Phase 2 progress
 
@@ -352,11 +460,11 @@ no.
 - **There is no consolidated `bookingView`.** Detail pages assemble their payload
   from several queries. Correct, but more than one round trip per page.
 
-- **Dead code**: `noContent`, `requireCapability`/`requireStaff`/`requireAdmin`
-  (the capability table is enforced by the UI only), `isUuid`, `parsePaging`,
-  `createRequestClient`, a byte-identical private `maskEmail` in `send-otp`, and
-  `components/ui/ImageUpload.tsx` — unreferenced, and pointed at a `menu-images`
-  bucket that belongs to SmartPOS and does not exist here.
+- **Dead code**: `noContent` and `createRequestClient` remain unreferenced. The rest
+  of this list was resolved in Phase 6: `requireCapability` is now the write-gate on
+  every mutating route, `isUuid`/`parsePaging` are used, `requireStaff`/`requireAdmin`
+  were removed, `send-otp` imports `maskEmail` from `lib/authServer.ts`, and
+  `components/ui/ImageUpload.tsx` was deleted.
 
 - **`sign-in` returns the raw `['*']` capability list to a `super_admin`**, where
   `/api/auth/me` expands the wildcard. A client checking capabilities must handle
@@ -370,9 +478,11 @@ no.
   `SMARTHELP_OWNER_LOGIN`. None of these change behaviour; all are wrong.
 
 - ~~**`vercel.json` declares eight cron paths with no handlers**~~ — closed
-  2026-10-08: it declares exactly one (`/api/cron/reconcile-payments`, every 30
-  minutes, fail-closed on `CRON_SECRET`), and the other seven schedules live as
-  prose in `docs/ARCHITECTURE.md` §7 until their phases build handlers.
+  2026-10-08: it declared exactly one (`/api/cron/reconcile-payments`, every 30
+  minutes, fail-closed on `CRON_SECRET`), with the other seven schedules living as
+  prose in `docs/ARCHITECTURE.md` §7 until their phases build handlers. Phase 7
+  added two of them (`/api/cron/service-reminders` `*/15`, `/api/cron/rating-reminders`
+  `13 19 * * *`), so it now declares three, all behind the one fail-closed guard.
 
 - **The migration ledger holds one filename that is not on disk** — `0009_bookings.sql`,
   from the legacy era. Harmless, because the ledger is only consulted for files
@@ -452,9 +562,9 @@ Both were in the harness, and both had been passing by luck.
 
 ## Blockers/Concerns
 
-- None outstanding. Migrations through `0032` are applied to the live project
-  (29 files, 30 applied, 0 outstanding) and `npm run test:db` passes against it
-  (99 tests across 8 files).
+- None outstanding. Migrations through `0037` are applied to the live project
+  (34 files, 35 applied, 0 outstanding) and `npm run test:db` passes against it
+  (104 tests across 9 files).
 
 - The database tests need a migrated, seeded database and `SUPABASE_DB_URL`. Without
   one they skip loudly rather than passing quietly.
@@ -475,4 +585,4 @@ Both were in the harness, and both had been passing by luck.
 
 ---
 
-Last activity: 2026-10-12 - **Phase 5 (Matching engine) complete.** `0032_matching_engine.sql` built and applied to the live project (29 files, 30 applied, 0 outstanding): the restored `assigned -> searching` edge, `expire_stale_offers` / `rank_candidates` / `match_booking` / `run_matching_sweep`, and `sweep_new_bookings` dropped. The app mirror (`lib/matchingServer.ts`, `refundCapturedBooking`, `searchWindowMinutes`, the offers/decline route wiring) and tests landed; both §31.1 exit criteria proven by `test/db.matching.test.ts`. Gates green — typecheck/lint/build exit 0, `npm test` 824/50 (floor 798/46), `npm run test:db` 99/8 (floor 96/7). `docs/API.md` §4.7, `docs/FEATURES.md` §7 and `docs/DATABASE.md` §11 written, `README.md` updated to "at Phase 5", `phases/05-matching-engine/05-SUMMARY.md` recorded, ROADMAP Phase 5 marked complete.
+Last activity: 2026-10-14 - **Phase 8 (Growth) started — Wave A (surge pricing) complete.** The Phase-6 pure resolver `resolveSurgeMultiplier` (`lib/policyServer.ts`) was built but never called by the engine; it is now wired in. `lib/pricing.ts` gains optional `multipliers[]` (`SURGE_MIN_FACTOR`/`SURGE_MAX_FACTOR`, `MultiplierInput`/`AppliedMultiplier`, `multipliers[]` on the breakdown, a `multiplier` snapshot rule, `snapshot.totals.rawSubtotal`, `PRICING_ENGINE_VERSION = 3`); each factor scales the **subtotal** before the fee and tax (§7.1's normative formula — the spec's illustrative JSON is arithmetically inconsistent, D1), is itemised as its own line (§7.4), and is re-clamped inside the engine to `[0.50, 2.00]` (D2). `lib/bookingQuote.ts` gains `BookingQuoteRequest.scheduledAt`, the exported pure `localWallClock(at)` (Asia/Kolkata) and `resolveBookingMultipliers()` — the highest factor across the booking's services, clamped to `min(2.00, surgeMaxFactor)`, resolved against the scheduled wall clock (D3); `loadPricingSettings()` also returns `surgeMaxFactor`. New `platform_settings` key `surgeMaxFactor` (default 1.50) in `lib/constants.ts` and `lib/settingsServer.ts`; `supabase/migrations/0043_surge_max_factor.sql` seeds it (idempotent, applied live — 40 files, 40 applied). `POST /api/bookings/quote` accepts `scheduledAt`; `POST /api/bookings` passes `scheduledStartAt`. An empty `pricing_rules` table changes nothing (D4). Gates green — typecheck/lint/build exit 0, `npm test` **1046/68** (was 1030/67), `npm run test:db` **117/10** (the settings-count assertion moves 22 → 23). New `test/surge.test.ts` covers resolver specificity/tie/midnight-wrap/validity and `localWallClock`; `test/pricing.test.ts` gains six surge cases. Plan: `phases/08-growth/08-PLAN.md`. **Wave B (wallet) complete:** `POST /api/wallet/topup` is the v1 promo/ops credit lever (§2/§25.8 — in-app card top-up is a non-goal), gated by a new `wallet.credit` capability (ops/admin/owner) and writing through `creditWallet` + an audit entry; redeem stays as-is and its checkout wiring is deferred (D5). New `test/routes.walletTopup.test.ts` (5 tests) + the roles table; gates re-run green — typecheck/lint/build exit 0, `npm test` **1051/69** (was 1046/68), `npm run test:db` **117/10**. Waves D–G (referrals, recurring, invoice PDF, PWA) remain.

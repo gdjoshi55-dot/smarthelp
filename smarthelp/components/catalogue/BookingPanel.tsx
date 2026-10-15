@@ -91,6 +91,14 @@ export function BookingPanel({ service }: { service: ServiceSummary }) {
 
   const price = priceForDuration(service, duration, null);
 
+  // "No slots available" is a refusal, not a label for an enabled button. When
+  // the estimate says today has nothing bookable, the CTA reads that way and is
+  // disabled — letting it navigate would start a booking the panel itself just
+  // said cannot happen. The label and the state share one derivation so they
+  // cannot disagree.
+  const instantUnavailable =
+    eta != null && !etaLoading && eta.etaLabel.includes('No slots');
+
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="flex items-baseline justify-between gap-3">
@@ -203,12 +211,15 @@ export function BookingPanel({ service }: { service: ServiceSummary }) {
           }
           router.push(`/customer/checkout?${params.toString()}`);
         }}
-        disabled={(mode === 'scheduled' && !slot) || (mode === 'instant' && !hasLocation)}
+        disabled={
+          (mode === 'scheduled' && !slot) ||
+          (mode === 'instant' && (!hasLocation || instantUnavailable))
+        }
         className="mt-4 w-full rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
       >
         {mode === 'instant'
           ? hasLocation
-            ? (eta?.etaLabel?.includes('No slots') ? 'No slots available' : 'Book now')
+            ? (instantUnavailable ? 'No slots available' : 'Book now')
             : 'Set location to book'
           : slot
           ? `Continue with ${slot.label}`

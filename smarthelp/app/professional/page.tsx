@@ -11,10 +11,9 @@ import {
   AlertCircle,
   CheckCircle2,
   Clock,
-  Wrench,
 } from 'lucide-react';
 import AuthGuard from '@/components/auth/AuthGuard';
-import { PosShell } from '@/components/professional/PosShell';
+import RoleShell from '@/components/auth/RoleShell';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchAvailability, fetchJobs, type AvailabilityState } from '@/lib/professionalClient';
 import { usePoll } from '@/components/professional/usePoll';
@@ -57,11 +56,7 @@ export default function ProfessionalHome() {
 
   return (
     <AuthGuard role="professional">
-      <PosShell
-        icon={Wrench}
-        title="Your jobs and earnings"
-        subtitle="What is scheduled today, and what you have earned"
-      >
+      <RoleShell role="professional" eyebrow="Professional" title="Your jobs and earnings">
         {showVerificationGate ? (
           <div
             className="mb-6 flex flex-col sm:flex-row sm:items-center gap-4 rounded-xl border border-amber-200 bg-amber-50 p-5"
@@ -208,7 +203,7 @@ export default function ProfessionalHome() {
             </section>
           </div>
         </div>
-      </PosShell>
+      </RoleShell>
     </AuthGuard>
   );
 }

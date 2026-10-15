@@ -37,6 +37,7 @@ export async function POST(req: Request) {
       items: input.items,
       couponCode: input.couponCode,
       bookingType: input.bookingType,
+      scheduledAt: input.scheduledAt,
     });
 
     return ok({
@@ -64,6 +65,7 @@ function validateQuoteInput(body: Record<string, unknown>): {
   items: QuoteItemInput[];
   couponCode: string | null;
   bookingType: BookingType;
+  scheduledAt: string | null;
 } {
   const rawItems = body.items;
   if (!Array.isArray(rawItems) || rawItems.length === 0) {
@@ -91,10 +93,16 @@ function validateQuoteInput(body: Record<string, unknown>): {
     };
   });
 
+  const scheduledAt =
+    typeof body.scheduledAt === 'string' && body.scheduledAt.trim()
+      ? body.scheduledAt.trim()
+      : null;
+
   return {
     items,
     couponCode: body.couponCode ? String(body.couponCode).trim().toUpperCase() : null,
     bookingType: oneOf(body.bookingType ?? 'scheduled', 'bookingType', BOOKING_TYPES) as BookingType,
+    scheduledAt,
   };
 }
 

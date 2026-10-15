@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { AlertCircle, ArrowLeft, CheckCircle, Clock, MapPin, Navigation, Timer, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AuthGuard from '@/components/auth/AuthGuard';
-import { PosShell } from '@/components/professional/PosShell';
+import RoleShell from '@/components/auth/RoleShell';
 import { BookingStatusBadge } from '@/components/catalogue/PriceBreakdown';
 import { EmptyState } from '@/components/catalogue/EmptyState';
 import { formatDateTime } from '@/components/catalogue/bookingFormat';
@@ -618,9 +618,9 @@ function JobDetail({ id }: { id: string }) {
 export default function ProfessionalJobDetailPage({ params }: { params: { id: string } }) {
   return (
     <AuthGuard role="professional" capability="offer.accept">
-      <PosShell icon={MapPin} title="Job details" subtitle="Navigate, run, and close out the job">
+      <RoleShell role="professional" eyebrow="Professional" title="Job details">
         <JobDetail id={params.id} />
-      </PosShell>
+      </RoleShell>
     </AuthGuard>
   );
 }

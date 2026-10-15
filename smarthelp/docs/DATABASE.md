@@ -1366,7 +1366,9 @@ under its own ledger would stop meaning what the ledger says it means.
 
 Phase 4 shipped the offer *ledger* but not the matcher. `0032` builds the engine:
 four new `security definer`, `service_role`-only functions, the spec's restored
-transition edge, and `sweep_new_bookings` dropped.
+transition edge, and `sweep_new_bookings` dropped. Phase 6's `0036` then re-creates
+`match_booking` and `accept_offer` to **broadcast** one offer to every eligible
+professional instead of offering in rounds (§14 (broadcast matching)).
 
 **The edge.** `0011`'s deployed transition table omitted `'assigned'` from the
 predecessors of `searching`, deliberately — Phase 4 could not reassign, so the hop
@@ -1385,13 +1387,16 @@ walk keeps passing.
 
 Notes that matter when reading the SQL:
 
-- **Fan-out is round-based, not simultaneous (D1).**
-  `uniq_active_assignment_per_booking` permits at most one live
-  (`offered`|`accepted`) assignment per booking — that index *is* the double-assign
-  guarantee, so offering one booking to several professionals at once is
-  structurally impossible. The engine ranks and offers in rounds: a decline or an
-  expiry advances `round_no` and the next candidate is offered. `attempt_no` /
-  `round_no` on the ledger exist for exactly this.
+- **Fan-out was round-based in `0032`, and is a broadcast after `0036`.** `0032`'s
+  reading was that `uniq_active_assignment_per_booking` permitted at most one live
+  (`offered`|`accepted`) assignment per booking — that index *was* the double-assign
+  guarantee — so offering one booking to several professionals at once was
+  structurally impossible, and the engine offered in rounds: a decline or an expiry
+  advanced `round_no` and the next candidate was offered. `0036` reverses the product
+  decision: many live offers are allowed, `uniq_accepted_assignment_per_booking`
+  carries the double-assign guarantee instead, and `match_booking` offers to the whole
+  ranked list. The `attempt_no` / `round_no` columns and the round/tombstone
+  machinery are unchanged; §14 (broadcast matching) has the mechanics.
 - **`rank_candidates` ranks on what the schema holds (D3).** Repeat, then load
   (fewest live `professional_schedule` windows), then tenure
   (`accepted_offers`, `created_at`, `id`). Distance needs `earthdistance`, which
@@ -1405,7 +1410,9 @@ Notes that matter when reading the SQL:
   unique index is the backstop. It stamps `search_started_at` /
   `search_expires_at` on the first `paid → searching`, walks `assigned →
   searching` when a decline or expiry left the booking there, and on an offer
-  sets `professional_id`, `matched_at` and `assignment_rounds`.
+  sets `matched_at` and `assignment_rounds`. Under `0036` it deliberately leaves
+  `professional_id` **null** for the life of the round — nobody owns the job until
+  someone accepts — and `accept_offer` writes the winner.
 - **Exhaustion is `searching → cancelled` with
   `cancellation_reason_code = 'no_professional_available'` (D2)**, reached only
   when the ranked list is empty *and* the search window has closed. The engine's
@@ -1433,7 +1440,7 @@ otherwise have carried it. Nothing here is an oversight.
 | `professional_schedule` as an input to the customer's slot picker | §9.1 lists "not already reserved" as an input. Phase 4 writes the table's first rows — `accept_offer` inserts a `reserved` window and Phase 5's `rank_candidates` reads it — so the *offer* path honours reservations; the customer-facing slot list (`lib/availability.ts`) still ignores the table, so it can still show a slot the professional is already booked for | a later Phase 5 wave |
 | Service-level aggregate rating on catalogue cards | `ratings` rows are written when a booking is reviewed | Phase 2 |
 | Checkout behind the service-detail CTA | `/customer/checkout` is Phase 2; the CTA routes somewhere real rather than being a dead button | Phase 2 |
-| `platform_settings` rows (`instant_lead_minutes`, `max_booking_minutes`) | Read from `lib/constants.ts` defaults until the table lands | Phase 6 |
+| `platform_settings` rows (`instant_lead_minutes`, `max_booking_minutes`) | **Landed** — `0033` creates and seeds the table and `lib/settingsServer.ts` reads it (Phase 6) | — |
 
 `block_address_delete_with_future_bookings()` is the one worth restating, because
 `0008` is otherwise a complete file and it is easy to miss the absence: §24.6
@@ -1442,9 +1449,10 @@ the reason. It ships with the booking tables.
 
 ### What each later phase adds, and does not have yet
 
-None of this exists. The table is written in the vocabulary of the §31.1 phase
-list that `ROADMAP.md` reproduces unchanged, so that a reader can see the gap
-without this document inventing table names the specification has not chosen yet.
+This table was written when none of it existed; Phases 2–6 have since delivered most
+of the rows, and each now says so. It is kept in the vocabulary of the §31.1 phase
+list that `ROADMAP.md` reproduces unchanged, so that a reader can see what is still a
+gap without this document inventing table names the specification has not chosen yet.
 The only names quoted are ones the repository itself already uses.
 
 | Phase | Scope it will add | What the schema has to make room for |
@@ -1452,8 +1460,8 @@ The only names quoted are ones the repository itself already uses.
 | 2 | Quote engine, booking create, cancel/reschedule, coupons, invoice stub, `bookings` state machine | **Delivered.** `bookings`, `booking_items`, `booking_status_history`, `booking_number_seq`, the price and quote-token snapshots, and the four write-path functions in §9. `block_address_delete_with_future_bookings()` and `ratings` land here |
 | 3 | Razorpay orders, webhook, verify, refunds, wallet ledger, reconciliation cron | The wallet that `customers.wallet_id` already points at. `0015_refunds_wallet.sql` is named in a comment in `0001` and does not exist |
 | 4 | KYC upload, verification workflow, working hours, offers inbox, accept/decline, arrive, OTP, complete | **Delivered.** `0012` (offer ledger + `accept_offer`/`decline_offer`/`sweep_new_bookings`), `0021` (`professional_earnings`), `0029` (`otp_locked_until`, the six job functions, the `otp_hash` column re-grant) and `0030` (two fixes) — see §11. The KYC verdict needed no new table: `professional_documents.status`, `rejection_reason`, `reviewed_by`, `reviewed_at` and `idx_prof_doc_status` already carried it |
-| 5 | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper, the full `professional_schedule` producer | **Delivered.** `0032` adds `expire_stale_offers` / `rank_candidates` / `match_booking` / `run_matching_sweep`, restores the `assigned → searching` edge and drops `sweep_new_bookings` — see §11. `professional_schedule` is the one availability input §9.1 asks for that `lib/availability.ts` still cannot honour; distance/rating scoring waits on `earthdistance` and the ratings roll-up |
-| 6 | Dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, audit, settings | `platform_settings`, whose `instant_lead_minutes` and `max_booking_minutes` are read from `lib/constants.ts` defaults until the table lands |
+| 5 | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper, the full `professional_schedule` producer | **Delivered.** `0032` adds `expire_stale_offers` / `rank_candidates` / `match_booking` / `run_matching_sweep`, restores the `assigned → searching` edge and drops `sweep_new_bookings` — see §11. Phase 6's `0036` then switches the fan-out from rounds to a broadcast (§14 (broadcast matching)). `professional_schedule` is the one availability input §9.1 asks for that `lib/availability.ts` still cannot honour; distance/rating scoring waits on `earthdistance` and the ratings roll-up |
+| 6 | Dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, audit, settings | **Delivered.** `0033` `platform_settings`, `0034` the two staff write paths, `0035` `pricing_rules` + `cancellation_policies`, `0036` broadcast matching, `0037` `support_tickets` / `support_messages` / `disputes` — see §14. Still open: the notification dispatcher and analytics pages (Phase 7) and `payouts` (Phase 8) |
 | 7 | Channels, presence, chat, notification dispatcher, templates, reminders | Notification and chat state. The `chat-media` bucket has no client policy at all, on the stated grounds that the phase which owns it writes participant-scoped policies first |
 | 8 | Recurring, wallet top-up, referrals, favourites, surge, invoices/PDF, PWA | Recurring schedules and an invoice record. The `invoices` bucket exists and is private with no policy |
 | 9 | Security review, RLS audit, load test, accessibility pass, legal pages, runbook | Nothing new |
@@ -1475,22 +1483,23 @@ Those are notation, not an allow-list.
 
 ### Other things the migrations reference but do not contain
 
-- `0019_support.sql` and `0020_chat_notifications.sql` are named in comments in
-  `0000` and `0001` and are still unwritten. `0015_refunds_wallet.sql` landed in
-  Phase 3; `0012_assignment_integrity.sql` and `0021_earnings.sql` landed in
-  Phase 4.
+- `0020_chat_notifications.sql` is named in a comment in `0000`/`0001` and is still
+  unwritten. `0019_support.sql`'s content landed as `0037_support_disputes.sql`
+  (Phase 6) — renumbered because the ledger applies in filename order and it is later
+  than `0033`. `0015_refunds_wallet.sql` landed in Phase 3;
+  `0012_assignment_integrity.sql` and `0021_earnings.sql` landed in Phase 4.
 - `0018`, `0019`, `0020`, `0022` and `0023` do not exist. `ROADMAP.md` says why:
   the numbering is not contiguous because these were developed alongside the
   reference SmartPOS project, and nothing is missing between `0008` and `0024`
   that the plan put there.
-- `platform_settings` — see above. `professional_schedule`, `ratings` and
-  `bookings` now exist.
+- `platform_settings` — now exists (`0033`, Phase 6). `professional_schedule`,
+  `ratings` and `bookings` also exist.
 
 ---
 
 ## 13. What is verified, and what is not
 
-`npm run test:db` runs 99 tests across eight files against a real database and
+`npm run test:db` runs 104 tests across nine files against a real database and
 skips loudly without one. It is not a substitute for reading the migrations, but
 it does prove some things nothing else can.
 
@@ -1533,6 +1542,12 @@ it does prove some things nothing else can.
 - `bookings.otp_hash` is **invisible to the `authenticated` role** after the `0029`
   column re-grant: a query naming it raises a permission error, while every other
   column is still readable.
+- The staff write paths and settings (`0033`/`0034`): `db.admin.test.ts` proves every
+  `PLATFORM_DEFAULTS` key is seeded, that staff can read `platform_settings` and no
+  other role can, that `admin_cancel_booking` records the fee and withdraws the
+  holding offer while freeing the reserved slot, that `admin_assign_booking` raises an
+  ordinary `offered` row a professional still has to accept, and that both refuse an
+  unverified professional and an unknown booking.
 - A new auth user created through `admin.createUser` comes out with a usable
   profile: `phone` is `NULL` rather than fabricated, the name and status are right,
   a `customer` gets a `customers` row, a `professional` does not, a signup cannot
@@ -1623,8 +1638,185 @@ Four, all of them documentation rather than schema:
    script.
 
 Separately, the test counts in `README.md` and `docs/SETUP.md` were behind the code.
-Those were the Phase 1 numbers. With Phases 2–4 the suite is now **798 tests
-across 46 files: 702 mocked, and 96 across seven `test/db.*` files against a real
-database**. `README.md` and this file carry the current figures; `docs/SETUP.md`
-and `docs/ARCHITECTURE.md` still quote the older ones and were out of scope for the
-Phase 4 documentation pass.
+Those were the Phase 1 numbers. With Phases 2–6 the suite is now **954 tests across
+61 files: 850 mocked, and 104 across nine `test/db.*` files against a real database**.
+`README.md` and this file carry the current figures; `docs/SETUP.md` and
+`docs/ARCHITECTURE.md` still quote the older ones and were out of scope for this
+documentation pass.
+
+## 14. The admin console (Phase 6)
+
+Phase 6 is the operator's surface — §31.1's exit criterion is that ops can run the
+marketplace without a database console. Five migrations, `0033`–`0037`, all applied
+and idempotent. The read model is `lib/adminServer.ts` and the endpoints are §4.8 of
+`docs/API.md`.
+
+### `platform_settings` (`0033`) — the editable rules
+
+One row per rule, keyed by name: `key text primary key`, `value jsonb not null`,
+`updated_by uuid references auth.users(id)`, `updated_at`. The values are kept as a
+single `jsonb` column rather than typed columns so a new rule is a seed write, not a
+migration; the typing lives in `lib/settingsServer.ts`, which names every key, its
+default and its type and is the only reader. `0033` seeds all of `PLATFORM_DEFAULTS`
+(`on conflict do nothing`, so re-running never clobbers an operator's edit) and adds
+the `touch_updated_at` trigger. RLS is the split this document keeps drawing: **read**
+for the four staff roles, **write** for `is_admin()`. `anon` is revoked; `authenticated`
+gets select; `service_role` gets all. The constants in `lib/constants.ts` now describe
+the initial state, not the rule — the row is the rule.
+
+### The two staff write paths (`0034`)
+
+`admin_cancel_booking(booking_id, actor, reason, fee)` and
+`admin_assign_booking(booking_id, professional_id, actor, offer_ttl_minutes)` are the
+only two state changes an operator can make directly, and both take the
+`assign:<booking_id>` advisory lock first and run `security definer`, `service_role`-only.
+
+- **Cancel** withdraws the live assignment, deletes the reserved `professional_schedule`
+  row so the professional's calendar frees in the same statement, sets the transition
+  GUCs the `bookings` trigger reads, and cancels the booking with the reason and fee —
+  the fee is passed in by the route from `quoteCancellation()`, so the ladder stays in
+  one place (`lib/cancellation.ts`).
+- **Assign** validates the state is `paid`/`searching`/`assigned`, withdraws the holding
+  professional, frees their window, walks the legal hops (`paid → searching`, then
+  `searching → assigned` or a professional swap), and upserts an ordinary `offered`
+  assignment (`on conflict (professional_id, booking_id)`), bumping `total_offers`. It
+  raises the *chance*; the professional still accepts (§8.3).
+
+### `pricing_rules` and `cancellation_policies` (`0035`)
+
+`0035` introduces the `cancellation_fee_type` enum and two tables. `cancellation_policies`
+stores the §11.1 ladder as rows, keyed by band **ceiling** (`hours_before`, with `null`
+as the unbounded "≥ 24 h" row), plus `applies_when_arrived` and an optional `service_id`
+(`null` = the platform default), and it backfills the previous
+`DEFAULT_CANCELLATION_POLICIES` constant. `pricing_rules` is the §7.1 surge-window table
+— a multiplier scoped global/category/service, optionally bounded by `days_of_week`
+(empty = every day) and a `start_minute`/`end_minute` window, with `priority` and a
+validity window — and it is **seeded with nothing**: the empty table is "no surge",
+which is the prior behaviour. Both carry the `touch_updated_at` trigger and the staff
+read / admin write RLS split.
+
+One drift to record: `0035`'s comment says `lib/pricingServer.ts` resolves the winning
+rule. That file does not exist — resolution is `resolveSurgeMultiplier` in
+`lib/policyServer.ts` (narrower scope wins, then priority, then oldest) — and, more
+importantly, **nothing in the quote path multiplies by the result yet**: `buildQuote` /
+`priceQuote` do not read `pricing_rules` at all. `loadCancellationPolicies` is wired
+into the cancel route; the surge resolver is built and tested but unwired.
+
+### Broadcast matching (`0036`) — supersedes `0032`'s D1
+
+`0036` is a Phase 6 migration that changes a Phase 5 function. It **drops
+`uniq_active_assignment_per_booking`** and creates **`uniq_accepted_assignment_per_booking`**
+(unique on `booking_id` `where status = 'accepted'`), re-creates `match_booking` to
+offer to the whole ranked candidate list (leaving `bookings.professional_id` null for
+the round), and re-creates `accept_offer` to take the `assign:<booking_id>` lock, make
+the compare-and-set to `accepted`, **withdraw every other live offer**, and write the
+winner onto `bookings.professional_id`. The double-assign guarantee moves from "one live
+offer" to "one accepted assignment". §11 above is corrected to match.
+
+### Support and disputes (`0037`)
+
+Three tables. `support_tickets` (subject, category, priority, status, assignee,
+`resolved_at`/`resolved_by`) and its `support_messages` (body, `is_internal`, author) —
+an internal message is a flag, never a separate table, so it cannot leak by a wrong join.
+`disputes` (booking, raised_by, reason, status, resolution, `resolved_at`/`resolved_by`).
+All three carry `touch_updated_at` and the now-standard split: **read** for the four
+staff roles, **write** for `is_admin()`-style staff; `resolved_at`/`resolved_by` are
+always derived server-side so they cannot disagree with the status. This is the content
+`0000` had forward-referenced as `0019_support.sql`; it is numbered `0037` because the
+ledger applies migrations in filename order.
+
+### What the console does not add
+
+The console reads mostly pre-existing tables; it adds **no new RLS** on them. Reads run
+on the service-role client (which bypasses RLS) and are gated at the route, exactly as
+Phase 4 established (D3) — the new tables' policies exist as the backstop, not the
+mechanism. There is no cron in this phase: `vercel.json` is untouched, and the sweeps
+Phase 5 built are still driven by the same triggers and manual invocations.
+
+## 15. Realtime and notifications (Phase 7)
+
+Phase 7 is four migrations, `0038`–`0041`, all applied and idempotent. `0038` and
+`0040` create the chat and notification schema and seed the message catalogue; `0039`
+adds the source tables to Realtime's publication; `0041` adds the two reminder
+functions. The read models are `lib/notificationServer.ts` and `lib/chatServer.ts`,
+the dispatcher is `lib/notifications.ts`, and the endpoints are §4.9 of `docs/API.md`.
+
+### Chat (`0038`) — a thread belongs to a booking
+
+`chat_threads` has at most one row per booking (`booking_id uuid unique`), plus the
+two participants denormalised (`customer_id`, `professional_id`) so a participant
+check is one row and not a join, `closed_at`, and `last_message_at` (which the send
+route moves in the same action). `chat_messages` carries `thread_id`, `sender_id`,
+a `kind` (`text`/`image`/`system`), `body`, `image_path`, `read_at`. There is **no
+threads-without-a-professional**: the thread is created lazily on read by the route,
+only for a booking that already has both participants, so a "message this customer"
+endpoint that could reach a booking nobody was assigned to cannot exist.
+
+### Notifications (`0038`) — the record, the catalogue and the devices
+
+Three tables and one enum:
+
+- `notification_templates` — `(code, channel, locale)` **unique**, with `subject`,
+  `body`, `variables` (token names) and `is_active`, plus the `touch_updated_at`
+  trigger. The catalogue the dispatcher renders from.
+- `notifications` — one row per `(event, channel)` with `recipient_id`, `code`,
+  `channel`, rendered `title`/`body`, `status` (`queued`/`sent`/`failed`/`read`),
+  `error` (why a `failed` row failed), `booking_id`, `read_at`. Three indexes:
+  `idx_notifications_recipient` (the bell), `_pending` (the not-sent-yet scan) and
+  `_booking` (per-booking history).
+- `notification_devices` — `(profile_id, token)` unique, `platform`, `last_seen_at`.
+- enum `notification_channel` — `in_app`, `push`, `email`, `sms`, `whatsapp`.
+
+**RLS is the pattern this document keeps drawing, one notch tighter.** Reads are
+participant-scoped for chat (`customer_id`/`professional_id` = the caller) and
+staff-readable; a notification is readable **only by its own `recipient_id`**, a
+device row only by its own `profile_id`. Writes are service-role only — `authenticated`
+receives `SELECT` and nothing else on all five tables, and `anon` receives **no grant
+at all**. That is why the bell and the chat read through Route Handlers on the
+service-role client with an explicit `recipient_id`/participant filter: the policy is
+the backstop, the route is the mechanism, same as every phase since 4.
+
+### The publication (`0039`)
+
+`0039` adds six tables to `supabase_realtime` — `bookings`, `booking_assignments`,
+`chat_messages`, `notifications`, `professional_earnings`, `support_messages` — each
+guarded by a `pg_publication_tables` check because `ALTER PUBLICATION … ADD TABLE` is
+not idempotent on its own. These are exactly the §27.1 channel sources; `chat_threads`
+and the two notification support tables are **not** on it, because nothing subscribes
+to a thread row — you subscribe to its messages. Realtime applies the same SELECT
+policies as REST, so the publication widens *delivery*, not *visibility*.
+
+### The catalogue seed (`0040`)
+
+39 rows over `push`/`email`/`sms`, locale `en-IN`, inserted with `on conflict (code,
+channel, locale) do nothing` so an operator's edit survives a re-run. **There are no
+`in_app` rows**: the dispatcher renders an `in_app` message from the `push` template,
+which is why `DEFAULT_CHANNELS` can add an `in_app` row to every code without a
+matching seed. `test/db.notifications.test.ts` asserts the no-`in_app` invariant so a
+future seed that adds one is a deliberate change, not a surprise.
+
+### The reminder functions (`0041`)
+
+`run_service_reminders()` and `run_rating_reminders()` are `security definer`,
+`search_path = public`, take
+`pg_advisory_xact_lock(hashtext('cron:…')::bigint)` first, de-duplicate against
+`notifications` with `not exists` (per `(template_code, booking_id)`, and per
+`payload->>'window'` for the two `NEW_JOB_REMINDER` windows), render from
+`notification_templates`, and insert two rows per event
+(`unnest(array['in_app','push'])`, status `sent`) in one statement. Both return
+`jsonb` `{ sent }`; both are **revoked from `public`/`anon`/`authenticated` and
+granted to `service_role` only**, so the API route — not any client — is the caller.
+The whole pass shares one transaction on purpose: for the Realtime-only channels,
+writing the row *is* the delivery, so the advisory lock has to hold across the
+dedupe and the insert, which it can only do if there is no HTTP boundary between
+them.
+
+### What this phase's schema does not add
+
+- **No provider credentials.** `notification_devices` fills a registry, but there is
+  no FCM/APNs table or column — push has no transport yet (§9.6 of
+  `docs/FEATURES.md`).
+- **No delivery queue.** A `failed` row is a record, not a retry item; nothing polls
+  `notifications` for failures.
+- **`read-all` is a route, not DDL.** It is an `UPDATE … read_at = now()` scoped to
+  the caller; there is nothing to migrate.

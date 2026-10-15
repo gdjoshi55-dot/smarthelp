@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { IndianRupee, TrendingUp, Wallet, Landmark, RotateCcw } from 'lucide-react';
 import AuthGuard from '@/components/auth/AuthGuard';
-import { PosShell } from '@/components/professional/PosShell';
+import RoleShell from '@/components/auth/RoleShell';
 import {
   fetchEarnings,
   type EarningsEntry,
@@ -83,11 +83,7 @@ export default function ProfessionalEarnings() {
 
   return (
     <AuthGuard role="professional">
-      <PosShell
-        icon={IndianRupee}
-        title="Your earnings"
-        subtitle="Every completed job, what was deducted, and what you take home"
-      >
+      <RoleShell role="professional" eyebrow="Professional" title="Your earnings">
         {error ? (
           <div
             className="rounded-xl border border-red-200 bg-red-50 p-5 text-sm text-red-800"
@@ -176,7 +172,7 @@ export default function ProfessionalEarnings() {
             </section>
           </div>
         )}
-      </PosShell>
+      </RoleShell>
     </AuthGuard>
   );
 }

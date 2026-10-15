@@ -58,6 +58,9 @@ export const PLATFORM_SETTING_KEYS = {
   defaultArrivalRadiusM: 'number',
   proLocationFreshMinutes: 'number',
   proLocationThrottleSeconds: 'number',
+  surgeMaxFactor: 'number',
+  referralRewardReferrer: 'number',
+  referralRewardReferee: 'number',
 } as const;
 
 export type PlatformSettingKey = keyof typeof PLATFORM_SETTING_KEYS;

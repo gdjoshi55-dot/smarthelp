@@ -23,14 +23,19 @@ import { DEFAULT_DURATION_LADDER, PLATFORM_DEFAULTS } from './constants';
 import { getPlatformSettings } from './settingsServer';
 import { parseNumeric } from './money';
 import {
+  SURGE_MAX_FACTOR,
+  SURGE_MIN_FACTOR,
   priceQuote,
   toBookingMoneyColumns,
   type CouponInput,
+  type MultiplierInput,
   type PriceLineInput,
   type PricingBreakdown,
   type PricingSettings,
 } from './pricing';
+import { listPricingRules, resolveSurgeMultiplier } from './policyServer';
 import { createServerClient } from './supabaseServer';
+import { DEFAULT_TIMEZONE } from './constants';
 import type { BookingType, Coupon, PricingType, Service } from './supabase';
 import { isUuid } from './validation';
 
@@ -45,6 +50,33 @@ export interface BookingQuoteRequest {
   /** Uppercased and trimmed by the route before it gets here. */
   couponCode?: string | null;
   bookingType: BookingType;
+  /**
+   * §7.4. When the work starts, as an ISO instant. Surge windows are matched
+   * against the local wall clock of this moment; an instant booking falls back
+   * to "now". Optional so every existing caller keeps working — without it the
+   * surge resolution still runs, just against the current time.
+   */
+  scheduledAt?: string | null;
+}
+
+/** Local day-of-week and minute-of-day for a moment, in the platform's zone. */
+export function localWallClock(at: Date): { minute: number; dayOfWeek: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: DEFAULT_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    weekday: 'short',
+    hour12: false,
+  }).formatToParts(at);
+
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  const hour = Number(get('hour')) % 24;
+  const minute = Number(get('minute'));
+  const weekday = get('weekday');
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const dayOfWeek = Math.max(0, days.indexOf(weekday));
+
+  return { minute: hour * 60 + minute, dayOfWeek };
 }
 
 export interface BookingQuote {
@@ -84,13 +116,14 @@ export interface QuoteExpectation {
  * `getPlatformSettings()`, which parses each key and falls back row by row, so
  * a knobs DB missing one key still quotes correctly.
  */
-export async function loadPricingSettings(): Promise<PricingSettings> {
+export async function loadPricingSettings(): Promise<PricingSettings & { surgeMaxFactor: number }> {
   const live = await getPlatformSettings();
   return {
     taxRate: live.taxRate,
     platformFeePct: live.platformFeePct,
     platformFeeMin: live.platformFeeMin,
     currency: live.currency,
+    surgeMaxFactor: live.surgeMaxFactor,
   };
 }
 
@@ -315,7 +348,8 @@ export async function buildQuote(request: BookingQuoteRequest): Promise<BookingQ
 
   const coupon = await loadCoupon(request.couponCode ?? '', serviceIds);
   const settings = await loadPricingSettings();
-  const breakdown = priceQuote({ lines, settings, coupon });
+  const multipliers = await resolveBookingMultipliers(request, byId, settings.surgeMaxFactor);
+  const breakdown = priceQuote({ lines, settings, coupon, multipliers });
 
   return {
     breakdown,
@@ -343,6 +377,56 @@ function clampDuration(minutes: number, service: Service): number {
   const min = service.min_duration_min || 30;
   const max = service.max_duration_min || PLATFORM_DEFAULTS.maxBookingMinutes;
   return Math.min(Math.max(minutes, min), max);
+}
+
+/**
+ * §7.4. Resolve the surge multiplier(s) for a booking into engine input.
+ *
+ * Rules are matched against the local wall clock of the scheduled start (or
+ * "now" for an instant booking) — a surge window is a business-hours
+ * statement, not a UTC one. A multi-service booking takes the highest factor
+ * any of its services earns: surge is a property of the moment, and charging
+ * the booking the more expensive of two windows it straddles is the honest
+ * reading.
+ *
+ * The factor is clamped twice: once here to the platform's `surge_max_factor`
+ * (default 1.50), and again inside `priceQuote` to the absolute `[0.50, 2.00]`
+ * of §7.4. A factor of 1 produces no multiplier at all, so an empty
+ * `pricing_rules` table quotes exactly as it did before surge existed.
+ */
+export async function resolveBookingMultipliers(
+  request: BookingQuoteRequest,
+  servicesById: Map<string, Service>,
+  surgeMaxFactor: number,
+  supabase = createServerClient()
+): Promise<MultiplierInput[]> {
+  const rules = await listPricingRules(supabase);
+  if (rules.length === 0) return [];
+
+  const at = request.scheduledAt ? new Date(request.scheduledAt) : new Date();
+  const when = Number.isNaN(at.getTime()) ? new Date() : at;
+  const { minute, dayOfWeek } = localWallClock(when);
+
+  const ceiling = Math.min(
+    SURGE_MAX_FACTOR,
+    Number.isFinite(surgeMaxFactor) ? surgeMaxFactor : SURGE_MAX_FACTOR
+  );
+
+  let highest = 1;
+  for (const service of servicesById.values()) {
+    const { multiplier } = resolveSurgeMultiplier({
+      serviceId: service.id,
+      categoryId: service.category_id,
+      minute,
+      dayOfWeek,
+      rules,
+    });
+    if (multiplier > highest) highest = multiplier;
+  }
+
+  if (!Number.isFinite(highest) || highest === 1) return [];
+  const factor = Math.min(Math.max(highest, SURGE_MIN_FACTOR), ceiling);
+  return factor === 1 ? [] : [{ code: 'SURGE', factor }];
 }
 
 /**

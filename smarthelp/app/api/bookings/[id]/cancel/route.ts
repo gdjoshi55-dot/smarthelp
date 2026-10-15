@@ -8,6 +8,7 @@ import { loadCancellationPolicies } from '@/lib/policyServer'
 import { isCancellationReason } from '@/lib/status'
 import { createServerClient } from '@/lib/supabaseServer'
 import { refundCapturedBooking } from '@/lib/refundServer'
+import { notifyBookingCancelled } from '@/lib/notificationHooks'
 import { clientIp } from '@/lib/audit'
 import { parseNumeric } from '@/lib/money'
 
@@ -110,6 +111,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       feeRupees: fee.fee,
       ipAddress: clientIp(req),
     })
+
+    // The cancellation reaches both sides (§27.5 BOOKING_CANCELLED).
+    await notifyBookingCancelled(id, reasonCode)
 
     return ok({
       booking: result,

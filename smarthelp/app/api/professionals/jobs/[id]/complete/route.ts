@@ -5,6 +5,7 @@ import {
   getProBookingForCaller,
   stripProBooking,
 } from '@/lib/professionalServer';
+import { notifyServiceCompleted } from '@/lib/notificationHooks';
 import { uuid } from '@/lib/validation';
 
 export const runtime = 'nodejs';
@@ -63,6 +64,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     }
 
     const fresh = await getProBookingForCaller(bookingId, professional.id, auth.role);
+    // Completion tells the customer, and records the professional's earning
+    // (§27.5 SERVICE_COMPLETED, EARNING_CREATED).
+    await notifyServiceCompleted(bookingId);
     return ok({ job: stripProBooking(fresh as Record<string, unknown>, 'accepted') });
   });
 }

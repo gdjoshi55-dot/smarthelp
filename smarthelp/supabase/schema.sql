@@ -7546,3 +7546,1396 @@ revoke all on function public.accept_offer(uuid, uuid) from public, anon, authen
 
 grant execute on function public.match_booking(uuid) to service_role;
 grant execute on function public.accept_offer(uuid, uuid) to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0037_support_disputes.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0037_support_disputes.sql
+-- SmartHelp Phase 6: the support ticket queue and the dispute
+-- queue behind `/admin/support` and `/admin/disputes`.
+--
+-- Spec: §24 (support_tickets / support_messages / disputes), §20,
+--       §25.10, §31.1 (Phase 6).
+-- Depends on: 0001 (profiles, is_staff/is_admin, touch_updated_at),
+--             0010 (bookings).
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- §24 names three tables the console needs and the migrations have never
+-- carried: `support_tickets` (the queue an agent works), `support_messages`
+-- (the thread on one ticket) and `disputes` (a booking a customer or a
+-- professional has contested). The comments in `0000_storage_buckets.sql`
+-- already forward-reference this file as `0019_support.sql`; the number
+-- here is `0037` because the migration ledger is applied in filename order
+-- and every Phase 6 migration is chronological (0033-0036), so a file
+-- numbered `0019` would sort behind work it is later than.
+--
+-- A ticket and a dispute are deliberately separate: a ticket is "help me",
+-- a dispute is "I say this charge/outcome is wrong and I want it
+-- adjudicated". A dispute can spawn a ticket; a ticket is not a dispute.
+--
+-- Read model: staff read all three; support tickets are written by any staff
+-- member with `ticket.write`, disputes only by `ops`/`admin` holding
+-- `dispute.resolve`. The console goes through the service role and re-checks
+-- the capability itself (D3); the policies below are the backstop.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+-- ── support_tickets ────────────────────────────────────────
+create table if not exists public.support_tickets (
+  id           uuid primary key default gen_random_uuid(),
+  booking_id   uuid references public.bookings(id) on delete set null,
+  raised_by    uuid references public.profiles(id) on delete set null,
+  subject      text not null,
+  category     text not null default 'general',
+  priority     text not null default 'normal'
+               check (priority in ('low', 'normal', 'high', 'urgent')),
+  status       text not null default 'open'
+               check (status in ('open', 'pending', 'resolved', 'closed')),
+  assigned_to  uuid references public.profiles(id) on delete set null,
+  resolution   text,
+  resolved_at  timestamptz,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+
+create index if not exists idx_support_tickets_status
+  on public.support_tickets (status, created_at desc);
+create index if not exists idx_support_tickets_assignee
+  on public.support_tickets (assigned_to, created_at desc)
+  where status in ('open', 'pending');
+create index if not exists idx_support_tickets_booking
+  on public.support_tickets (booking_id, created_at desc);
+
+comment on table public.support_tickets is
+  'The admin console support queue (§24). A ticket is "help me"; a dispute
+   (§disputes) is "this charge/outcome is wrong". support_messages is the
+   thread. Service-role writes only (D3); RLS is the backstop.';
+comment on column public.support_tickets.resolution is
+  'The closing note, set when status moves to resolved/closed. Kept separate
+   from the message thread so "what was decided" is not buried in chat.';
+
+-- ── support_messages ───────────────────────────────────────
+create table if not exists public.support_messages (
+  id                uuid primary key default gen_random_uuid(),
+  ticket_id         uuid not null references public.support_tickets(id) on delete cascade,
+  author_profile_id uuid references public.profiles(id) on delete set null,
+  body              text not null,
+  -- An internal note is a staff-only message: it must never be projected to a
+  -- customer even if the ticket is later exposed to the person who raised it.
+  is_internal       boolean not null default false,
+  created_at        timestamptz not null default now()
+);
+
+create index if not exists idx_support_messages_ticket
+  on public.support_messages (ticket_id, created_at asc);
+
+comment on column public.support_messages.is_internal is
+  'Staff-only note. The read model must filter these out before a ticket is
+   ever shown to the customer who raised it.';
+
+-- ── disputes ───────────────────────────────────────────────
+create table if not exists public.disputes (
+  id           uuid primary key default gen_random_uuid(),
+  booking_id   uuid not null references public.bookings(id) on delete cascade,
+  raised_by    uuid references public.profiles(id) on delete set null,
+  reason       text not null,
+  description  text,
+  status       text not null default 'open'
+               check (status in ('open', 'investigating', 'resolved', 'rejected')),
+  resolution   text,
+  resolved_by  uuid references public.profiles(id) on delete set null,
+  resolved_at  timestamptz,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+
+create index if not exists idx_disputes_status
+  on public.disputes (status, created_at desc);
+create index if not exists idx_disputes_booking
+  on public.disputes (booking_id, created_at desc);
+
+comment on table public.disputes is
+  'A contested booking (§24, §25.10). Resolving it is `dispute.resolve`
+   (ops/admin). Distinct from support_tickets: a dispute is an adjudication,
+   not a help request.';
+
+drop trigger if exists trg_support_tickets_touch on public.support_tickets;
+create trigger trg_support_tickets_touch before update on public.support_tickets
+  for each row execute function public.touch_updated_at();
+
+drop trigger if exists trg_disputes_touch on public.disputes;
+create trigger trg_disputes_touch before update on public.disputes
+  for each row execute function public.touch_updated_at();
+
+-- ── Row level security ─────────────────────────────────────
+alter table public.support_tickets  enable row level security;
+alter table public.support_messages enable row level security;
+alter table public.disputes         enable row level security;
+
+-- Staff read the ticket queue and its threads. A customer or professional
+-- cannot read even their own here: §24 routes that through a handler that
+-- projects a safe view, and this table has no `current_customer_id` policy
+-- by design.
+do $$ begin
+  create policy support_tickets_read_staff on public.support_tickets for select
+    using (public.is_staff(
+      array['support','ops','admin','super_admin']::public.user_role[]
+    ));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy support_tickets_write_staff on public.support_tickets for all
+    using (public.is_staff(
+      array['support','ops','admin','super_admin']::public.user_role[]
+    ))
+    with check (public.is_staff(
+      array['support','ops','admin','super_admin']::public.user_role[]
+    ));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy support_messages_read_staff on public.support_messages for select
+    using (public.is_staff(
+      array['support','ops','admin','super_admin']::public.user_role[]
+    ));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy support_messages_write_staff on public.support_messages for all
+    using (public.is_staff(
+      array['support','ops','admin','super_admin']::public.user_role[]
+    ))
+    with check (public.is_staff(
+      array['support','ops','admin','super_admin']::public.user_role[]
+    ));
+exception when duplicate_object then null; end $$;
+
+-- Disputes are read by all staff, but adjudicated only by ops/admin: the
+-- resolve decision is `dispute.resolve`, and support does not hold it.
+do $$ begin
+  create policy disputes_read_staff on public.disputes for select
+    using (public.is_staff(
+      array['support','ops','admin','super_admin']::public.user_role[]
+    ));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy disputes_write_ops on public.disputes for all
+    using (public.is_staff(array['ops','admin','super_admin']::public.user_role[]))
+    with check (public.is_staff(array['ops','admin','super_admin']::public.user_role[]));
+exception when duplicate_object then null; end $$;
+
+revoke all on public.support_tickets  from anon;
+revoke all on public.support_messages from anon;
+revoke all on public.disputes         from anon;
+
+grant select on public.support_tickets  to authenticated;
+grant select on public.support_messages to authenticated;
+grant select on public.disputes         to authenticated;
+
+grant all on public.support_tickets  to service_role;
+grant all on public.support_messages to service_role;
+grant all on public.disputes         to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0038_chat_notifications.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0038_chat_notifications.sql
+-- SmartHelp Phase 7: the chat thread, the notification bell and
+-- the admin-editable template catalogue behind
+-- `/admin/notifications` and the `me:{profileId}` Realtime channel.
+--
+-- Spec: §24.11 (chat_threads / chat_messages / notification_templates
+--       / notifications), §27.1-27.5, §25.9, §31.1 (Phase 7).
+-- Depends on: 0001 (profiles, current_customer_id, is_staff,
+--             touch_updated_at), 0005 (professionals,
+--             current_professional_id), 0010 (bookings),
+--             0017 (customers already linked via 0001).
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- §27 describes a product where "a status change lands in under a
+-- second" and "every catalogue notification fires". The migrations
+-- carry neither of the two halves of that: nothing stores a
+-- conversation, and nothing stores an outbound message. The
+-- comments in 0000/0001 forward-reference this file as
+-- `0020_chat_notifications.sql`; the number here is `0038` because
+-- the ledger is applied in filename order and a file numbered 0020
+-- would sort behind ten migrations it is later than.
+--
+-- READ MODEL / WRITES
+-- -------------------
+-- Every write goes through the service role (D3): the routes re-check
+-- authority themselves, and the policies below are the backstop. The
+-- SELECT policies are not decoration — Supabase Realtime applies RLS
+-- exactly as REST does (§24.16), so `notifications` and
+-- `chat_messages` must be readable by the right caller for the
+-- `me:{profileId}` and `chat:{threadId}` channels to deliver anything.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+-- ── notification_channel ───────────────────────────────────
+-- Created whole, like the booking enums in 0009: the values a later
+-- phase will deliver through are named now, so `sms` is a channel the
+-- database already understands even while no SMS provider is wired
+-- (`.env.example`: "SMS is intentionally not configured").
+do $$ begin
+  create type public.notification_channel as enum
+    ('push', 'sms', 'email', 'in_app', 'whatsapp');
+exception when duplicate_object then null; end $$;
+
+comment on type public.notification_channel is
+  '§24.11 delivery channels. All five are storable; only `in_app` and
+   `email` have a live transport in Phase 7 (D1). The rest are recorded
+   with status=failed and a reason rather than pretended.';
+
+-- ── chat_threads ───────────────────────────────────────────
+-- One thread per booking (UNIQUE booking_id). A thread cannot exist
+-- before a professional is assigned, which is why both FKs are NOT NULL:
+-- there is no "waiting for a pro" chat in the product.
+create table if not exists public.chat_threads (
+  id              uuid primary key default gen_random_uuid(),
+  booking_id      uuid not null unique references public.bookings(id) on delete cascade,
+  customer_id     uuid not null references public.customers(id) on delete cascade,
+  professional_id uuid not null references public.professionals(id) on delete cascade,
+  last_message_at timestamptz,
+  closed_at       timestamptz,
+  created_at      timestamptz not null default now()
+);
+
+create index if not exists idx_chat_threads_customer
+  on public.chat_threads (customer_id, last_message_at desc nulls last);
+create index if not exists idx_chat_threads_professional
+  on public.chat_threads (professional_id, last_message_at desc nulls last);
+
+comment on table public.chat_threads is
+  'The booking-scoped conversation (§24.11). Created lazily on first
+   message or first read (D3); participants are the booking customer and
+   the assigned professional. Staff may read, only participants may post.';
+
+-- ── chat_messages ──────────────────────────────────────────
+create table if not exists public.chat_messages (
+  id         uuid primary key default gen_random_uuid(),
+  thread_id  uuid not null references public.chat_threads(id) on delete cascade,
+  sender_id  uuid references public.profiles(id) on delete set null,
+  kind       text not null default 'text'
+             check (kind in ('text', 'image', 'system')),
+  body       text,
+  image_path text,
+  read_at    timestamptz,
+  created_at timestamptz not null default now(),
+  -- A text message with no body is a bug, not an empty message. An image
+  -- or system message may legitimately carry no body.
+  constraint chat_messages_text_or_image
+    check (kind <> 'text' or body is not null)
+);
+
+create index if not exists idx_chat_messages_thread
+  on public.chat_messages (thread_id, created_at);
+
+comment on column public.chat_messages.sender_id is
+  'Null for a system message (kind=system), which only the server writes.';
+comment on column public.chat_messages.image_path is
+  'Object path in the `chat-media` bucket (created in 0000), not a URL —
+   the read model signs it.';
+
+-- ── notification_templates ─────────────────────────────────
+create table if not exists public.notification_templates (
+  id         uuid primary key default gen_random_uuid(),
+  code       text not null,
+  channel    public.notification_channel not null,
+  locale     text not null default 'en-IN',
+  subject    text,
+  body       text not null,
+  variables  text[] not null default '{}',
+  is_active  boolean not null default true,
+  updated_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (code, channel, locale)
+);
+
+create index if not exists idx_notification_templates_code
+  on public.notification_templates (code, is_active);
+
+comment on column public.notification_templates.body is
+  'Supports {{token}} placeholders (§27.4). The dispatcher substitutes
+   from the notification payload; email bodies are HTML-escaped first.';
+
+-- ── notifications ──────────────────────────────────────────
+create table if not exists public.notifications (
+  id            uuid primary key default gen_random_uuid(),
+  recipient_id  uuid not null references public.profiles(id) on delete cascade,
+  channel       public.notification_channel not null,
+  template_code text not null,
+  payload       jsonb not null default '{}'::jsonb,
+  title         text,
+  body          text,
+  status        text not null default 'queued'
+                check (status in ('queued', 'sent', 'failed', 'read')),
+  error         text,
+  booking_id    uuid references public.bookings(id) on delete cascade,
+  read_at       timestamptz,
+  sent_at       timestamptz,
+  created_at    timestamptz not null default now()
+);
+
+create index if not exists idx_notifications_recipient
+  on public.notifications (recipient_id, created_at desc);
+create index if not exists idx_notifications_pending
+  on public.notifications (status, created_at)
+  where status = 'queued';
+create index if not exists idx_notifications_booking
+  on public.notifications (booking_id, created_at desc)
+  where booking_id is not null;
+
+comment on table public.notifications is
+  'One row per (event, channel). `read` is a terminal success state for
+   in_app and is a superset of `sent`; a failed row keeps its `error`.';
+
+-- ── notification_devices ───────────────────────────────────
+-- §25.9 names `POST /api/notifications/push-token` but §24.11 does not
+-- tabulate a home for the token. This is that home (a documented
+-- addition): without a provider the row is still the registry a later
+-- FCM/APNs integration reads.
+create table if not exists public.notification_devices (
+  id           uuid primary key default gen_random_uuid(),
+  profile_id   uuid not null references public.profiles(id) on delete cascade,
+  token        text not null,
+  platform     text not null default 'web'
+               check (platform in ('web', 'ios', 'android')),
+  created_at   timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  unique (profile_id, token)
+);
+
+create index if not exists idx_notification_devices_profile
+  on public.notification_devices (profile_id);
+
+comment on table public.notification_devices is
+  'Push-token registry behind §25.9 `POST /api/notifications/push-token`.
+   Not tabulated in §24.11; added so the endpoint has a home (D1).';
+
+-- ── updated_at ─────────────────────────────────────────────
+drop trigger if exists trg_notification_templates_touch
+  on public.notification_templates;
+create trigger trg_notification_templates_touch
+  before update on public.notification_templates
+  for each row execute function public.touch_updated_at();
+
+-- ── Row level security ─────────────────────────────────────
+alter table public.chat_threads           enable row level security;
+alter table public.chat_messages          enable row level security;
+alter table public.notification_templates enable row level security;
+alter table public.notifications          enable row level security;
+alter table public.notification_devices   enable row level security;
+
+-- chat_threads: a participant reads their own threads; staff read all.
+do $$ begin
+  create policy chat_threads_read_participant on public.chat_threads for select
+    using (
+      customer_id = public.current_customer_id()
+      or professional_id = public.current_professional_id()
+      or public.is_staff(
+        array['support','ops','admin','super_admin']::public.user_role[]
+      )
+    );
+exception when duplicate_object then null; end $$;
+
+-- chat_messages: readable when the parent thread is readable. The
+-- subquery runs under the caller's RLS, so it inherits the thread policy.
+do $$ begin
+  create policy chat_messages_read_participant on public.chat_messages for select
+    using (
+      exists (select 1 from public.chat_threads t where t.id = thread_id)
+    );
+exception when duplicate_object then null; end $$;
+
+-- notification_templates: staff read (the editor); writes are service-role.
+do $$ begin
+  create policy notification_templates_read_staff
+    on public.notification_templates for select
+    using (public.is_staff(
+      array['support','ops','admin','super_admin']::public.user_role[]
+    ));
+exception when duplicate_object then null; end $$;
+
+-- notifications: a recipient reads their own; staff read the console.
+do $$ begin
+  create policy notifications_read_own on public.notifications for select
+    using (
+      recipient_id = auth.uid()
+      or public.is_staff(
+        array['support','ops','admin','super_admin']::public.user_role[]
+      )
+    );
+exception when duplicate_object then null; end $$;
+
+-- notification_devices: strictly own rows.
+do $$ begin
+  create policy notification_devices_own on public.notification_devices for all
+    using (profile_id = auth.uid())
+    with check (profile_id = auth.uid());
+exception when duplicate_object then null; end $$;
+
+-- ── Grants ─────────────────────────────────────────────────
+revoke all on public.chat_threads           from anon;
+revoke all on public.chat_messages          from anon;
+revoke all on public.notification_templates from anon;
+revoke all on public.notifications          from anon;
+revoke all on public.notification_devices   from anon;
+
+grant select on public.chat_threads           to authenticated;
+grant select on public.chat_messages          to authenticated;
+grant select on public.notification_templates to authenticated;
+grant select on public.notifications          to authenticated;
+grant select, insert, update, delete on public.notification_devices to authenticated;
+
+grant all on public.chat_threads           to service_role;
+grant all on public.chat_messages          to service_role;
+grant all on public.notification_templates to service_role;
+grant all on public.notifications          to service_role;
+grant all on public.notification_devices   to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0039_realtime_publication.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0039_realtime_publication.sql
+-- SmartHelp Phase 7: put the tables §27.1 streams into Supabase
+-- Realtime's publication.
+--
+-- Spec: §24.16 (realtime publication), §27.1 (channel map).
+-- Depends on: 0010 (bookings), 0012 (booking_assignments),
+--             0021 (professional_earnings), 0037 (support_messages),
+--             0038 (chat_messages, notifications).
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- Realtime only streams tables that are a member of the
+-- `supabase_realtime` publication. The six tables below are the source
+-- of every channel in §27.1; without this, `booking:{id}` and
+-- `me:{profileId}` subscribe successfully and then never fire.
+--
+-- RLS APPLIES
+-- -----------
+-- A Realtime subscriber receives only rows its role may SELECT, judged
+-- by the same policies REST uses. So this migration widens *delivery*,
+-- never *visibility*: a customer still cannot see another customer's
+-- booking or notification, because the SELECT policies in 0038 (and the
+-- ones already on the booking tables) deny it.
+--
+-- IDEMPOTENT WHERE POSTGRES ALLOWS
+-- --------------------------------
+-- `ALTER PUBLICATION … ADD TABLE` is not itself idempotent — a second
+-- run raises "table is already a member". Each add is therefore guarded
+-- by a check against `pg_publication_tables`, and the publication itself
+-- is created only if a project somehow lacks it (Supabase supplies it).
+-- ============================================================
+
+do $$ begin
+  if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    create publication supabase_realtime;
+  end if;
+end $$;
+
+do $$
+declare
+  t text;
+  tables text[] := array[
+    'bookings',
+    'booking_assignments',
+    'chat_messages',
+    'notifications',
+    'professional_earnings',
+    'support_messages'
+  ];
+begin
+  foreach t in array tables loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime'
+        and schemaname = 'public'
+        and tablename = t
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    end if;
+  end loop;
+end $$;
+
+comment on publication supabase_realtime is
+  'Source tables for §27.1 channels: booking:{id}, offers:{proId},
+   chat:{threadId}, ticket:{id}, me:{profileId}. Delivery only — RLS
+   still decides which rows a subscriber may receive.';
+
+
+-- ------------------------------------------------------------
+-- 0040_notification_templates_seed.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0040_notification_templates_seed.sql
+-- SmartHelp Phase 7: seed one template per (code, channel) in the
+-- §27.5 notification catalogue, in `en-IN`.
+--
+-- Spec: §27.4 (dispatch), §27.5 (catalogue), §24.11.
+-- Depends on: 0038 (notification_templates).
+--
+-- WHY SEEDED, AND WHY `DO NOTHING`
+-- --------------------------------
+-- The dispatcher (lib/notifications.ts) resolves a template row before
+-- it can render anything, so an empty table means "every notification
+-- silently does not fire" — the exact failure the phase's exit criteria
+-- name. These rows are the reference set.
+--
+-- The conflict clause is `do nothing`, not `do update`: these are start
+-- -of-life defaults, and an admin who edits a body in the §25.10 editor
+-- must not have their wording overwritten the next time migrations run.
+-- A locale with no row falls back to the built-in default in code, so a
+-- new locale never blocks a notification.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+insert into public.notification_templates (code, channel, locale, subject, body, variables)
+values
+  -- Auth
+  ('OTP_LOGIN', 'sms', 'en-IN', null,
+   'Your SmartHelp verification code is {{code}}. It expires in {{minutes}} minutes. Do not share it with anyone.',
+   array['code', 'minutes']),
+
+  -- Booking lifecycle
+  ('BOOKING_CONFIRMED', 'sms', 'en-IN', null,
+   'Booking confirmed: {{serviceName}} on {{date}} at {{time}}. Ref {{bookingId}}.',
+   array['serviceName', 'date', 'time', 'bookingId']),
+  ('BOOKING_CONFIRMED', 'push', 'en-IN', 'Booking confirmed',
+   'Your {{serviceName}} on {{date}} at {{time}} is confirmed. We are finding you a professional.',
+   array['serviceName', 'date', 'time']),
+  ('BOOKING_CONFIRMED', 'email', 'en-IN', 'Your SmartHelp booking is confirmed',
+   'Hi {{customerName}},' || chr(10) || chr(10) ||
+   'Your booking for {{serviceName}} on {{date}} at {{time}} is confirmed. Booking reference: {{bookingId}}.' || chr(10) || chr(10) ||
+   'We will let you know the moment a professional is on the way.' || chr(10) || chr(10) ||
+   '— SmartHelp',
+   array['customerName', 'serviceName', 'date', 'time', 'bookingId']),
+
+  ('PRO_ASSIGNED', 'push', 'en-IN', 'Professional assigned',
+   '{{proName}} has taken your {{serviceName}} booking for {{date}} at {{time}}.',
+   array['proName', 'serviceName', 'date', 'time']),
+  ('PRO_ASSIGNED', 'sms', 'en-IN', null,
+   '{{proName}} will handle your {{serviceName}} booking on {{date}} at {{time}}.',
+   array['proName', 'serviceName', 'date', 'time']),
+
+  ('PRO_ACCEPTED', 'push', 'en-IN', 'Professional accepted',
+   '{{proName}} accepted your {{serviceName}} booking for {{date}} at {{time}}.',
+   array['proName', 'serviceName', 'date', 'time']),
+  ('PRO_ACCEPTED', 'sms', 'en-IN', null,
+   '{{proName}} accepted your {{serviceName}} booking for {{date}} at {{time}}.',
+   array['proName', 'serviceName', 'date', 'time']),
+
+  ('PRO_ON_THE_WAY', 'push', 'en-IN', 'Professional on the way',
+   '{{proName}} is on the way. Estimated arrival in {{etaMinutes}} minutes.',
+   array['proName', 'etaMinutes']),
+  ('PRO_ON_THE_WAY', 'sms', 'en-IN', null,
+   '{{proName}} is on the way to your address. ETA about {{etaMinutes}} minutes.',
+   array['proName', 'etaMinutes']),
+
+  ('PRO_ARRIVED', 'push', 'en-IN', 'Professional arrived',
+   '{{proName}} has arrived. Share the start OTP when you are ready.',
+   array['proName']),
+
+  -- Service execution
+  ('SERVICE_STARTED', 'push', 'en-IN', 'Service started',
+   '{{serviceName}} has started. Scheduled to end at {{endsAt}}.',
+   array['serviceName', 'endsAt']),
+  ('SERVICE_ENDING_SOON', 'push', 'en-IN', 'Service ending soon',
+   'Your {{serviceName}} ends in about {{minutes}} minutes.',
+   array['serviceName', 'minutes']),
+  ('SERVICE_COMPLETED', 'push', 'en-IN', 'Service completed',
+   '{{serviceName}} is complete. Amount: {{amount}}.',
+   array['serviceName', 'amount']),
+  ('SERVICE_COMPLETED', 'email', 'en-IN', 'Your SmartHelp service is complete',
+   'Hi {{customerName}},' || chr(10) || chr(10) ||
+   'Your {{serviceName}} is complete. Amount charged: {{amount}}.' || chr(10) || chr(10) ||
+   'Thank you for using SmartHelp.' || chr(10) || chr(10) || '— SmartHelp',
+   array['customerName', 'serviceName', 'amount']),
+
+  ('EXTENSION_REQUESTED', 'push', 'en-IN', 'More time requested',
+   '{{customerName}} has asked for {{minutes}} more minutes.',
+   array['customerName', 'minutes']),
+  ('EXTENSION_ACCEPTED', 'push', 'en-IN', 'Extension accepted',
+   '{{proName}} approved an extra {{minutes}} minutes.',
+   array['proName', 'minutes']),
+  ('EXTENSION_DECLINED', 'push', 'en-IN', 'Extension declined',
+   '{{proName}} could not extend the booking.',
+   array['proName']),
+
+  -- Cancellation and money
+  ('BOOKING_CANCELLED', 'push', 'en-IN', 'Booking cancelled',
+   'Your {{serviceName}} booking on {{date}} at {{time}} was cancelled. {{reason}}',
+   array['serviceName', 'date', 'time', 'reason']),
+  ('BOOKING_CANCELLED', 'sms', 'en-IN', null,
+   'Your {{serviceName}} booking on {{date}} at {{time}} was cancelled. {{reason}}',
+   array['serviceName', 'date', 'time', 'reason']),
+
+  ('REFUND_PROCESSED', 'push', 'en-IN', 'Refund processed',
+   '{{amount}} has been refunded to {{destination}}.',
+   array['amount', 'destination']),
+  ('REFUND_PROCESSED', 'sms', 'en-IN', null,
+   '{{amount}} has been refunded to {{destination}}.',
+   array['amount', 'destination']),
+  ('REFUND_PROCESSED', 'email', 'en-IN', 'Your SmartHelp refund is on its way',
+   'Hi {{customerName}},' || chr(10) || chr(10) ||
+   'We have processed a refund of {{amount}} to {{destination}}. Bank timelines may add a few working days.' || chr(10) || chr(10) ||
+   '— SmartHelp',
+   array['customerName', 'amount', 'destination']),
+
+  -- Professional side
+  ('NEW_OFFER', 'push', 'en-IN', 'New job near you',
+   '{{serviceName}} in {{locality}}. Payout {{payout}}. First to accept wins.',
+   array['serviceName', 'locality', 'payout']),
+  ('OFFER_EXPIRING', 'push', 'en-IN', 'Job offer expiring',
+   'Your offer lapses in {{seconds}} seconds.',
+   array['seconds']),
+  ('NEW_JOB_REMINDER', 'push', 'en-IN', 'Job starting soon',
+   '{{serviceName}} starts in {{minutes}} minutes.',
+   array['serviceName', 'minutes']),
+  ('EARNING_CREATED', 'push', 'en-IN', 'Earning available',
+   '{{amount}} is now available in your earnings.',
+   array['amount']),
+  ('EARNING_CREATED', 'sms', 'en-IN', null,
+   '{{amount}} has been added to your available earnings.',
+   array['amount']),
+  ('PAYOUT_SENT', 'push', 'en-IN', 'Payout sent',
+   'A payout of {{amount}} is on its way. Reference {{reference}}.',
+   array['amount', 'reference']),
+  ('PAYOUT_SENT', 'sms', 'en-IN', null,
+   'Payout of {{amount}} sent. Reference {{reference}}.',
+   array['amount', 'reference']),
+
+  ('KYC_APPROVED', 'push', 'en-IN', 'Verification approved',
+   'Welcome aboard, {{proName}}. Your documents are verified.',
+   array['proName']),
+  ('KYC_APPROVED', 'email', 'en-IN', 'You are verified on SmartHelp',
+   'Hi {{proName}},' || chr(10) || chr(10) ||
+   'Your documents are verified. You can now accept jobs on SmartHelp.' || chr(10) || chr(10) ||
+   '— SmartHelp',
+   array['proName']),
+  ('KYC_REJECTED', 'push', 'en-IN', 'Verification needs attention',
+   '{{proName}}, a document was not accepted. Reason: {{reason}}.',
+   array['proName', 'reason']),
+  ('KYC_REJECTED', 'email', 'en-IN', 'Action needed on your SmartHelp verification',
+   'Hi {{proName}},' || chr(10) || chr(10) ||
+   'We could not verify your documents. Reason: {{reason}}. Please re-upload from your profile.' || chr(10) || chr(10) ||
+   '— SmartHelp',
+   array['proName', 'reason']),
+
+  -- Support and safety
+  ('TICKET_UPDATE', 'push', 'en-IN', 'Support update',
+   'There is an update on your ticket: {{ticketSubject}}.',
+   array['ticketSubject']),
+  ('TICKET_UPDATE', 'email', 'en-IN', 'Update on your SmartHelp ticket',
+   'Hi,' || chr(10) || chr(10) ||
+   'There is a new update on your ticket "{{ticketSubject}}". Open SmartHelp to read it.' || chr(10) || chr(10) ||
+   '— SmartHelp',
+   array['ticketSubject']),
+  ('SAFETY_ALERT', 'push', 'en-IN', 'Safety alert',
+   'A safety incident was recorded. Reference {{reference}}.',
+   array['reference']),
+  ('SAFETY_ALERT', 'sms', 'en-IN', null,
+   'Safety incident recorded on SmartHelp. Reference {{reference}}.',
+   array['reference']),
+
+  -- Ratings
+  ('RATING_REMINDER', 'push', 'en-IN', 'How did it go?',
+   'Rate your {{serviceName}} with {{proName}} — it takes a few seconds.',
+   array['serviceName', 'proName'])
+on conflict (code, channel, locale) do nothing;
+
+
+-- ------------------------------------------------------------
+-- 0041_reminder_crons.sql
+-- ------------------------------------------------------------
+
+-- 0041_reminder_crons.sql — the two §25.11 reminder passes (Phase 7, Wave D).
+--
+-- `/api/cron/service-reminders` (`*/15 * * * *`) and
+-- `/api/cron/rating-reminders` (`13 19 * * *`) nudge people about bookings that
+-- are about to start, about to end, or have just finished. Every code they
+-- emit is a *Realtime-only* notification: `SERVICE_ENDING_SOON`,
+-- `NEW_JOB_REMINDER` and `RATING_REMINDER` all fan out to `['in_app','push']`
+-- (§27.5, `lib/notifications.ts`), and for those two channels *writing the row
+-- is the delivery* — a subscribed browser receives it on `me:{profileId}`.
+--
+-- That is what lets the whole pass live here in one transaction:
+--
+--   * the `pg_advisory_xact_lock` (§28.1 "Cron overlap") is real mutual
+--     exclusion rather than a lock held for a single pooled statement, because
+--     the lock, the scan, the idempotency guard and the inserts are one
+--     transaction;
+--   * the idempotency guard (`not exists` a notification for the same code and
+--     booking) is evaluated under that lock, so two overlapping passes cannot
+--     both claim the same booking.
+--
+-- The event-driven notifications (`BOOKING_CONFIRMED`, `PRO_ACCEPTED`, …) still
+-- go through `dispatch()` in `lib/notifications.ts`, which remains the single
+-- writer for those. A reminder is the one class that is claimed atomically in
+-- the database, because it has no email/SMS transport to call from Node and so
+-- nothing that needs the dispatcher's per-channel error handling.
+--
+-- This is a documented narrowing of §27.4: the dispatcher's rendering logic is
+-- mirrored here in the same `{{token}}` shape for the very small set of tokens
+-- these three templates use (`serviceName`, `minutes`, `proName`).
+
+-- ── service-reminders ──────────────────────────────────────
+--
+-- Two codes, both addressed to the professional on the job:
+--   SERVICE_ENDING_SOON — an `in_progress` job whose `ends_at` is within 15 min.
+--   NEW_JOB_REMINDER    — a job starting within 60 min (the "60 minute" nudge)
+--                         and, separately, within 15 min (the "15 minute"
+--                         nudge). The two windows are disjoint (the 60-minute
+--                         window opens *after* 15 min remaining and closes at
+--                         60), so a booking is reminded at most twice, once per
+--                         window, and the second window is only ever reached if
+--                         the first was not — a cron that missed the 60-minute
+--                         pass still nudges at 15.
+create or replace function public.run_service_reminders()
+returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_booking    record;
+  v_recipient  uuid;
+  v_service    text;
+  v_minutes    int;
+  v_title      text;
+  v_body       text;
+  v_payload    jsonb;
+  v_sent       int := 0;
+begin
+  -- §28.1: serialise against a manual trigger racing the schedule.
+  perform pg_advisory_xact_lock(hashtext('cron:service-reminders')::bigint);
+
+  -- ── SERVICE_ENDING_SOON (to the professional) ─────────────
+  for v_booking in
+    select b.id, b.professional_id, b.ends_at
+      from public.bookings b
+     where b.status = 'in_progress'
+       and b.ends_at is not null
+       and b.ends_at between now() and now() + interval '15 minutes'
+       and not exists (
+             select 1 from public.notifications n
+              where n.template_code = 'SERVICE_ENDING_SOON'
+                and n.booking_id = b.id
+           )
+  loop
+    select p.profile_id into v_recipient
+      from public.professionals p where p.id = v_booking.professional_id;
+    if v_recipient is null then continue; end if;
+
+    select coalesce(
+             (select bi.service_name from public.booking_items bi
+               where bi.booking_id = v_booking.id
+               order by bi.created_at limit 1),
+             'your service')
+      into v_service;
+
+    v_minutes := greatest(0, round(extract(epoch from (v_booking.ends_at - now())) / 60)::int);
+    v_payload := jsonb_build_object('serviceName', v_service, 'minutes', v_minutes);
+
+    select t.subject, t.body into v_title, v_body
+      from public.notification_templates t
+     where t.code = 'SERVICE_ENDING_SOON'
+       and t.channel = 'push'
+       and t.locale = 'en-IN'
+       and t.is_active
+     limit 1;
+    v_body := replace(replace(coalesce(v_body, 'Service ending soon'),
+                 '{{serviceName}}', v_service), '{{minutes}}', v_minutes::text);
+
+    insert into public.notifications
+      (recipient_id, channel, template_code, payload, title, body, status, booking_id, sent_at)
+    select v_recipient, ch, 'SERVICE_ENDING_SOON', v_payload, v_title, v_body,
+           'sent', v_booking.id, now()
+      from unnest(array['in_app', 'push']::public.notification_channel[]) as ch;
+    v_sent := v_sent + 1;
+  end loop;
+
+  -- ── NEW_JOB_REMINDER (to the professional) ────────────────
+  for v_booking in
+    select b.id, b.professional_id, b.scheduled_start_at,
+           case when b.scheduled_start_at > now() + interval '15 minutes'
+                then 60 else 15 end as window_minutes
+      from public.bookings b
+     where b.status in ('assigned', 'on_the_way', 'arrived')
+       and b.scheduled_start_at is not null
+       and b.scheduled_start_at between now() and now() + interval '60 minutes'
+       and not exists (
+             select 1 from public.notifications n
+              where n.template_code = 'NEW_JOB_REMINDER'
+                and n.booking_id = b.id
+                and (n.payload ->> 'window') = (case
+                      when b.scheduled_start_at > now() + interval '15 minutes'
+                      then '60' else '15' end)
+           )
+  loop
+    select p.profile_id into v_recipient
+      from public.professionals p where p.id = v_booking.professional_id;
+    if v_recipient is null then continue; end if;
+
+    select coalesce(
+             (select bi.service_name from public.booking_items bi
+               where bi.booking_id = v_booking.id
+               order by bi.created_at limit 1),
+             'your service')
+      into v_service;
+
+    v_minutes := v_booking.window_minutes;
+    v_payload := jsonb_build_object(
+      'serviceName', v_service, 'minutes', v_minutes, 'window', v_minutes::text);
+
+    select t.subject, t.body into v_title, v_body
+      from public.notification_templates t
+     where t.code = 'NEW_JOB_REMINDER'
+       and t.channel = 'push'
+       and t.locale = 'en-IN'
+       and t.is_active
+     limit 1;
+    v_body := replace(replace(coalesce(v_body, 'Job starting soon'),
+                 '{{serviceName}}', v_service), '{{minutes}}', v_minutes::text);
+
+    insert into public.notifications
+      (recipient_id, channel, template_code, payload, title, body, status, booking_id, sent_at)
+    select v_recipient, ch, 'NEW_JOB_REMINDER', v_payload, v_title, v_body,
+           'sent', v_booking.id, now()
+      from unnest(array['in_app', 'push']::public.notification_channel[]) as ch;
+    v_sent := v_sent + 1;
+  end loop;
+
+  return jsonb_build_object('sent', v_sent);
+end $$;
+
+comment on function public.run_service_reminders() is
+  'The */15 reminder pass (§25.11): SERVICE_ENDING_SOON and NEW_JOB_REMINDER,
+   addressed to the professional. Takes pg_advisory_xact_lock and is idempotent
+   per (code, booking) — and per window for NEW_JOB_REMINDER — so overlapping
+   passes cannot double-notify. Returns {sent: n}.';
+
+-- ── rating-reminders ───────────────────────────────────────
+--
+-- RATING_REMINDER, addressed to the customer, for every booking that reached
+-- `completed` today (Asia/Kolkata) and has not been rated. One nudge per
+-- booking, guarded exactly like the service pass.
+create or replace function public.run_rating_reminders()
+returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_booking    record;
+  v_recipient  uuid;
+  v_service    text;
+  v_pro_name   text;
+  v_title      text;
+  v_body       text;
+  v_payload    jsonb;
+  v_sent       int := 0;
+begin
+  perform pg_advisory_xact_lock(hashtext('cron:rating-reminders')::bigint);
+
+  for v_booking in
+    select b.id, b.customer_id, b.professional_id
+      from public.bookings b
+     where b.status = 'completed'
+       and b.completed_at is not null
+       and (b.completed_at at time zone 'Asia/Kolkata')::date
+           = (now() at time zone 'Asia/Kolkata')::date
+       and not exists (
+             select 1 from public.notifications n
+              where n.template_code = 'RATING_REMINDER'
+                and n.booking_id = b.id
+           )
+  loop
+    select c.profile_id into v_recipient
+      from public.customers c where c.id = v_booking.customer_id;
+    if v_recipient is null then continue; end if;
+
+    select coalesce(
+             (select bi.service_name from public.booking_items bi
+               where bi.booking_id = v_booking.id
+               order by bi.created_at limit 1),
+             'your service')
+      into v_service;
+
+    select p.full_name into v_pro_name
+      from public.professionals pr
+      join public.profiles p on p.id = pr.profile_id
+     where pr.id = v_booking.professional_id;
+    v_pro_name := coalesce(v_pro_name, 'your professional');
+
+    v_payload := jsonb_build_object('serviceName', v_service, 'proName', v_pro_name);
+
+    select t.subject, t.body into v_title, v_body
+      from public.notification_templates t
+     where t.code = 'RATING_REMINDER'
+       and t.channel = 'push'
+       and t.locale = 'en-IN'
+       and t.is_active
+     limit 1;
+    v_body := replace(replace(coalesce(v_body, 'How did it go?'),
+                 '{{serviceName}}', v_service), '{{proName}}', v_pro_name);
+
+    insert into public.notifications
+      (recipient_id, channel, template_code, payload, title, body, status, booking_id, sent_at)
+    select v_recipient, ch, 'RATING_REMINDER', v_payload, v_title, v_body,
+           'sent', v_booking.id, now()
+      from unnest(array['in_app', 'push']::public.notification_channel[]) as ch;
+    v_sent := v_sent + 1;
+  end loop;
+
+  return jsonb_build_object('sent', v_sent);
+end $$;
+
+comment on function public.run_rating_reminders() is
+  'The 19:13 reminder pass (§25.11): RATING_REMINDER to the customer of every
+   booking completed today. Takes pg_advisory_xact_lock and is idempotent per
+   booking. Returns {sent: n}.';
+
+-- ── Grants ─────────────────────────────────────────────────
+-- security definer: the EXECUTE grant belongs to the caller. These write
+-- notification rows, so anon and authenticated get nothing; only the service
+-- role (the cron Route Handlers) may call them.
+revoke all on function public.run_service_reminders() from public, anon, authenticated;
+revoke all on function public.run_rating_reminders() from public, anon, authenticated;
+grant execute on function public.run_service_reminders() to service_role;
+grant execute on function public.run_rating_reminders() to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0042_favourites.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0042_favourites.sql
+-- SmartHelp: the customer's saved services and professionals.
+--
+-- Spec: §24.10 (favourites), §25.4 (GET/POST/DELETE /api/favourites).
+-- Depends on: 0001 (customers, current_customer_id), 0003 (services),
+--             0011 (professionals).
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- §19.1's customer shell has a `favourites` tab and §24.10 names the table, but
+-- the migrations have never carried it. The tab has been dead since Phase 2 for
+-- want of exactly this file. The shape is the spec's: a polymorphic `target_type`
+-- of `service` or `professional` with a `target_id`, and one row per
+-- (customer, type, target) so re-saving is a no-op rather than a duplicate.
+--
+-- Read model: the customer owns their rows. Service-role writes from the route,
+-- with RLS as the backstop — the same split as the wallet (0015). No UPDATE is
+-- admitted: a favourite is added or removed, never edited.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+create table if not exists public.favourites (
+  id          uuid primary key default gen_random_uuid(),
+  customer_id uuid not null references public.customers(id) on delete cascade,
+  target_type text not null check (target_type in ('service', 'professional')),
+  target_id   uuid not null,
+  created_at  timestamptz not null default now()
+);
+
+create unique index if not exists uniq_favourite
+  on public.favourites (customer_id, target_type, target_id);
+
+create index if not exists idx_favourites_customer
+  on public.favourites (customer_id, created_at desc);
+
+comment on table public.favourites is
+  'A saved service or professional (§24.10). Polymorphic via target_type/target_id;
+   one row per (customer, type, target). Append-only: no UPDATE is admitted.';
+
+-- ── Row level security ─────────────────────────────────────
+alter table public.favourites enable row level security;
+
+do $$ begin
+  create policy favourites_select_own on public.favourites for select
+    using (customer_id = public.current_customer_id());
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy favourites_insert_own on public.favourites for insert
+    with check (customer_id = public.current_customer_id());
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy favourites_delete_own on public.favourites for delete
+    using (customer_id = public.current_customer_id());
+exception when duplicate_object then null; end $$;
+
+-- ── Grants ─────────────────────────────────────────────────
+revoke all on public.favourites from anon;
+grant select, insert, delete on public.favourites to authenticated;
+grant all on public.favourites to service_role;
+
+
+-- ------------------------------------------------------------
+-- 0043_surge_max_factor.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0043_surge_max_factor.sql
+-- SmartHelp Phase 8: the platform-wide surge ceiling.
+--
+-- Spec: §7.4 (surge pricing), §24.14 (platform_settings), §31.1 (Phase 8).
+-- Depends on: 0033 (platform_settings), 0035 (pricing_rules).
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- §7.4 lets the engine raise a price inside a surge window. A
+-- `pricing_rules` row carries the factor, but nothing bounds it but
+-- the absolute `[0.50, 2.00]` clamp in `lib/pricing.ts` — so a
+-- mistyped rule could double a customer's bill on its way in. This
+-- key is the business-facing tunable that tightens that clamp: the
+-- default 1.50 lets a rule raise a price by at most half, and an
+-- admin can move it up to (but never past) 2.00.
+--
+-- It is a `platform_settings` row for the same reason every other
+-- business knob is: it is a number a business retunes without a
+-- deploy. `lib/settingsServer.ts` types it (`surgeMaxFactor`) and
+-- falls back to `PLATFORM_DEFAULTS` if the row is absent, so this
+-- seed is the live value and the constant is only the initial state.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+insert into public.platform_settings (key, value)
+values ('surgeMaxFactor', '1.5'::jsonb)
+on conflict (key) do nothing;
+
+
+-- ------------------------------------------------------------
+-- 0044_referrals.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0044_referrals.sql
+-- SmartHelp Phase 8: referrals (§15.2, §24.12, §25.9).
+--
+-- Spec: §15.2 (referrals), §24.12 (referrals DDL), §25.9
+--       (POST /api/referrals/validate).
+-- Depends on: 0001 (customers, generate_referral_code),
+--             0015 (get_or_create_wallet, apply_wallet_delta).
+--
+-- WHY THIS EXISTS
+-- ---------------
+-- Every customer already gets a `referral_code` on signup (0001's
+-- `generate_referral_code()` and the `handle_new_user` trigger) and
+-- `customers.referred_by` has been there since 0001 — but nothing has
+-- ever written a referral *row*, so the code is decoration. This file
+-- gives the feature its table and the two functions the flows call:
+-- one to record a referral at signup, one to pay it out when the
+-- referee's first booking completes.
+--
+-- The payout is deliberately late — §15.2 rewards only after the
+-- referee's **first booking reaches `completed`** — which is what
+-- stops signup farming. The two functions are `security definer` and
+-- service-role-only, because both move wallet money and both must be
+-- callable by no client role.
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+-- ── referral_status ────────────────────────────────────────
+do $$ begin
+  create type public.referral_status as enum ('pending', 'qualified', 'rewarded', 'rejected');
+exception when duplicate_object then null; end $$;
+
+-- ── referrals ──────────────────────────────────────────────
+create table if not exists public.referrals (
+  id              uuid primary key default gen_random_uuid(),
+  referrer_id     uuid not null references public.customers(id) on delete cascade,
+  referee_id      uuid not null unique references public.customers(id) on delete cascade,
+  code            text not null,
+  status          public.referral_status not null default 'pending',
+  referee_reward  numeric(10,2) not null default 0,
+  referrer_reward numeric(10,2) not null default 0,
+  device_hash     text,
+  instrument_hash text,
+  reject_reason   text,
+  rewarded_at     timestamptz,
+  created_at      timestamptz not null default now(),
+  constraint no_self_referral check (referrer_id <> referee_id)
+);
+
+create index if not exists idx_referrals_referrer
+  on public.referrals (referrer_id, created_at desc);
+
+-- One referral per device and per payment instrument: §15.2's
+-- anti-abuse core. Partial, because a referral recorded without a
+-- device or instrument must not collide with every other one.
+create unique index if not exists uniq_referral_device
+  on public.referrals (device_hash) where device_hash is not null;
+create unique index if not exists uniq_referral_instrument
+  on public.referrals (instrument_hash) where instrument_hash is not null;
+
+comment on table public.referrals is
+  'One row per referred customer (§24.12). `referee_id` is unique, so a
+   customer can be referred once; the reward is paid only when their first
+   booking reaches `completed`. Writes are service-role-only.';
+
+-- ── Row level security ─────────────────────────────────────
+alter table public.referrals enable row level security;
+
+-- A customer may see referrals they are either end of; staff see all.
+-- There is no client INSERT/UPDATE: a referral is written by the signup
+-- path and paid by the completion path, both from the service role.
+do $$ begin
+  create policy referrals_select_party on public.referrals for select
+    using (
+      referrer_id = public.current_customer_id()
+      or referee_id = public.current_customer_id()
+      or public.is_ops()
+    );
+exception when duplicate_object then null; end $$;
+
+revoke all on public.referrals from anon;
+grant select on public.referrals to authenticated;
+grant all on public.referrals to service_role;
+
+-- ── record_referral() ──────────────────────────────────────
+-- Called once, at signup, with the new account's profile id and the
+-- code they typed. Resolves both customers, refuses a self-referral,
+-- writes the pending row and points `customers.referred_by` at the
+-- referrer. Returns the new referral id, or null when the code is
+-- unknown / self-referential / already used by this referee — all of
+-- which are non-events, not errors: signup must not fail because
+-- somebody fat-fingered a code.
+create or replace function public.record_referral(
+  p_referee_profile uuid,
+  p_code            text,
+  p_device_hash     text default null,
+  p_instrument_hash text default null
+) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  v_referee  uuid;
+  v_referrer uuid;
+  v_id       uuid;
+begin
+  if p_referee_profile is null or coalesce(trim(p_code), '') = '' then
+    return null;
+  end if;
+
+  select id into v_referee from public.customers where profile_id = p_referee_profile;
+  if v_referee is null then
+    return null;
+  end if;
+
+  select id into v_referrer
+    from public.customers
+   where referral_code = upper(trim(p_code));
+
+  -- Unknown code, or a customer referring themselves.
+  if v_referrer is null or v_referrer = v_referee then
+    return null;
+  end if;
+
+  insert into public.referrals (referrer_id, referee_id, code, device_hash, instrument_hash)
+  values (v_referrer, v_referee, upper(trim(p_code)), p_device_hash, p_instrument_hash)
+  on conflict (referee_id) do nothing
+  returning id into v_id;
+
+  if v_id is not null then
+    update public.customers
+       set referred_by = v_referrer
+     where id = v_referee
+       and referred_by is distinct from v_referrer;
+  end if;
+
+  return v_id;
+end $$;
+
+comment on function public.record_referral(uuid, text, text, text) is
+  'Records a referral at signup (§15.2). Idempotent per referee; returns null
+   for an unknown code, a self-referral, or a referee who already has a row.';
+
+-- ── grant_referral_reward() ────────────────────────────────
+-- Called when a booking completes. If the referee has a pending
+-- referral and this is their first completed booking, it pays both
+-- sides in one transaction: the referrer's wallet and the referee's
+-- wallet, through `apply_wallet_delta()` — the same single writer every
+-- other credit uses. The referral row is locked `for update` and moved
+-- `pending -> rewarded` in the same statement, so a concurrent second
+-- completion cannot pay twice.
+--
+-- The reward amounts are parameters: they are `platform_settings`
+-- (`referralRewardReferrer` / `referralRewardReferee`), so the caller
+-- reads the live figures and passes them.
+create or replace function public.grant_referral_reward(
+  p_referee_customer uuid,
+  p_referrer_reward  numeric,
+  p_referee_reward   numeric
+) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_ref       uuid;
+  v_referrer  uuid;
+  v_rw        numeric;
+  v_ew        numeric;
+  v_wallet    uuid;
+begin
+  -- Claim the pending referral for this referee, if any.
+  select id, referrer_id into v_ref, v_referrer
+    from public.referrals
+   where referee_id = p_referee_customer
+     and status = 'pending'
+   for update;
+
+  if v_ref is null then
+    return null;
+  end if;
+
+  -- §15.2: only after the referee's first booking reaches `completed`.
+  if not exists (
+    select 1 from public.bookings
+     where customer_id = p_referee_customer and status = 'completed'
+  ) then
+    return null;
+  end if;
+
+  v_rw := greatest(coalesce(p_referrer_reward, 0), 0);
+  v_ew := greatest(coalesce(p_referee_reward, 0), 0);
+
+  if v_rw > 0 then
+    v_wallet := public.get_or_create_wallet(v_referrer);
+    perform public.apply_wallet_delta(
+      v_wallet, 'credit', v_rw,
+      'referral:' || v_ref::text,
+      'Referral reward'
+    );
+  end if;
+
+  if v_ew > 0 then
+    v_wallet := public.get_or_create_wallet(p_referee_customer);
+    perform public.apply_wallet_delta(
+      v_wallet, 'credit', v_ew,
+      'referral:' || v_ref::text,
+      'Welcome referral reward'
+    );
+  end if;
+
+  update public.referrals
+     set status = 'rewarded',
+         referrer_reward = v_rw,
+         referee_reward = v_ew,
+         rewarded_at = now()
+   where id = v_ref;
+
+  return jsonb_build_object(
+    'referral_id', v_ref,
+    'referrer_id', v_referrer,
+    'referrer_reward', v_rw,
+    'referee_reward', v_ew
+  );
+end $$;
+
+comment on function public.grant_referral_reward(uuid, numeric, numeric) is
+  'Pays a pending referral once the referee has a completed booking (§15.2).
+   Credits both wallets through apply_wallet_delta and marks the row rewarded
+   in one transaction; returns null when there is nothing to pay.';
+
+-- ── Grants: service-role only ──────────────────────────────
+revoke all on function public.record_referral(uuid, text, text, text) from public, anon, authenticated;
+revoke all on function public.grant_referral_reward(uuid, numeric, numeric) from public, anon, authenticated;
+grant execute on function public.record_referral(uuid, text, text, text) to service_role;
+grant execute on function public.grant_referral_reward(uuid, numeric, numeric) to service_role;
+
+-- ── Seed the reward settings ───────────────────────────────
+-- §15.2: "referrer gets wallet credit (referral_reward_referrer / _referee,
+-- both configurable)". Two `platform_settings` rows, in rupees like every
+-- other money setting here. `lib/settingsServer.ts` types both and falls
+-- back to `PLATFORM_DEFAULTS`, so this seed is the live value.
+insert into public.platform_settings (key, value)
+values ('referralRewardReferrer', '100'::jsonb)
+on conflict (key) do nothing;
+
+insert into public.platform_settings (key, value)
+values ('referralRewardReferee', '50'::jsonb)
+on conflict (key) do nothing;
+
+
+-- ------------------------------------------------------------
+-- 0045_thane_locations.sql
+-- ------------------------------------------------------------
+
+-- ============================================================
+-- 0045_thane_locations.sql
+-- SmartHelp: add Thane (Maharashtra) as a second city, its two
+-- launch localities — Thane West – Hill Garden (Hill Garden,
+-- Happy Valley, Cosmos, Kalptaru · pin 400610) and Edan Wood –
+-- Garden Estate — and make every active service bookable in both.
+--
+-- Adds `localities.pincodes` so a typed pincode resolves to a
+-- locality the same way a typed area does (the hero search has
+-- always routed a six-digit query to `area`, and it matched
+-- nothing until there was a column to match it against).
+--
+-- Idempotent: safe to re-run on a live project.
+-- ============================================================
+
+-- ── Locality pincodes ───────────────────────────────────────
+-- Reference data stays a row, never code: a locality carries the
+-- pins people actually type for it.
+alter table public.localities
+  add column if not exists pincodes text[] not null default '{}';
+
+comment on column public.localities.pincodes is
+  'Pincodes served by this locality. Matched exactly by lib/geo.ts when a person types a pincode.';
+
+-- ── City ────────────────────────────────────────────────────
+insert into public.cities (name, state, lat, lng)
+values ('Thane', 'Maharashtra', 19.218300, 72.978100)
+on conflict (lower(name), lower(state)) do nothing;
+
+-- ── Localities ──────────────────────────────────────────────
+-- The first locality carries every society in the cluster so a customer who
+-- types the name of theirs ("Hill Garden", "Happy Valley", "Cosmos",
+-- "Kalptaru") resolves by name as well as by pincode or by point.
+-- (name, lat, lng, radius_km, pincodes)
+insert into public.localities (city_id, name, lat, lng, radius_km, pincodes)
+select c.id, v.name, v.lat, v.lng, v.radius_km, v.pincodes::text[]
+from (values
+  ('Thane West – Hill Garden, Happy Valley, Cosmos, Kalptaru',
+   19.238000, 72.972000, 6.00, '{400610}'),
+  ('Edan Wood – Garden Estate', 19.225000, 72.965000, 5.00, '{}')
+) as v(name, lat, lng, radius_km, pincodes)
+join public.cities c
+  on lower(c.name) = 'thane' and lower(c.state) = 'maharashtra'
+on conflict (city_id, lower(name)) do nothing;
+
+-- ── Service areas (coverage) ────────────────────────────────
+-- A service is bookable only where an active service_areas row
+-- exists, so every active service gets one in both localities.
+insert into public.service_areas (locality_id, service_id, lead_minutes, slot_capacity)
+select l.id, s.id,
+       greatest(s.prep_minutes, 0),
+       4
+from public.localities l
+join public.cities c on c.id = l.city_id
+join public.services s on true
+where lower(c.name) = 'thane'
+  and lower(c.state) = 'maharashtra'
+  and s.is_active
+on conflict (locality_id, service_id) do update
+  set lead_minutes  = excluded.lead_minutes,
+      slot_capacity = excluded.slot_capacity,
+      is_active     = true;

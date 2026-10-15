@@ -2,6 +2,7 @@ import { ApiHttpError, handle, ok } from '@/lib/api';
 import { audit, clientIp } from '@/lib/audit';
 import { parseNumeric, toPaise } from '@/lib/money';
 import { paymentAmountPaise } from '@/lib/paymentServer';
+import { notifyBookingConfirmed } from '@/lib/notificationHooks';
 import { isUsableWebhookSecret, verifyRazorpaySignature } from '@/lib/razorpaySignature';
 import { createServerClient } from '@/lib/supabaseServer';
 import type { Payment, Refund } from '@/lib/supabase';
@@ -314,6 +315,11 @@ async function handleCaptured(
     requestId,
     ipAddress,
   });
+
+  // The win of the confirm race is what makes this the single BOOKING_CONFIRMED
+  // (§27.5): a redelivery takes the duplicate branch above and never reaches
+  // here, so the customer hears it exactly once across webhook and callback.
+  if (row.booking_id) await notifyBookingConfirmed(row.booking_id);
 
   return ok({ confirmed: true, paymentId: row.id, bookingId: row.booking_id });
 }

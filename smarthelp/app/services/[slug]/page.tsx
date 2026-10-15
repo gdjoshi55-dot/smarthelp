@@ -9,6 +9,7 @@ import { PublicFooter, PublicHeader } from '@/components/catalogue/PublicChrome'
 import { PublicLocationProvider } from '@/components/catalogue/PublicLocationContext';
 import { BookingPanel } from '@/components/catalogue/BookingPanel';
 import { ServiceTasks } from '@/components/catalogue/ServiceTasks';
+import { FavouriteButton } from '@/components/catalogue/FavouriteButton';
 
 /**
  * `/services/[slug]` — the service detail and the price preview (§20.3).
@@ -126,9 +127,14 @@ export default async function ServiceDetailPage({ params }: Params) {
               ) : null}
 
               <header className="mt-5">
-                <h1 className="text-2xl font-semibold tracking-tight text-gray-900 sm:text-3xl">
-                  {service.name}
-                </h1>
+                <div className="flex items-start justify-between gap-4">
+                  <h1 className="text-2xl font-semibold tracking-tight text-gray-900 sm:text-3xl">
+                    {service.name}
+                  </h1>
+                  <div className="shrink-0 pt-1">
+                    <FavouriteButton targetType="service" targetId={service.id} />
+                  </div>
+                </div>
                 <div className="mt-2 flex flex-wrap items-center gap-4 text-sm text-gray-600">
                   <span className="inline-flex items-center gap-1">
                     <Star className="h-4 w-4 text-amber-500" aria-hidden="true" />

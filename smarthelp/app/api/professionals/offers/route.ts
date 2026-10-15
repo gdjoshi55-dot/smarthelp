@@ -2,6 +2,7 @@ import { handle, ok } from '@/lib/api';
 import { createServerClient } from '@/lib/supabaseServer';
 import { requireVerifiedProfessional, PRO_JOB_COLUMNS, stripProBooking } from '@/lib/professionalServer';
 import { runMatchingSweep } from '@/lib/matchingServer';
+import { notifyNewOffer } from '@/lib/notificationHooks';
 import { clientIp } from '@/lib/audit';
 import type { Offer } from '@/lib/professionalClient';
 
@@ -42,7 +43,18 @@ export async function GET(req: Request) {
     const { professional } = await requireVerifiedProfessional(req);
     const supabase = createServerClient();
 
-    await runMatchingSweep(supabase, { ipAddress: clientIp(req) });
+    await runMatchingSweep(supabase, {
+      ipAddress: clientIp(req),
+      // A round of offers just went out, so every professional on it hears once
+      // (§27.5 NEW_OFFER). The sweep is idempotent — the next poll sees a live
+      // offer and does not re-announce — so this fires exactly per round.
+      onOffered: async (outcome) => {
+        const ids =
+          outcome.professional_ids ??
+          (outcome.professional_id ? [outcome.professional_id] : []);
+        await Promise.all(ids.map((pid) => notifyNewOffer(pid, outcome.booking_id)));
+      },
+    });
 
     const nowIso = new Date().toISOString();
 

@@ -6,6 +6,7 @@ import {
   stripProBooking,
 } from '@/lib/professionalServer';
 import { audit, clientIp } from '@/lib/audit';
+import { notifyOfferAccepted } from '@/lib/notificationHooks';
 import { uuid } from '@/lib/validation';
 
 export const runtime = 'nodejs';
@@ -87,6 +88,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       ipAddress: clientIp(req),
       requestId,
     });
+
+    // The customer hears their professional accepted (§27.5 PRO_ACCEPTED).
+    await notifyOfferAccepted(accepted.booking_id);
 
     // The address unlocks now the job is theirs (Interaction Contract 6); the
     // phone stays a job-detail concern (B3), and `otp_hash` is never selected.

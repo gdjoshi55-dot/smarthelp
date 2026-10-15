@@ -142,10 +142,10 @@ export default function CustomerHome() {
               <h2 className="text-base font-semibold text-gray-900">Quick links</h2>
               <ul className="mt-3 space-y-1">
                 {[
-                  { href: '#', label: 'Wallet & refunds', icon: CreditCard },
-                  { href: '#', label: 'Favourites', icon: Star },
-                  { href: '#', label: 'Support', icon: Headphones },
-                  { href: '#', label: 'Profile', icon: User },
+                  { href: '/customer/wallet', label: 'Wallet & refunds', icon: CreditCard },
+                  { href: '/customer/favourites', label: 'Favourites', icon: Star },
+                  { href: '/customer/support', label: 'Support', icon: Headphones },
+                  { href: '/customer/profile', label: 'Profile', icon: User },
                 ].map(({ href, label, icon: Icon }) => (
                   <li key={label}>
                     <Link

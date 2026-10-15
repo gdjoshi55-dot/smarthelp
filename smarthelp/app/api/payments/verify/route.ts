@@ -4,6 +4,7 @@ import { requireCustomer } from '@/lib/addressServer';
 import { getPaymentForCaller, paymentAmountPaise } from '@/lib/paymentServer';
 import { verifyCheckoutSignature } from '@/lib/razorpaySignature';
 import { createServerClient } from '@/lib/supabaseServer';
+import { notifyBookingConfirmed } from '@/lib/notificationHooks';
 import { readJson, str } from '@/lib/validation';
 import type { Payment } from '@/lib/supabase';
 
@@ -153,6 +154,9 @@ export async function POST(req: Request) {
           requestId,
           ipAddress: clientIp(req),
         });
+        // The catalogue's BOOKING_CONFIRMED (§27.5). Quiet by design: it can
+        // never fail this route (§28.4).
+        if (payment.booking_id) await notifyBookingConfirmed(payment.booking_id);
       } else {
         // The guard refused: the webhook (or an earlier callback) confirmed the
         // row between the read above and this call. The row is correct either

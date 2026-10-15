@@ -51,7 +51,33 @@ import {
 } from './money';
 
 /** Bumped when a rule changes, so a snapshot says which engine produced it. */
-export const PRICING_ENGINE_VERSION = 2;
+export const PRICING_ENGINE_VERSION = 3;
+
+/**
+ * Absolute bounds on a multiplier (§7.4): a surge factor is clamped to
+ * `[0.50, 2.00]` before it is applied, whatever a rule says. The upper bound is
+ * a hard ceiling the `pricing_rules` editor cannot exceed even by mistake; a
+ * platform setting (`surge_max_factor`) can tighten it further but never loosen
+ * it past 2.00.
+ */
+export const SURGE_MIN_FACTOR = 0.5;
+export const SURGE_MAX_FACTOR = 2.0;
+
+/** A multiplier to apply to the subtotal, e.g. an opt-in `SURGE` surcharge. */
+export interface MultiplierInput {
+  /** The breakdown line's code, e.g. `SURGE`. */
+  code: string;
+  /** 1 means "no change" and is not applied or itemised. */
+  factor: number;
+}
+
+/** A multiplier as applied, itemised on the breakdown for the invoice. */
+export interface AppliedMultiplier {
+  code: string;
+  factor: number;
+  /** The rupees this multiplier added (or removed) from the subtotal. */
+  amount: number;
+}
 
 export type PricingType = 'hourly' | 'flat' | 'per_unit';
 
@@ -116,7 +142,17 @@ interface SnapshotRule {
 
 export interface PricingBreakdown {
   lines: PricedLine[];
+  /**
+   * The multiplier-adjusted service value. §7.1 computes the platform fee and
+   * tax on this, so a surge raises all three together. When no multiplier
+   * applies this equals the sum of the line totals.
+   */
   subtotal: number;
+  /**
+   * §7.4: each applied multiplier itemised as its own line (`code`, `factor`,
+   * `amount`). Empty when nothing applies — the prior behaviour, byte for byte.
+   */
+  multipliers: AppliedMultiplier[];
   platformFee: number;
   discount: number;
   discountCode: string | null;
@@ -137,6 +173,12 @@ export interface PriceQuoteInput {
   /** The professional's own commission rate. Defaults to the platform setting. */
   commissionPct?: number;
   coupon?: CouponInput | null;
+  /**
+   * §7.4 multipliers, applied to the subtotal after the lines are summed and
+   * before the fee and tax. The caller resolves each factor (e.g. a `SURGE`
+   * window) and clamps it; the engine only applies what it is given.
+   */
+  multipliers?: readonly MultiplierInput[];
 }
 
 /**
@@ -241,7 +283,7 @@ export function priceQuote(input: PriceQuoteInput): PricingBreakdown {
 
   // --- subtotal -------------------------------------------------------------
   const linePaise = input.lines.map(lineTotalPaise);
-  const subtotalPaise = sumPaise(linePaise);
+  const rawSubtotalPaise = sumPaise(linePaise);
   rules.push({
     rule: 'line_total',
     params: {
@@ -255,8 +297,38 @@ export function priceQuote(input: PriceQuoteInput): PricingBreakdown {
         priceMultiplier: l.priceMultiplier ?? null,
       })),
     },
-    effect: subtotalPaise,
+    effect: rawSubtotalPaise,
   });
+
+  // --- multipliers (§7.4) ---------------------------------------------------
+  // Applied in order, each to the running subtotal, so two multipliers compound
+  // exactly as the formula `SUM(line_total) x (multipliers)` reads. A factor of
+  // 1 is skipped rather than itemised: "no surge" is the absence of a line, not
+  // a line that says `x1.00`. Bounds are re-checked here, not just by the
+  // caller, because the engine is the last line of defence before a customer's
+  // card is charged.
+  let subtotalPaise = rawSubtotalPaise;
+  const applied: AppliedMultiplier[] = [];
+  for (const m of input.multipliers ?? []) {
+    if (!Number.isFinite(m.factor)) {
+      throw new RangeError(`multiplier ${m.code} must be finite, got ${m.factor}`);
+    }
+    if (m.factor === 1) continue;
+    if (m.factor < SURGE_MIN_FACTOR || m.factor > SURGE_MAX_FACTOR) {
+      throw new RangeError(
+        `multiplier ${m.code} (${m.factor}) is outside [${SURGE_MIN_FACTOR}, ${SURGE_MAX_FACTOR}]`
+      );
+    }
+    const before = subtotalPaise;
+    subtotalPaise = roundHalfUp(subtotalPaise * m.factor);
+    const amountPaise = subtotalPaise - before;
+    applied.push({ code: m.code, factor: m.factor, amount: rupees(amountPaise) });
+    rules.push({
+      rule: 'multiplier',
+      params: { code: m.code, factor: m.factor },
+      effect: amountPaise,
+    });
+  }
 
   // --- platform fee ---------------------------------------------------------
   if (!Number.isFinite(settings.platformFeePct) || settings.platformFeePct < 0) {
@@ -340,6 +412,7 @@ export function priceQuote(input: PriceQuoteInput): PricingBreakdown {
   return {
     lines,
     subtotal: rupees(subtotalPaise),
+    multipliers: applied,
     platformFee: rupees(platformFeePaise),
     discount: rupees(discountPaise),
     discountCode,
@@ -355,7 +428,9 @@ export function priceQuote(input: PriceQuoteInput): PricingBreakdown {
       engineVersion: PRICING_ENGINE_VERSION,
       currency: settings.currency,
       rules,
+      multipliers: applied.map((m) => ({ code: m.code, factor: m.factor, amount: numericLiteral(toPaise(m.amount)) })),
       totals: {
+        rawSubtotal: numericLiteral(rawSubtotalPaise),
         subtotal: numericLiteral(subtotalPaise),
         platformFee: numericLiteral(platformFeePaise),
         discount: numericLiteral(discountPaise),

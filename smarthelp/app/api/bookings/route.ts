@@ -69,6 +69,7 @@ export async function POST(req: Request) {
       items: input.items,
       couponCode: input.couponCode,
       bookingType: input.bookingType,
+      scheduledAt: input.scheduledStartAt,
     });
 
     // The chosen slot is re-checked against the engine before anything is

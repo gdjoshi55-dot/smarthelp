@@ -1,5 +1,10 @@
 import { readApiError, type ApiErrorCode } from './api';
 import { authorizationHeader } from './sessionHeaders';
+import type { DisputeStatus, SupportTicketPriority, SupportTicketStatus } from './supabase';
+
+// Re-exported so a console screen imports its status vocabulary from the same
+// module it imports the calls from, instead of reaching into `./supabase`.
+export type { DisputeStatus, SupportTicketPriority, SupportTicketStatus };
 
 /**
  * The browser's half of the Phase 6 admin contract (§20.11–§20.13, §22).
@@ -331,4 +336,616 @@ export function setProfessionalSuspended(
     method: 'POST',
     body: JSON.stringify({ suspended: input.suspended, reason: input.reason ?? null }),
   });
+}
+
+// ── Refunds ──────────────────────────────────────────────────
+
+export interface AdminRefundListItem {
+  id: string;
+  bookingId: string;
+  bookingNumber: string | null;
+  customerId: string;
+  customerName: string;
+  amount: number;
+  currency: string;
+  status: string;
+  route: string | null;
+  reasonCode: string;
+  note: string | null;
+  requestedById: string | null;
+  requestedByName: string | null;
+  processedById: string | null;
+  completedAt: string | null;
+  requestedAt: string;
+}
+
+export interface AdminRefundQuery {
+  status?: string;
+  q?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function fetchAdminRefunds(
+  query: AdminRefundQuery = {}
+): Promise<{ refunds: AdminRefundListItem[]; total: number }> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+  }
+  const qs = params.toString();
+  return request(`/api/admin/refunds${qs ? `?${qs}` : ''}`);
+}
+
+export function executeAdminRefund(
+  id: string,
+  input: { note?: string | null } = {}
+): Promise<{ refund: Record<string, unknown> }> {
+  return request(`/api/admin/refunds/${encodeURIComponent(id)}/execute`, {
+    method: 'POST',
+    body: JSON.stringify({ note: input.note ?? null }),
+  });
+}
+
+// ── Pricing rules ────────────────────────────────────────────
+
+export interface PricingRuleRow {
+  id: string;
+  name: string;
+  scope: 'global' | 'category' | 'service';
+  category_id: string | null;
+  service_id: string | null;
+  multiplier: string;
+  days_of_week: number[];
+  start_minute: number | null;
+  end_minute: number | null;
+  priority: number;
+  valid_from: string | null;
+  valid_to: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PricingRulePayload {
+  name: string;
+  scope: 'global' | 'category' | 'service';
+  categoryId?: string | null;
+  serviceId?: string | null;
+  multiplier: number;
+  daysOfWeek?: number[];
+  startMinute?: number | null;
+  endMinute?: number | null;
+  priority?: number;
+  validFrom?: string | null;
+  validTo?: string | null;
+  isActive?: boolean;
+}
+
+export function fetchPricingRules(): Promise<{ rules: PricingRuleRow[] }> {
+  return request('/api/admin/pricing-rules');
+}
+
+export function createPricingRule(input: PricingRulePayload): Promise<{ rule: PricingRuleRow }> {
+  return request('/api/admin/pricing-rules', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function updatePricingRule(id: string, input: PricingRulePayload): Promise<{ rule: PricingRuleRow }> {
+  return request(`/api/admin/pricing-rules/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deletePricingRule(id: string): Promise<{ deleted: true }> {
+  return request(`/api/admin/pricing-rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// ── Cancellation policies ────────────────────────────────────
+
+export interface CancellationPolicyRow {
+  id: string;
+  service_id: string | null;
+  hours_before: string | null;
+  fee_type: string;
+  fee_value: string;
+  applies_when_arrived: boolean;
+  band: string | null;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CancellationPolicyPayload {
+  serviceId?: string | null;
+  hoursBefore?: number | null;
+  feeType: string;
+  feeValue: number;
+  appliesWhenArrived?: boolean;
+  band?: string | null;
+  sortOrder?: number;
+  isActive?: boolean;
+}
+
+export function fetchCancellationPolicies(): Promise<{ policies: CancellationPolicyRow[] }> {
+  return request('/api/admin/cancellation-policies');
+}
+
+export function createCancellationPolicy(
+  input: CancellationPolicyPayload
+): Promise<{ policy: CancellationPolicyRow }> {
+  return request('/api/admin/cancellation-policies', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function updateCancellationPolicy(
+  id: string,
+  input: CancellationPolicyPayload
+): Promise<{ policy: CancellationPolicyRow }> {
+  return request(`/api/admin/cancellation-policies/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteCancellationPolicy(id: string): Promise<{ deleted: true }> {
+  return request(`/api/admin/cancellation-policies/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// ── Coupons ──────────────────────────────────────────────────
+
+export interface AdminCouponListItem {
+  id: string;
+  code: string;
+  description: string | null;
+  discountType: string;
+  discountValue: number;
+  maxDiscount: number | null;
+  minBookingAmount: number;
+  validFrom: string;
+  validTo: string | null;
+  usageLimit: number | null;
+  usageCount: number;
+  perUserLimit: number;
+  firstTimeOnly: boolean;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface AdminCouponDetail extends AdminCouponListItem {
+  maxDiscountPctOfTotal: number;
+  applicableServices: string[];
+  applicableCities: string[];
+  usage: { id: string; customer_id: string; booking_id: string; discount_amount: string; used_at: string }[];
+}
+
+export interface AdminCouponPayload {
+  code: string;
+  description?: string | null;
+  discountType: 'percentage' | 'fixed';
+  discountValue: number;
+  maxDiscount?: number | null;
+  minBookingAmount?: number;
+  maxDiscountPctOfTotal?: number;
+  validFrom: string;
+  validTo?: string | null;
+  usageLimit?: number | null;
+  perUserLimit?: number;
+  applicableServices?: string[];
+  applicableCities?: string[];
+  firstTimeOnly?: boolean;
+  isActive?: boolean;
+}
+
+/** The raw coupon row the create/update routes return. */
+export interface AdminCouponRow extends Record<string, unknown> {
+  id: string;
+  code: string;
+}
+
+export function fetchAdminCoupons(
+  query: { q?: string; status?: string; limit?: number; offset?: number } = {}
+): Promise<{ coupons: AdminCouponListItem[]; total: number }> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+  }
+  const qs = params.toString();
+  return request(`/api/admin/coupons${qs ? `?${qs}` : ''}`);
+}
+
+export function fetchAdminCoupon(id: string): Promise<{ coupon: AdminCouponDetail }> {
+  return request(`/api/admin/coupons/${encodeURIComponent(id)}`);
+}
+
+export function createCoupon(input: AdminCouponPayload): Promise<{ coupon: AdminCouponRow }> {
+  return request('/api/admin/coupons', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function updateCoupon(id: string, input: AdminCouponPayload): Promise<{ coupon: AdminCouponRow }> {
+  return request(`/api/admin/coupons/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+// ── Services / catalogue ─────────────────────────────────────
+
+export interface AdminServiceListItem {
+  id: string;
+  name: string;
+  slug: string;
+  categoryId: string;
+  categoryName: string;
+  pricingType: string;
+  basePrice: number;
+  durationMin: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminServiceRow extends Record<string, unknown> {
+  id: string;
+  name: string;
+  slug: string;
+  category_id: string;
+  base_price: number;
+  pricing_type: string;
+  is_active: boolean;
+}
+
+export interface ServiceDurationRow {
+  id: string;
+  service_id: string;
+  minutes: number;
+  price: number | null;
+  price_multiplier: number | null;
+  is_active: boolean;
+}
+
+export interface ServiceAreaRow {
+  id: string;
+  service_id: string;
+  locality_id: string;
+  lead_minutes: number;
+  slot_capacity: number;
+  is_active: boolean;
+  created_at: string;
+  localityName: string;
+}
+
+export interface AdminServiceDetail {
+  service: AdminServiceRow;
+  categoryName: string;
+  durations: ServiceDurationRow[];
+  areas: ServiceAreaRow[];
+}
+
+export interface AdminServicePayload {
+  categoryId: string;
+  name: string;
+  shortDescription?: string | null;
+  description?: string | null;
+  imageUrl?: string | null;
+  basePrice: number;
+  pricingType: 'hourly' | 'flat' | 'per_unit';
+  unitLabel?: string | null;
+  unitPrice?: number | null;
+  minDurationMin?: number;
+  maxDurationMin?: number;
+  prepMinutes?: number;
+  maxActiveJobs?: number;
+  materialsIncluded?: boolean;
+  materialsNote?: string | null;
+  requiresPhotoProof?: boolean;
+  sortOrder?: number;
+  isActive?: boolean;
+  durations?: { minutes: number; price?: number | null; priceMultiplier?: number | null; isActive?: boolean }[];
+}
+
+export interface ServiceDurationPayload {
+  minutes: number;
+  price?: number | null;
+  priceMultiplier?: number | null;
+  isActive?: boolean;
+}
+
+export interface ServiceAreaPayload {
+  localityId: string;
+  leadMinutes?: number;
+  slotCapacity?: number;
+  isActive?: boolean;
+}
+
+export function fetchAdminServices(
+  query: { q?: string; categoryId?: string; isActive?: boolean; limit?: number; offset?: number } = {}
+): Promise<{ services: AdminServiceListItem[]; total: number }> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+  }
+  const qs = params.toString();
+  return request(`/api/admin/services${qs ? `?${qs}` : ''}`);
+}
+
+export function fetchAdminService(id: string): Promise<{ service: AdminServiceDetail }> {
+  return request(`/api/admin/services/${encodeURIComponent(id)}`);
+}
+
+export function createService(input: AdminServicePayload): Promise<{ service: AdminServiceDetail }> {
+  return request('/api/admin/services', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function updateService(id: string, input: AdminServicePayload): Promise<{ service: AdminServiceDetail }> {
+  return request(`/api/admin/services/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export function createServiceDuration(
+  serviceId: string,
+  input: ServiceDurationPayload
+): Promise<{ duration: ServiceDurationRow }> {
+  return request(`/api/admin/services/${encodeURIComponent(serviceId)}/durations`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateServiceDuration(
+  serviceId: string,
+  durationId: string,
+  input: Partial<ServiceDurationPayload>
+): Promise<{ duration: ServiceDurationRow }> {
+  return request(
+    `/api/admin/services/${encodeURIComponent(serviceId)}/durations/${encodeURIComponent(durationId)}`,
+    { method: 'PATCH', body: JSON.stringify(input) }
+  );
+}
+
+export function deleteServiceDuration(serviceId: string, durationId: string): Promise<{ deleted: true }> {
+  return request(
+    `/api/admin/services/${encodeURIComponent(serviceId)}/durations/${encodeURIComponent(durationId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export function createServiceArea(
+  serviceId: string,
+  input: ServiceAreaPayload
+): Promise<{ area: ServiceAreaRow }> {
+  return request(`/api/admin/services/${encodeURIComponent(serviceId)}/areas`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateServiceArea(
+  serviceId: string,
+  areaId: string,
+  input: Partial<ServiceAreaPayload>
+): Promise<{ area: ServiceAreaRow }> {
+  return request(
+    `/api/admin/services/${encodeURIComponent(serviceId)}/areas/${encodeURIComponent(areaId)}`,
+    { method: 'PATCH', body: JSON.stringify(input) }
+  );
+}
+
+export function deleteServiceArea(serviceId: string, areaId: string): Promise<{ deleted: true }> {
+  return request(
+    `/api/admin/services/${encodeURIComponent(serviceId)}/areas/${encodeURIComponent(areaId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export function fetchLocalities(q?: string): Promise<{ localities: { id: string; name: string; city: string }[] }> {
+  const qs = q ? `?q=${encodeURIComponent(q)}` : '';
+  return request(`/api/admin/localities${qs}`);
+}
+
+// ── Settings ─────────────────────────────────────────────────
+
+/** The typed settings the API returns; mirrors `PlatformSettings`. */
+export interface PlatformSettings {
+  currency: string;
+  taxRate: number;
+  commissionPct: number;
+  platformFeePct: number;
+  platformFeeMin: number;
+  serviceOtpLength: number;
+  instantLeadMinutes: number;
+  maxBookingMinutes: number;
+  maxSchedulingDaysAhead: number;
+  instantMatchTargetSeconds: number;
+  lateArrivalThresholdMin: number;
+  noShowAfterMin: number;
+  supportRefundLimit: number;
+  offerTtlMinutes: number;
+  searchWindowMinutes: number;
+  otpTtlMinutes: number;
+  otpMaxAttempts: number;
+  otpLockoutMinutes: number;
+  otpMaxGenerations: number;
+  defaultArrivalRadiusM: number;
+  proLocationFreshMinutes: number;
+  proLocationThrottleSeconds: number;
+}
+
+export function fetchPlatformSettings(): Promise<{ settings: PlatformSettings }> {
+  return request('/api/admin/settings');
+}
+
+export function updatePlatformSettings(
+  patch: Partial<PlatformSettings>
+): Promise<{ settings: PlatformSettings; updated: string[] }> {
+  return request('/api/admin/settings', { method: 'PUT', body: JSON.stringify(patch) });
+}
+
+// ── Audit ────────────────────────────────────────────────────
+
+export interface AdminAuditLogItem {
+  id: string;
+  actorProfileId: string | null;
+  actorName: string | null;
+  actorRole: string | null;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  metadata: Record<string, unknown> | null;
+  ipAddress: string | null;
+  requestId: string | null;
+  createdAt: string;
+}
+
+export interface AdminAuditQuery {
+  action?: string;
+  entityType?: string;
+  entityId?: string;
+  actorProfileId?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function fetchAuditLogs(
+  query: AdminAuditQuery = {}
+): Promise<{ logs: AdminAuditLogItem[]; total: number }> {
+  return request(`/api/admin/audit?${queryString(query)}`);
+}
+
+// ── Support ──────────────────────────────────────────────────
+
+export interface AdminSupportTicketListItem {
+  id: string;
+  bookingId: string | null;
+  bookingNumber: string | null;
+  subject: string;
+  category: string;
+  priority: SupportTicketPriority;
+  status: SupportTicketStatus;
+  assignedToId: string | null;
+  assignedToName: string | null;
+  raisedById: string | null;
+  raisedByName: string | null;
+  resolution: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminSupportMessage {
+  id: string;
+  authorId: string | null;
+  authorName: string | null;
+  body: string;
+  isInternal: boolean;
+  createdAt: string;
+}
+
+export interface AdminSupportTicketDetail {
+  ticket: AdminSupportTicketListItem;
+  messages: AdminSupportMessage[];
+}
+
+export interface AdminSupportQuery {
+  status?: SupportTicketStatus;
+  priority?: SupportTicketPriority;
+  assignedTo?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AdminSupportTicketPatch {
+  status?: SupportTicketStatus;
+  priority?: SupportTicketPriority;
+  assignedTo?: string | null;
+  resolution?: string | null;
+}
+
+export function fetchSupportTickets(
+  query: AdminSupportQuery = {}
+): Promise<{ tickets: AdminSupportTicketListItem[]; total: number }> {
+  return request(`/api/admin/support?${queryString(query)}`);
+}
+
+export function fetchSupportTicket(id: string): Promise<AdminSupportTicketDetail> {
+  return request(`/api/admin/support/${encodeURIComponent(id)}`);
+}
+
+export function updateSupportTicket(
+  id: string,
+  patch: AdminSupportTicketPatch
+): Promise<AdminSupportTicketDetail> {
+  return request(`/api/admin/support/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export function addSupportMessage(
+  id: string,
+  input: { body: string; isInternal?: boolean }
+): Promise<{ message: AdminSupportMessage }> {
+  return request(`/api/admin/support/${encodeURIComponent(id)}/messages`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+// ── Disputes ─────────────────────────────────────────────────
+
+export interface AdminDisputeListItem {
+  id: string;
+  bookingId: string;
+  bookingNumber: string | null;
+  reason: string;
+  description: string | null;
+  status: DisputeStatus;
+  resolution: string | null;
+  raisedById: string | null;
+  raisedByName: string | null;
+  resolvedById: string | null;
+  resolvedByName: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminDisputeQuery {
+  status?: DisputeStatus;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function fetchAdminDisputes(
+  query: AdminDisputeQuery = {}
+): Promise<{ disputes: AdminDisputeListItem[]; total: number }> {
+  return request(`/api/admin/disputes?${queryString(query)}`);
+}
+
+export function resolveAdminDispute(
+  id: string,
+  input: { status: DisputeStatus; resolution?: string | null }
+): Promise<{ dispute: AdminDisputeListItem }> {
+  return request(`/api/admin/disputes/${encodeURIComponent(id)}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+function queryString(query: object): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+  }
+  return params.toString();
 }

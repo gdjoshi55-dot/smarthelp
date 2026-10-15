@@ -147,6 +147,16 @@ export type BookingStatus =
 export type DiscountType = 'percentage' | 'fixed';
 /** 0035. §11.1's three fee modes; the ladder row's `fee_value` unit follows. */
 export type CancellationFeeType = 'free' | 'percentage' | 'fixed';
+/** 0037. The support queue's two closed vocabularies and the dispute lifecycle. */
+export type SupportTicketStatus = 'open' | 'pending' | 'resolved' | 'closed';
+export type SupportTicketPriority = 'low' | 'normal' | 'high' | 'urgent';
+export type DisputeStatus = 'open' | 'investigating' | 'resolved' | 'rejected';
+/** 0038. The five delivery channels (§24.11). Only `in_app`/`email` have a live transport (D1). */
+export type NotificationChannel = 'push' | 'sms' | 'email' | 'in_app' | 'whatsapp';
+/** 0038. The notification ledger's states (§24.11). `read` is a terminal success for in_app. */
+export type NotificationStatus = 'queued' | 'sent' | 'failed' | 'read';
+/** 0038. A chat message is text, an image, or a server-written system note. */
+export type ChatMessageKind = 'text' | 'image' | 'system';
 export type PaymentPurpose = 'booking' | 'extension' | 'wallet_topup' | 'penalty';
 export type ScheduleStatus = 'reserved' | 'in_progress' | 'completed' | 'released';
 
@@ -180,6 +190,21 @@ export type RefundStatus = 'requested' | 'approved' | 'rejected' | 'completed' |
  * direction costs somebody money.
  */
 export type WalletTxnType = 'credit' | 'debit';
+
+/**
+ * 0042. What a favourite can point at (§24.10). Polymorphic by design: the row
+ * carries a type and an id rather than two nullable foreign keys, because a
+ * favourite is a personal bookmark, not a relationship the database enforces.
+ */
+export type FavouriteTargetType = 'service' | 'professional';
+
+/**
+ * 0044. Where a referral sits in its lifecycle (§24.12). It starts `pending`,
+ * becomes `qualified` when the referee's first booking completes (the reward is
+ * payable then) and `rewarded` once both wallets are credited; a referral the
+ * anti-abuse rules catch becomes `rejected`.
+ */
+export type ReferralStatus = 'pending' | 'qualified' | 'rewarded' | 'rejected';
 
 /** Which of the two ways money goes back: the gateway instrument or the wallet. */
 export type RefundRoute = 'gateway' | 'wallet' | 'mixed';
@@ -340,6 +365,7 @@ type RawTables = {
           lat: number;
           lng: number;
           radius_km: number;
+          pincodes: string[];
           is_active: boolean;
           created_at: Timestamptz;
         };
@@ -350,6 +376,7 @@ type RawTables = {
           lat: number;
           lng: number;
           radius_km?: number;
+          pincodes?: string[];
         };
         Update: Partial<RawTables['localities']['Row']>;
       };
@@ -410,6 +437,18 @@ type RawTables = {
           pricing_type?: PricingType;
           min_duration_min?: number;
           max_duration_min?: number;
+          short_description?: string | null;
+          description?: string | null;
+          image_url?: string | null;
+          unit_label?: string | null;
+          unit_price?: number | null;
+          prep_minutes?: number;
+          max_active_jobs?: number;
+          materials_included?: boolean;
+          materials_note?: string | null;
+          requires_photo_proof?: boolean;
+          sort_order?: number;
+          is_active?: boolean;
         };
         Update: Partial<RawTables['services']['Row']>;
       };
@@ -460,6 +499,7 @@ type RawTables = {
           service_id: string;
           lead_minutes?: number;
           slot_capacity?: number;
+          is_active?: boolean;
         };
         Update: Partial<RawTables['service_areas']['Row']>;
       };
@@ -477,10 +517,16 @@ type RawTables = {
           id?: string;
           service_id: string;
           minutes: number;
-          price?: number | null;
-          price_multiplier?: number | null;
+          price?: Numeric | null;
+          price_multiplier?: Numeric | null;
+          is_active?: boolean;
         };
-        Update: Partial<RawTables['service_durations']['Row']>;
+        Update: {
+          minutes?: number;
+          price?: Numeric | null;
+          price_multiplier?: Numeric | null;
+          is_active?: boolean;
+        };
       };
 
       professionals: {
@@ -883,6 +929,12 @@ type RawTables = {
           max_discount_pct_of_total?: Numeric;
           applicable_services?: string[];
           applicable_cities?: string[];
+          valid_from?: Timestamptz | null;
+          valid_to?: Timestamptz | null;
+          usage_limit?: number | null;
+          per_user_limit?: number | null;
+          first_time_only?: boolean;
+          is_active?: boolean;
         };
         Update: Partial<RawTables['coupons']['Row']>;
       };
@@ -1141,6 +1193,71 @@ type RawTables = {
         };
       };
 
+      // 0042. A saved service or professional (§24.10). Polymorphic via
+      // `target_type`/`target_id`, one row per (customer, type, target). No
+      // Update block: a favourite is added or removed, never edited, and no
+      // UPDATE policy admits anybody.
+      favourites: {
+        Row: {
+          id: string;
+          customer_id: string;
+          target_type: FavouriteTargetType;
+          target_id: string;
+          created_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          customer_id: string;
+          target_type: FavouriteTargetType;
+          target_id: string;
+        };
+        Update: {
+          target_type?: FavouriteTargetType;
+          target_id?: string;
+        };
+      };
+
+      // 0044. One row per referred customer (§24.12). `referee_id` is unique,
+      // so a customer can be referred once. Writes are service-role-only (the
+      // signup and completion functions), so Insert and Update are mirrored for
+      // completeness and are not reachable from a client.
+      referrals: {
+        Row: {
+          id: string;
+          referrer_id: string;
+          referee_id: string;
+          code: string;
+          status: ReferralStatus;
+          referee_reward: Numeric;
+          referrer_reward: Numeric;
+          device_hash: string | null;
+          instrument_hash: string | null;
+          reject_reason: string | null;
+          rewarded_at: Timestamptz | null;
+          created_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          referrer_id: string;
+          referee_id: string;
+          code: string;
+          status?: ReferralStatus;
+          referee_reward?: Numeric;
+          referrer_reward?: Numeric;
+          device_hash?: string | null;
+          instrument_hash?: string | null;
+          reject_reason?: string | null;
+          rewarded_at?: Timestamptz | null;
+        };
+        Update: {
+          status?: ReferralStatus;
+          referee_reward?: Numeric;
+          referrer_reward?: Numeric;
+          reject_reason?: string | null;
+          rewarded_at?: Timestamptz | null;
+        };
+      };
+
       // 0012. The offer ledger (§24.8). `professional_id` scopes the browser
       // read (RLS); every write goes through the security-definer RPCs, so
       // Insert and Update are mirrored for completeness only and are not
@@ -1327,6 +1444,328 @@ type RawTables = {
           valid_from?: Timestamptz | null;
           valid_to?: Timestamptz | null;
           is_active?: boolean;
+        };
+      };
+
+      // 0024. The append-only audit trail. Rows are written only through the
+      // `write_audit` RPC; the console reads them. `before_state`/`after_state`/
+      // `metadata` are jsonb projections, never raw secrets (§26.2, §12.2).
+      audit_logs: {
+        Row: {
+          id: string;
+          actor_profile_id: string | null;
+          actor_role: UserRole | null;
+          action: string;
+          entity_type: string;
+          entity_id: string | null;
+          before_state: object | null;
+          after_state: object | null;
+          metadata: object | null;
+          ip_address: string | null;
+          user_agent: string | null;
+          request_id: string | null;
+          created_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          actor_profile_id?: string | null;
+          actor_role?: UserRole | null;
+          action: string;
+          entity_type: string;
+          entity_id?: string | null;
+          before_state?: object | null;
+          after_state?: object | null;
+          metadata?: object | null;
+          ip_address?: string | null;
+          user_agent?: string | null;
+          request_id?: string | null;
+          created_at?: Timestamptz;
+        };
+        Update: {
+          id?: string;
+          actor_profile_id?: string | null;
+          actor_role?: UserRole | null;
+          action?: string;
+          entity_type?: string;
+          entity_id?: string | null;
+          before_state?: object | null;
+          after_state?: object | null;
+          metadata?: object | null;
+          ip_address?: string | null;
+          user_agent?: string | null;
+          request_id?: string | null;
+          created_at?: Timestamptz;
+        };
+      };
+
+      // 0037. The support queue (§24). A ticket is "help me"; a dispute is an
+      // adjudication. support_messages is the thread, and `is_internal` marks a
+      // staff-only note that must never reach the customer.
+      support_tickets: {
+        Row: {
+          id: string;
+          booking_id: string | null;
+          raised_by: string | null;
+          subject: string;
+          category: string;
+          priority: SupportTicketPriority;
+          status: SupportTicketStatus;
+          assigned_to: string | null;
+          resolution: string | null;
+          resolved_at: Timestamptz | null;
+          created_at: Timestamptz;
+          updated_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          booking_id?: string | null;
+          raised_by?: string | null;
+          subject: string;
+          category?: string;
+          priority?: SupportTicketPriority;
+          status?: SupportTicketStatus;
+          assigned_to?: string | null;
+          resolution?: string | null;
+          resolved_at?: Timestamptz | null;
+          created_at?: Timestamptz;
+          updated_at?: Timestamptz;
+        };
+        Update: {
+          booking_id?: string | null;
+          raised_by?: string | null;
+          subject?: string;
+          category?: string;
+          priority?: SupportTicketPriority;
+          status?: SupportTicketStatus;
+          assigned_to?: string | null;
+          resolution?: string | null;
+          resolved_at?: Timestamptz | null;
+          updated_at?: Timestamptz;
+        };
+      };
+
+      support_messages: {
+        Row: {
+          id: string;
+          ticket_id: string;
+          author_profile_id: string | null;
+          body: string;
+          is_internal: boolean;
+          created_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          ticket_id: string;
+          author_profile_id?: string | null;
+          body: string;
+          is_internal?: boolean;
+          created_at?: Timestamptz;
+        };
+        Update: {
+          body?: string;
+          is_internal?: boolean;
+        };
+      };
+
+      // 0037. A contested booking (§24, §25.10). Resolving is `dispute.resolve`.
+      disputes: {
+        Row: {
+          id: string;
+          booking_id: string;
+          raised_by: string | null;
+          reason: string;
+          description: string | null;
+          status: DisputeStatus;
+          resolution: string | null;
+          resolved_by: string | null;
+          resolved_at: Timestamptz | null;
+          created_at: Timestamptz;
+          updated_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          booking_id: string;
+          raised_by?: string | null;
+          reason: string;
+          description?: string | null;
+          status?: DisputeStatus;
+          resolution?: string | null;
+          resolved_by?: string | null;
+          resolved_at?: Timestamptz | null;
+          created_at?: Timestamptz;
+          updated_at?: Timestamptz;
+        };
+        Update: {
+          booking_id?: string;
+          raised_by?: string | null;
+          reason?: string;
+          description?: string | null;
+          status?: DisputeStatus;
+          resolution?: string | null;
+          resolved_by?: string | null;
+          resolved_at?: Timestamptz | null;
+          updated_at?: Timestamptz;
+        };
+      };
+
+      // 0038. The booking-scoped conversation (§24.11, §27.1 `chat:{threadId}`).
+      chat_threads: {
+        Row: {
+          id: string;
+          booking_id: string;
+          customer_id: string;
+          professional_id: string;
+          last_message_at: Timestamptz | null;
+          closed_at: Timestamptz | null;
+          created_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          booking_id: string;
+          customer_id: string;
+          professional_id: string;
+          last_message_at?: Timestamptz | null;
+          closed_at?: Timestamptz | null;
+          created_at?: Timestamptz;
+        };
+        Update: {
+          last_message_at?: Timestamptz | null;
+          closed_at?: Timestamptz | null;
+        };
+      };
+
+      // 0038. One message in a thread. `sender_id` is null for a system message.
+      chat_messages: {
+        Row: {
+          id: string;
+          thread_id: string;
+          sender_id: string | null;
+          kind: ChatMessageKind;
+          body: string | null;
+          image_path: string | null;
+          read_at: Timestamptz | null;
+          created_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          thread_id: string;
+          sender_id?: string | null;
+          kind?: ChatMessageKind;
+          body?: string | null;
+          image_path?: string | null;
+          read_at?: Timestamptz | null;
+          created_at?: Timestamptz;
+        };
+        Update: {
+          body?: string | null;
+          image_path?: string | null;
+          read_at?: Timestamptz | null;
+        };
+      };
+
+      // 0038. The admin-editable message catalogue (§24.11, §25.10). Body
+      // supports {{token}} placeholders; the dispatcher substitutes them.
+      notification_templates: {
+        Row: {
+          id: string;
+          code: string;
+          channel: NotificationChannel;
+          locale: string;
+          subject: string | null;
+          body: string;
+          variables: string[];
+          is_active: boolean;
+          updated_by: string | null;
+          created_at: Timestamptz;
+          updated_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          code: string;
+          channel: NotificationChannel;
+          locale?: string;
+          subject?: string | null;
+          body: string;
+          variables?: string[];
+          is_active?: boolean;
+          updated_by?: string | null;
+          created_at?: Timestamptz;
+          updated_at?: Timestamptz;
+        };
+        Update: {
+          code?: string;
+          channel?: NotificationChannel;
+          locale?: string;
+          subject?: string | null;
+          body?: string;
+          variables?: string[];
+          is_active?: boolean;
+          updated_by?: string | null;
+          updated_at?: Timestamptz;
+        };
+      };
+
+      // 0038. One row per (event, channel) (§24.11, §27.4). The Realtime
+      // `me:{profileId}` channel streams these inserts.
+      notifications: {
+        Row: {
+          id: string;
+          recipient_id: string;
+          channel: NotificationChannel;
+          template_code: string;
+          payload: object;
+          title: string | null;
+          body: string | null;
+          status: NotificationStatus;
+          error: string | null;
+          booking_id: string | null;
+          read_at: Timestamptz | null;
+          sent_at: Timestamptz | null;
+          created_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          recipient_id: string;
+          channel: NotificationChannel;
+          template_code: string;
+          payload?: object;
+          title?: string | null;
+          body?: string | null;
+          status?: NotificationStatus;
+          error?: string | null;
+          booking_id?: string | null;
+          read_at?: Timestamptz | null;
+          sent_at?: Timestamptz | null;
+          created_at?: Timestamptz;
+        };
+        Update: {
+          status?: NotificationStatus;
+          error?: string | null;
+          read_at?: Timestamptz | null;
+          sent_at?: Timestamptz | null;
+        };
+      };
+
+      // 0038. The push-token registry behind §25.9's push-token endpoint.
+      notification_devices: {
+        Row: {
+          id: string;
+          profile_id: string;
+          token: string;
+          platform: 'web' | 'ios' | 'android';
+          created_at: Timestamptz;
+          last_seen_at: Timestamptz;
+        };
+        Insert: {
+          id?: string;
+          profile_id: string;
+          token: string;
+          platform?: 'web' | 'ios' | 'android';
+          created_at?: Timestamptz;
+          last_seen_at?: Timestamptz;
+        };
+        Update: {
+          last_seen_at?: Timestamptz;
         };
       };
 };
@@ -1563,6 +2002,43 @@ export type Database = {
       };
 
       /**
+       * 0044. Records a referral at signup (§15.2). Returns the new referral id,
+       * or **null** when the code is unknown, is the referee's own, or the
+       * referee already has a row — all non-events, not errors.
+       */
+      record_referral: {
+        Args: {
+          p_referee_profile: string;
+          p_code: string;
+          p_device_hash?: string | null;
+          p_instrument_hash?: string | null;
+        };
+        Returns: string | null;
+      };
+
+      /**
+       * 0044. Pays a pending referral once the referee has a completed booking
+       * (§15.2), crediting both wallets through `apply_wallet_delta` and marking
+       * the row `rewarded` in one transaction. Returns null when there is
+       * nothing to pay — an already-paid or non-qualifying referral.
+       *
+       * The reward amounts are `Numeric` strings, like every other money argument.
+       */
+      grant_referral_reward: {
+        Args: {
+          p_referee_customer: string;
+          p_referrer_reward: Numeric;
+          p_referee_reward: Numeric;
+        };
+        Returns: {
+          referral_id: string;
+          referrer_id: string;
+          referrer_reward: number;
+          referee_reward: number;
+        } | null;
+      };
+
+      /**
        * Inserts the refund and hops the booking to `refund_pending` — but only
        * from `paid` or `cancelled`, so a request that is never executed cannot
        * strand a booking. Refuses an amount above `payments.refundable_amount`
@@ -1674,6 +2150,18 @@ export type Database = {
           assignment_id?: string;
           round_no?: number;
         }>;
+      };
+
+      /** 0041. The every-15-minute reminder pass: SERVICE_ENDING_SOON + NEW_JOB_REMINDER. */
+      run_service_reminders: {
+        Args: Record<PropertyKey, never>;
+        Returns: { sent: number };
+      };
+
+      /** 0041. The 19:13 rating nudge: RATING_REMINDER for today's completions. */
+      run_rating_reminders: {
+        Args: Record<PropertyKey, never>;
+        Returns: { sent: number };
       };
 
       /** 0029. `on_the_way -> arrived`. NULL = stale version. */
@@ -1797,6 +2285,7 @@ export type Database = {
       schedule_status: ScheduleStatus;
       assignment_status: AssignmentStatus;
       earning_status: EarningStatus;
+      notification_channel: NotificationChannel;
     };
   };
 };
@@ -1813,6 +2302,8 @@ export type Address = Tables<'addresses'>;
 export type Service = Tables<'services'>;
 export type ServiceTask = Tables<'service_tasks'>;
 export type ServiceCategory = Tables<'service_categories'>;
+export type ServiceArea = Tables<'service_areas'>;
+export type ServiceDuration = Tables<'service_durations'>;
 export type Locality = Tables<'localities'>;
 export type Professional = Tables<'professionals'>;
 export type ProfessionalDocument = Tables<'professional_documents'>;
@@ -1825,8 +2316,18 @@ export type Coupon = Tables<'coupons'>;
 export type CouponUsage = Tables<'coupon_usage'>;
 export type CancellationPolicy = Tables<'cancellation_policies'>;
 export type PricingRule = Tables<'pricing_rules'>;
+export type AuditLog = Tables<'audit_logs'>;
+export type SupportTicket = Tables<'support_tickets'>;
+export type SupportMessage = Tables<'support_messages'>;
+export type Dispute = Tables<'disputes'>;
+export type ChatThread = Tables<'chat_threads'>;
+export type ChatMessage = Tables<'chat_messages'>;
+export type NotificationTemplate = Tables<'notification_templates'>;
+export type Notification = Tables<'notifications'>;
+export type NotificationDevice = Tables<'notification_devices'>;
 export type Rating = Tables<'ratings'>;
 export type Payment = Tables<'payments'>;
 export type Refund = Tables<'refunds'>;
 export type Wallet = Tables<'wallets'>;
 export type WalletTransaction = Tables<'wallet_transactions'>;
+export type Favourite = Tables<'favourites'>;

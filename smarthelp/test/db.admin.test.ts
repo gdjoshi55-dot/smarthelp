@@ -122,7 +122,7 @@ async function cleanup(bookingIds: string[], addressIds: string[], professionalI
 describeDb('database: platform_settings (0033)', () => {
   it('seeds every PLATFORM_DEFAULTS key', async () => {
     const count = await sql(`select count(*) from public.platform_settings;`);
-    expect(Number(count)).toBe(22);
+    expect(Number(count)).toBe(23);
     // jsonb numbers flatten back as text; the contract is the typed reader, this
     // is only here to catch a seed that stored the value under the wrong key.
     expect(
@@ -134,7 +134,7 @@ describeDb('database: platform_settings (0033)', () => {
     const admin = await seededProfileId('demo.admin@smarthelp.test');
     const customer = await seededProfileId('demo.customer@smarthelp.test');
 
-    expect(await sqlAsRole(admin, `select count(*) from public.platform_settings;`)).toBe('22');
+    expect(await sqlAsRole(admin, `select count(*) from public.platform_settings;`)).toBe('23');
     // A customer sees nothing — the tax rate and the support limit are business
     // facts, not catalogue facts.
     expect(await sqlAsRole(customer, `select count(*) from public.platform_settings;`)).toBe('0');

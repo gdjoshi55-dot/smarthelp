@@ -3,6 +3,7 @@ import {
   describeResolution,
   haversineKm,
   localityByName,
+  localityByPincode,
   localityForPoint,
   resolveLocality,
   type CityLike,
@@ -60,14 +61,47 @@ const KALYAN_NAGAR_MYS = locality({
 });
 const RETIRED = locality({ id: 'loc-retired', name: 'Old Town', is_active: false });
 
+/**
+ * Thane (0045): one locality whose name lists the society cluster, so a person
+ * who types any of them resolves, and a second that does not share those words.
+ */
+const THANE: CityLike = {
+  id: 'city-thane',
+  name: 'Thane',
+  state: 'Maharashtra',
+  time_zone: 'Asia/Kolkata',
+  is_active: true,
+};
+
+const THANE_WEST = locality({
+  id: 'loc-thane-west',
+  city_id: THANE.id,
+  name: 'Thane West – Hill Garden, Happy Valley, Cosmos, Kalptaru',
+  lat: 19.238,
+  lng: 72.972,
+  radius_km: 6,
+  pincodes: ['400610'],
+});
+const THANE_EDAN = locality({
+  id: 'loc-thane-edan',
+  city_id: THANE.id,
+  name: 'Edan Wood – Garden Estate',
+  lat: 19.225,
+  lng: 72.965,
+  radius_km: 5,
+  pincodes: [],
+});
+
 const LOCALITIES = [
   INDIRANAGAR,
   HSR,
   KALYAN_NAGAR_BLR,
   KALYAN_NAGAR_MYS,
   RETIRED,
+  THANE_WEST,
+  THANE_EDAN,
 ];
-const CITIES = [BENGALURU, MYSORE];
+const CITIES = [BENGALURU, MYSORE, THANE];
 
 describe('haversineKm', () => {
   it('is zero for the same point and symmetric otherwise', () => {
@@ -122,6 +156,48 @@ describe('localityByName', () => {
     // "HSR" is a prefix of "HSR Layout"; "HS" is not a prefix of any word in it.
     expect(localityByName(LOCALITIES, 'HSR')?.id).toBe('loc-hsr');
     expect(localityByName(LOCALITIES, 'HS')).toBeNull();
+  });
+
+  it('finds a locality that contains the typed society as whole words', () => {
+    // People name the society they live in; the row carries the administrative
+    // name it sits inside (0045's Thane West cluster).
+    for (const typed of ['Hill Garden', 'hill garden', 'Happy Valley', 'Cosmos', 'Kalptaru']) {
+      expect(localityByName(LOCALITIES, typed)?.id).toBe('loc-thane-west');
+    }
+    expect(localityByName(LOCALITIES, 'Edan Wood')?.id).toBe('loc-thane-edan');
+    expect(localityByName(LOCALITIES, 'Garden Estate')?.id).toBe('loc-thane-edan');
+  });
+
+  it('treats a comma, a hyphen and an en dash as the same separator', () => {
+    for (const typed of [
+      'Thane West – Hill Garden',
+      'Thane West - Hill Garden',
+      'Thane West, Hill Garden',
+    ]) {
+      expect(localityByName(LOCALITIES, typed)?.id).toBe('loc-thane-west');
+    }
+  });
+
+  it('refuses a contained word that more than one locality shares', () => {
+    // "Garden" appears in both Thane localities; picking either would be a
+    // silent wrong answer, which is the one thing this module will not do.
+    expect(localityByName(LOCALITIES, 'Garden')).toBeNull();
+  });
+});
+
+describe('localityByPincode', () => {
+  it('finds the locality that lists the pincode', () => {
+    expect(localityByPincode(LOCALITIES, '400610')?.id).toBe('loc-thane-west');
+  });
+
+  it('matches a pincode exactly, not by prefix', () => {
+    // A prefix would make 400610 and 400612 the same place.
+    expect(localityByPincode(LOCALITIES, '40061')).toBeNull();
+    expect(localityByPincode(LOCALITIES, '400612')).toBeNull();
+  });
+
+  it('ignores anything that is not six digits', () => {
+    expect(localityByPincode(LOCALITIES, 'HSR Layout')).toBeNull();
   });
 });
 
@@ -184,6 +260,15 @@ describe('resolveLocality', () => {
     });
     expect(r.locality?.id).toBe('loc-hsr');
     expect(r.matchedBy).toBe('area');
+  });
+
+  it('resolves a six-digit area as a pincode', () => {
+    // The hero search has always routed a pincode to `area`; this is the rule
+    // that now gives it an answer.
+    const r = resolveLocality({ localities: LOCALITIES, cities: CITIES, area: '400610' });
+    expect(r.locality?.id).toBe('loc-thane-west');
+    expect(r.matchedBy).toBe('area');
+    expect(r.city?.id).toBe('city-thane');
   });
 
   it('restricts a point to the named city when a city was named', () => {

@@ -3,13 +3,21 @@
 A service marketplace for home services: customers book, professionals get
 jobs, and four staff roles run the platform.
 
-**This repository is at Phase 5.** The database schema, the sign-in flows for every
+**This repository is at Phase 7.** The database schema, the sign-in flows for every
 role, the authorisation model, the public catalogue, bookings and pricing, the
-payments, refunds and wallet money paths, the professional app — KYC,
-availability, the offers inbox, and the arrive/OTP/complete job flow — and the
-matching engine (ranked offers, the reassignment cascade, the advisory-locked
-sweeper and the exhausted-search refund) are built and tested. What is not built
-is the admin and ops dashboards — they remain role-gated placeholder shells.
+payments, refunds and wallet money paths, the professional app — KYC, availability,
+the offers inbox, and the arrive/OTP/complete job flow — the matching engine (ranked
+offers, now broadcast to the whole candidate list, the reassignment cascade, the
+advisory-locked sweeper and the exhausted-search refund), the admin console
+(dashboard, booking and professional management, KYC review, refunds with dual
+approval, the catalogue / pricing / coupon editors, disputes and support, settings
+and the audit trail), and realtime and notifications (the §27.1 channels and
+professional Presence, booking chat, the notification bell and dispatcher, the
+template editor, and the service and rating reminder crons) are built and tested.
+What is not built is a real push transport (there is no FCM/APNs provider, so a
+`push` row records intent, not arrival), an SMS provider (so `sms`/`whatsapp` rows
+are recorded `failed` on purpose), and the analytics report pages. The payout run is
+Phase 8.
 
 The public surface is real and usable today — the landing page, `/services`, a
 service detail page with live slots, and saved addresses behind a session.
@@ -26,7 +34,9 @@ real over the anon key.
 | 3 | Payments | done |
 | 4 | Professional app | done |
 | 5 | Matching engine | done |
-| 6–9 | Admin, realtime, growth, launch | planned |
+| 6 | Admin console | done |
+| 7 | Realtime & notifications | done |
+| 8–9 | Payouts, launch | planned |
 
 `.planning/ROADMAP.md` is the full list with exit criteria.
 
@@ -57,8 +67,8 @@ accounts. `docs/DATABASE.md`, `docs/API.md`, `docs/FEATURES.md` and
 | `npm run build` | Production build |
 | `npm run lint` | ESLint |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm test` | 824 tests. 725 are mocked and need nothing; the other 99 need a real database and skip loudly without one |
-| `npm run test:db` | The live-database tests — RLS, OTP ledger, triggers, the booking state machine, the atomic write paths, the offer ledger, the job-execution RPCs, the matching engine and connection recovery — against a real database. 99 tests across 8 files |
+| `npm test` | 954 tests. 850 are mocked and need nothing; the other 104 need a real database and skip loudly without one |
+| `npm run test:db` | The live-database tests — RLS, OTP ledger, triggers, the booking state machine, the atomic write paths, the offer ledger and broadcast matching, the job-execution RPCs, the admin write paths and settings, and connection recovery — against a real database. 104 tests across 9 files |
 | `npm run db:migrate` | Applies `supabase/migrations/*.sql` in filename order |
 | `npm run db:seed` | Demo accounts and the bookable catalogue |
 | `npm run db:verify` | Signs in as each demo account for real, over the anon key |
@@ -156,7 +166,7 @@ call goes through that one function rather than building its own header.
 | `professional` | `/professional` | accept an offer, start and complete a job, set availability, submit KYC |
 | `support` | `/admin` | read and write tickets, request a refund |
 | `ops` | `/admin` | read all bookings, assign, cancel any, execute refunds, resolve disputes |
-| `admin` | `/admin` | services, pricing, coupons, KYC review, analytics, audit, role management |
+| `admin` | `/admin` | everything `ops` holds, plus services, pricing, coupons, KYC review, audit, and role management |
 | `super_admin` | `/admin` | `'*'` — every capability |
 
 `super_admin` is the single owner account, created by signing in with the login
@@ -201,6 +211,10 @@ lib/
   professionalServer.ts The professional read/write model: gates, and the one strip function.
   professionalClient.ts The browser's half of the professional contract.
   serviceOtp.ts         The service-OTP helpers: generate, hash, redact, expiry.
+  notifications.ts      The dispatcher. The only writer of notification rows.
+  notificationServer.ts / chatServer.ts  The bell/device/template and chat read models.
+  notificationHooks.ts  One hook per lifecycle event, called after the route's own write.
+  cronGuard.ts          The fail-closed CRON_SECRET check shared by all three crons.
 supabase/migrations/    The schema, in order. This is the source of truth.
 scripts/                Migration runner, seed, and the checks under scripts/.
 test/                   Unit tests, Route Handler tests, and the DB tests.
@@ -280,15 +294,17 @@ ticket — a path a browser session cannot take.
 
 ## Testing
 
-`npm test` runs 725 tests that need no database: the validators, the API envelope,
-the role table, the OTP policy, the owner allow-list, the `NEXT_PUBLIC_` inlining
-guard, the geo and availability engines, the service OTP helpers, the matching
-boundary, and the Route Handlers against a fake service-role client. The fake
-records every table a route touched, so a test can assert *which row was written*,
-not merely that something was. A further 99 run against a real database and are
-skipped, loudly, when there is not one.
+`npm test` runs 1030 tests, 913 of which need no database: the validators, the API
+envelope, the role table, the OTP policy, the owner allow-list, the `NEXT_PUBLIC_`
+inlining guard, the geo and availability engines, the service OTP helpers, the
+matching boundary, the customer, professional and admin console Route Handlers, the
+notification dispatcher and hooks, and the chat, notification and reminder routes,
+against a fake service-role client. The fake records every table a route touched, so
+a test can assert *which row was written*, not merely that something was. The
+remaining 117 run against a real database and are skipped, loudly, when there is not
+one.
 
-`npm run test:db` runs those 99 tests, which a fake cannot answer: whether RLS is
+`npm run test:db` runs those 117 tests, which a fake cannot answer: whether RLS is
 on every table in `public`, whether any policy exposes every profile, whether the
 six buckets exist, whether the OTP ledger throttles, locks, salts and expires as
 it claims, whether the audit trail refuses to be edited, whether one customer can
@@ -298,9 +314,14 @@ function writes it, whether a booking and its item lines can be left half writte
 whether `otp_hash` is invisible to the `authenticated` role, whether 50 concurrent
 `accept_offer` calls produce exactly one winner, whether `verify_service_otp`
 expires and locks as it claims, whether `complete_job` is idempotent on retry,
-whether 20 concurrent `match_booking` calls produce exactly one offer, and whether
-an exhausted search lands `cancelled` / `no_professional_available`. It reads
-`SUPABASE_DB_URL` from the environment or from `.env.local`, and
+whether 20 concurrent `match_booking` calls produce exactly one offer, whether an
+exhausted search lands `cancelled` / `no_professional_available`, and whether the
+admin settings seed and staff-only reads, `admin_cancel_booking` and
+`admin_assign_booking` do what the console claims, whether a notification is readable
+by its recipient and no one else while `authenticated` holds only `SELECT`, whether
+every §27.1 source table is on the `supabase_realtime` publication, and whether the
+reminder functions are `security definer` and callable by the service role alone. It
+reads `SUPABASE_DB_URL` from the environment or from `.env.local`, and
 skips loudly, with a warning, when there is neither. It runs its files
 sequentially — several live-database files in parallel against one remote link
 produce failures that have nothing to do with the code — and it needs a migrated

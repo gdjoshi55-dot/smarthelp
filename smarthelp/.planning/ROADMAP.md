@@ -27,8 +27,8 @@ auth, and safety features are out of scope for now. See
 | 3 | Payments | Razorpay orders, webhook, verify, refunds, wallet ledger, reconciliation cron | Real money in, real money out; the webhook is the sole authority; RLS on payments | **complete** (03-SUMMARY.md records the gates) |
 | 4 | Professional app | KYC upload, verification workflow, working hours, offers inbox, accept/decline, arrive, OTP, complete | A verified professional can take and complete a job | **complete** (04-SUMMARY.md records the gates) |
 | 5 | Matching engine | Candidate ranking, offer fan-out, advisory locks, reassignment cascade, search sweeper | No double assignment under concurrency; exhausted search auto-refunds | **complete** (05-SUMMARY.md records the gates) |
-| 6 | Admin console | Dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, audit, settings | Ops can run the marketplace without a database console | planned |
-| 7 | Realtime & notifications | Channels, presence, chat, notification dispatcher, templates, reminders | Status updates land in under a second; every catalogue notification fires | planned |
+| 6 | Admin console | Dashboard, bookings, KYC review, services, pricing, payments, coupons, disputes, support, audit, settings | Ops can run the marketplace without a database console | **complete** (06-SUMMARY.md records the gates) |
+| 7 | Realtime & notifications | Channels, presence, chat, notification dispatcher, templates, reminders | Status updates land in under a second; every catalogue notification fires | **complete** (07-SUMMARY.md records the gates) |
 | 8 | Growth & advanced | Recurring, wallet top-up, referrals, favourites, surge, invoices/PDF, PWA | Recurring generates idempotently; surge is capped; the PWA installs | planned |
 | 9 | Hardening & launch | Security review, RLS audit, load test, accessibility pass, legal pages, runbook | Critical acceptance path green; no open P1/P2 security findings | planned |
 
@@ -100,7 +100,54 @@ absence of any address-isolation test against a real database. See
 | `professional_schedule` overlap term in slot availability | §9.1 lists "not already reserved" as an input. The table is created with `bookings`; Phase 5's `rank_candidates` reads it for the *offer* path, but the customer-facing slot list (`lib/availability.ts`) still ignores it | a later Phase 5 wave |
 | Service-level aggregate rating on catalogue cards | `ratings` rows are written when a booking is reviewed | Phase 2 |
 | Checkout and payment behind the service-detail CTA | `/customer/checkout` is Phase 2; the CTA routes to a real destination instead of a dead button | Phase 2 |
-| `platform_settings` rows (`instant_lead_minutes`, `max_booking_minutes`) | Read from `lib/constants.ts` defaults until the table lands | Phase 6 |
+| `platform_settings` rows (`instant_lead_minutes`, `max_booking_minutes`) | **Built** — `0033` creates and seeds the table; `lib/settingsServer.ts` is the reader | — |
+
+### Phase 6 — Admin console (complete)
+
+Plan: [`06-admin-console/06-PLAN.md`](06-admin-console/06-PLAN.md).
+
+Migrations `0033`–`0037` and the `/admin` surface. `0033` creates and seeds
+`platform_settings`. `0034` adds the two staff write paths — `admin_cancel_booking`
+and `admin_assign_booking`, both under the `assign:<booking_id>` advisory lock.
+`0035` adds `pricing_rules` (the §7.1 surge-window table, built but not yet applied
+by the quote path) and `cancellation_policies` (the §11.1 ladder as rows). `0036`
+re-creates `match_booking` / `accept_offer` to **broadcast** an offer to the whole
+ranked candidate list, superseding Phase 5's round-based fan-out and moving the
+double-assign guarantee to `uniq_accepted_assignment_per_booking`. `0037` adds
+`support_tickets`, `support_messages` and `disputes`. The console is
+`lib/adminServer.ts` plus ~33 Route Handlers under `app/api/admin/**`, gated by the
+shared capability table — `requireCapability()` is now live on every mutating route,
+and the staff allow-list `['admin','ops','support','super_admin']` gates the reads.
+
+§31.1's exit criterion — *ops can run the marketplace without a database console* —
+is hand-checked by editing a price and a setting from the UI. The notification
+dispatcher and the analytics pages are deferred to Phase 7 and the payout run to
+Phase 8 (following Phase 3's API-first precedent). See [STATE.md](STATE.md).
+
+### Phase 7 — Realtime & notifications (complete)
+
+Plan: [`07-realtime-notifications/07-PLAN.md`](07-realtime-notifications/07-PLAN.md).
+
+Migrations `0038`–`0041`. `0038` adds `chat_threads` / `chat_messages`,
+`notification_templates`, `notifications` and `notification_devices` with the
+`notification_channel` enum and the project's standard tight RLS (recipient-/
+participant-scoped reads, service-role-only writes, no `anon` grant). `0039` adds the
+six §27.1 source tables to `supabase_realtime`, idempotently. `0040` seeds the
+39-row `en-IN` template catalogue (no `in_app` rows — those render from `push`).
+`0041` adds `run_service_reminders` / `run_rating_reminders`, both `security definer`,
+advisory-locked, service-role-only. The surface is `lib/notifications.ts` (the
+dispatcher, and **the only writer of notification rows**), `lib/notificationHooks.ts`,
+the notification/chat read models, `lib/cronGuard.ts`, eight endpoints, and the
+bell/chat/template-editor UI over `hooks/use-realtime.ts`.
+
+§31.1's exit criteria are hand-checked. **Status updates land in under a second** on
+the pushed channels — a `notifications` or `chat_messages` insert fires its Realtime
+channel inside the writing request — with a bounded polling floor (15 s bell/chat/
+track, 5 s offers) when Realtime is unavailable. **Every catalogue notification
+fires**: 16 of the 24 §27.5 codes fire from a live trigger, and the other eight are
+catalogue-only because their feature is unbuilt (extensions, offer-expiry countdown,
+payouts, SOS, phone OTP) — scoped out by D2, with the dispatcher ready for them. See
+[STATE.md](STATE.md).
 
 ### Snabbit-parity phase detail
 

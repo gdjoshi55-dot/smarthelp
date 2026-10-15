@@ -180,6 +180,25 @@ export const PLATFORM_DEFAULTS = {
    * `location_updated_at` — no separate rate-limit table exists.
    */
   proLocationThrottleSeconds: Number(process.env.DEFAULT_PRO_LOCATION_THROTTLE_SECONDS || 30),
+
+  /**
+   * §7.4. The platform-wide ceiling on a surge multiplier. A `pricing_rules`
+   * row above this is clamped down to it, and the engine independently clamps
+   * every factor to the absolute `[0.50, 2.00]` bounds in `lib/pricing.ts`. The
+   * default 1.50 means a rule can raise a price by at most half until an admin
+   * decides otherwise — a cap that exists so a mistyped rule cannot double a
+   * customer's bill.
+   */
+  surgeMaxFactor: Number(process.env.DEFAULT_SURGE_MAX_FACTOR || 1.5),
+
+  /**
+   * §15.2. The two sides of a referral reward, in rupees. The referrer is
+   * credited to their wallet the moment the referee's first booking completes;
+   * the referee is credited then too. Both are `platform_settings` rows so the
+   * figures are retunable without a deploy; these are only the initial state.
+   */
+  referralRewardReferrer: Number(process.env.DEFAULT_REFERRAL_REWARD_REFERRER || 100),
+  referralRewardReferee: Number(process.env.DEFAULT_REFERRAL_REWARD_REFEREE || 50),
 } as const;
 
 /**

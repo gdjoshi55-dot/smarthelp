@@ -31,6 +31,8 @@ export interface LocalityLike {
   lat: number;
   lng: number;
   radius_km: number | string;
+  /** Pincodes served by this locality. Absent on rows saved before 0045. */
+  pincodes?: string[] | null;
   is_active?: boolean;
 }
 
@@ -82,12 +84,23 @@ export function haversineKm(a: GeoPoint, b: GeoPoint): number {
 /**
  * Normalises a typed locality name for comparison.
  *
- * Case, surrounding whitespace, repeated spaces and a trailing comma are all
- * things a person types and none of them make a different place: "hsr  layout",
- * "HSR Layout," and "HSR Layout" are one locality.
+ * Case, surrounding whitespace, repeated spaces and any separator a person
+ * might type between two halves of an area name — a comma, a hyphen, an en
+ * dash — are all things a person types and none of them make a different
+ * place: "hsr  layout", "HSR Layout," and "HSR Layout" are one locality, and
+ * so are "Thane West - Hill Garden" and "Thane West – Hill Garden".
  */
 function normaliseName(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, ' ').replace(/[,]/g, '').trim();
+  return value
+    .toLowerCase()
+    .replace(/[,\u2013\u2014-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Six digits, nothing else: the shape of an Indian pincode. */
+export function isPincode(value: string | null | undefined): value is string {
+  return typeof value === 'string' && /^[0-9]{6}$/.test(value.trim());
 }
 
 function activeOnly(rows: LocalityLike[]): LocalityLike[] {
@@ -104,9 +117,15 @@ function radiusOf(locality: LocalityLike): number {
  *
  * `cityId` narrows the search when the address also names a city, which is what
  * keeps "Kalyan Nagar" in Bengaluru from colliding with a namesake elsewhere.
- * Case-insensitive, whitespace-tolerant, and an exact match only: there is no
- * fuzzy fall-through, because a wrong locality silently hides services rather
- * than showing a wrong one, and a wrong answer here is much harder to notice.
+ *
+ * Case-insensitive and separator-tolerant, and tried in widening order: the
+ * whole typed string, then each comma-separated part, each as an exact match;
+ * then a locality that starts with what was typed on a word boundary ("HSR"
+ * finds "HSR Layout"); then a locality that contains what was typed as whole
+ * words ("Hill Garden" finds "Thane West – Hill Garden"). Every step is exact
+ * on words — there is no partial-word fall-through, because a wrong locality
+ * silently hides services rather than showing a wrong one, and a wrong answer
+ * here is much harder to notice.
  */
 export function localityByName(
   localities: LocalityLike[],
@@ -140,7 +159,46 @@ export function localityByName(
 
   // A longer locality that begins with what was typed, on a word boundary:
   // "HSR" finds "HSR Layout", "HS" finds nothing.
-  return candidates.find((l) => normaliseName(l.name).startsWith(`${whole} `)) ?? null;
+  const prefixed = candidates.find((l) => normaliseName(l.name).startsWith(`${whole} `));
+  if (prefixed) return prefixed;
+
+  // A locality that *contains* what was typed, as whole words: people name the
+  // society or block they live in ("Hill Garden", "Garden Estate") while the
+  // locality row carries the longer administrative name it sits inside
+  // ("Thane West – Hill Garden"). Whole words only — "HS" still misses
+  // "HSR Layout" — so this is a stricter rule than a substring search, not a
+  // fuzzy one. It must also be unambiguous: a word many localities share
+  // ("Garden", "Nagar") matches nothing here, because guessing between two
+  // neighbourhoods is exactly the silent wrong answer this module refuses. Each
+  // comma-separated part is tried in turn, so "Hill Garden, Thane" still lands.
+  for (const part of [whole, ...parts]) {
+    const matches = candidates.filter((l) =>
+      ` ${normaliseName(l.name)} `.includes(` ${part} `)
+    );
+    if (matches.length === 1) return matches[0];
+  }
+
+  return null;
+}
+
+/**
+ * The locality a person's pincode names.
+ *
+ * The hero search has always handed a six-digit query to `area`; this is the
+ * rule that gives it an answer now that `localities.pincodes` exists.
+ * `cityId` narrows the same way it does for names, and an exact pincode match
+ * only — a prefix would make 400610 and 400612 the same place.
+ */
+export function localityByPincode(
+  localities: LocalityLike[],
+  pincode: string,
+  cityId?: string | null
+): LocalityLike | null {
+  const wanted = pincode.trim();
+  if (!isPincode(wanted)) return null;
+
+  const candidates = activeOnly(localities).filter((l) => !cityId || l.city_id === cityId);
+  return candidates.find((l) => (l.pincodes ?? []).includes(wanted)) ?? null;
 }
 
 /**
@@ -204,13 +262,15 @@ function cityOf(cities: CityLike[], id: string | null | undefined): CityLike | n
 }
 
 /**
- * The one resolution path: a name, a point, or both.
+ * The one resolution path: a name, a pincode, a point, or some combination.
  *
- * A named locality wins over coordinates. A person who typed "HSR Layout" and
- * then allowed the browser to locate them from a tower in Jayanagar meant HSR
- * Layout, and silently preferring the tower would put the service at the wrong
- * address. The coordinates are the fallback for "Use current location", where
- * no name exists at all.
+ * A named locality wins over a pincode and over coordinates. A person who typed
+ * "HSR Layout" and then allowed the browser to locate them from a tower in
+ * Jayanagar meant HSR Layout, and silently preferring the tower would put the
+ * service at the wrong address. A pincode is the same kind of deliberate answer
+ * as a name — it is just written in digits — so it outranks coordinates, and a
+ * six-digit `area` is read as a pincode. Coordinates are the fallback for "Use
+ * current location", where no name or pincode exists at all.
  */
 export function resolveLocality(input: ResolveLocalityInput): LocalityResolution {
   const { localities, cities, area, city, point } = input;
@@ -223,6 +283,21 @@ export function resolveLocality(input: ResolveLocalityInput): LocalityResolution
       return {
         locality: byName,
         city: cityOf(cities, byName.city_id),
+        matchedBy: 'area',
+        distanceKm: null,
+      };
+    }
+  }
+
+  // A pincode arrives in `area` — the hero search and the address form both
+  // hand it over that way. It is tried after the name so an area called
+  // something that happens to be six digits still wins on its own name.
+  if (isPincode(area)) {
+    const byPincode = localityByPincode(localities, area, namedCity?.id ?? null);
+    if (byPincode) {
+      return {
+        locality: byPincode,
+        city: cityOf(cities, byPincode.city_id),
         matchedBy: 'area',
         distanceKm: null,
       };

@@ -464,6 +464,82 @@ describe('the snapshot', () => {
   });
 });
 
+describe('surge multipliers (§7.4)', () => {
+  it('applies nothing and itemises nothing when there are no multipliers', () => {
+    const quote = priceQuote({ lines: [hourly(1000)], settings: SETTINGS });
+    expect(quote.multipliers).toEqual([]);
+    expect(quote.subtotal).toBe(1000);
+  });
+
+  it('scales the subtotal, the fee and the tax by the factor', () => {
+    const quote = priceQuote({
+      lines: [hourly(1000)],
+      settings: SETTINGS,
+      multipliers: [{ code: 'SURGE', factor: 1.1 }],
+    });
+    expect(quote.subtotal).toBe(1100);
+    expect(quote.multipliers).toEqual([{ code: 'SURGE', factor: 1.1, amount: 100 }]);
+    // The fee is computed on the surged subtotal: max(20, 1100 x 0.02) = 22.
+    expect(quote.platformFee).toBe(22);
+    expect(quote.tax).toBe(201.96);
+    expect(quote.total).toBe(1323.96);
+    expect(balances(quote)).toBe(true);
+  });
+
+  it('treats a factor of 1 as no surge, not as a line', () => {
+    const quote = priceQuote({
+      lines: [hourly(1000)],
+      settings: SETTINGS,
+      multipliers: [{ code: 'SURGE', factor: 1 }],
+    });
+    expect(quote.multipliers).toEqual([]);
+    expect(quote.subtotal).toBe(1000);
+  });
+
+  it('refuses a factor outside [0.50, 2.00]', () => {
+    for (const factor of [0.4, 2.5, Number.NaN]) {
+      expect(() =>
+        priceQuote({ lines: [hourly(1000)], settings: SETTINGS, multipliers: [{ code: 'SURGE', factor }] })
+      ).toThrow(RangeError);
+    }
+  });
+
+  it('compounds two multipliers in order', () => {
+    const quote = priceQuote({
+      lines: [hourly(1000)],
+      settings: SETTINGS,
+      multipliers: [
+        { code: 'SURGE', factor: 1.1 },
+        { code: 'PEAK', factor: 1.2 },
+      ],
+    });
+    // 1000 -> 1100 -> 1320.
+    expect(quote.subtotal).toBe(1320);
+    expect(quote.multipliers).toEqual([
+      { code: 'SURGE', factor: 1.1, amount: 100 },
+      { code: 'PEAK', factor: 1.2, amount: 220 },
+    ]);
+  });
+
+  it('records each multiplier as a snapshot rule', () => {
+    const quote = priceQuote({
+      lines: [hourly(1000)],
+      settings: SETTINGS,
+      multipliers: [{ code: 'SURGE', factor: 1.1 }],
+    });
+    const snapshot = quote.snapshot as { rules: Array<{ rule: string }>; multipliers: unknown[] };
+    expect(snapshot.rules.map((r) => r.rule)).toEqual([
+      'line_total',
+      'multiplier',
+      'platform_fee',
+      'tax',
+      'total',
+      'commission_split',
+    ]);
+    expect(snapshot.multipliers).toEqual([{ code: 'SURGE', factor: 1.1, amount: '100.00' }]);
+  });
+});
+
 describe('toBookingMoneyColumns', () => {
   it('emits strings, because the columns are numeric', () => {
     const quote = priceQuote({

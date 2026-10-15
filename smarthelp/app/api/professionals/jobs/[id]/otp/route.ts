@@ -6,6 +6,7 @@ import {
   stripProBooking,
 } from '@/lib/professionalServer';
 import { otpIsExpired, otpIsLocked } from '@/lib/serviceOtp';
+import { notifyServiceStarted } from '@/lib/notificationHooks';
 import { PLATFORM_DEFAULTS } from '@/lib/constants';
 import { fail, readJson, str, uuid } from '@/lib/validation';
 
@@ -67,6 +68,8 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     }
 
     const fresh = await getProBookingForCaller(bookingId, professional.id, auth.role);
+    // The timer is armed; the customer hears it started (§27.5 SERVICE_STARTED).
+    await notifyServiceStarted(bookingId);
     return ok({ job: stripProBooking(fresh as Record<string, unknown>, 'accepted') });
   });
 }

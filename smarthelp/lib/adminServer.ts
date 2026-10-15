@@ -6,6 +6,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
   BookingStatus,
   Database,
+  RefundStatus,
   VerificationStatus,
 } from './supabase';
 
@@ -638,5 +639,136 @@ export async function getKycReview(
     profile: profileRes.data ?? null,
     documents,
     skills: skillsRes.data ?? [],
+  };
+}
+
+// ── Refunds ──────────────────────────────────────────────────
+
+export interface AdminRefundListItem {
+  id: string;
+  bookingId: string;
+  /** `null` when a refund predates a booking-numbering migration or the row is orphaned. */
+  bookingNumber: string | null;
+  customerId: string;
+  customerName: string;
+  amount: number;
+  currency: string;
+  status: RefundStatus;
+  route: Database['public']['Tables']['refunds']['Row']['route'];
+  reasonCode: string;
+  note: string | null;
+  requestedById: string | null;
+  requestedByName: string | null;
+  processedById: string | null;
+  completedAt: string | null;
+  requestedAt: string;
+}
+
+export interface AdminRefundListFilters {
+  status?: RefundStatus;
+  /** Booking-number substring. */
+  q?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * The refunds console (§22, §31.1). Money leaves as rupees (the `Numeric`
+ * parse happens here), `requested_by`/`processed_by` are profile ids so their
+ * names are looked up like every other name in this file, and the `q` filter is
+ * a booking-number substring — refunds themselves carry no user-facing number.
+ */
+export async function listAdminRefunds(
+  filters: AdminRefundListFilters,
+  supabase: SupabaseClient<Database> = createServerClient()
+): Promise<{ refunds: AdminRefundListItem[]; total: number }> {
+  const limit = filters.limit ?? 25;
+  const offset = filters.offset ?? 0;
+
+  // `q` matches the booking number, which lives on `bookings` — so resolve it
+  // to a set of booking ids first. No matching number, no matching refunds.
+  let bookingScope: string[] | null = null;
+  if (filters.q) {
+    const { data: matching, error: scopeError } = await supabase
+      .from('bookings')
+      .select('id')
+      .ilike('booking_number', `%${filters.q}%`)
+      .limit(100);
+    if (scopeError) throw scopeError;
+    bookingScope = (matching ?? []).map((b) => b.id);
+    if (bookingScope.length === 0) return { refunds: [], total: 0 };
+  }
+
+  let query = supabase.from('refunds').select('*', { count: 'exact' });
+  if (filters.status) query = query.eq('status', filters.status);
+  if (filters.from) query = query.gte('requested_at', filters.from);
+  if (filters.to) query = query.lte('requested_at', filters.to);
+  if (bookingScope) query = query.in('booking_id', bookingScope);
+  const { data: rows, error, count } = await query
+    .order('requested_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+  if (error) throw error;
+
+  const refundRows = rows ?? [];
+  if (refundRows.length === 0) return { refunds: [], total: count ?? 0 };
+
+  const [bookingsRes, customersRes, profilesRes] = await Promise.all([
+    supabase
+      .from('bookings')
+      .select('id, booking_number')
+      .in('id', [...new Set(refundRows.map((r) => r.booking_id))]),
+    supabase
+      .from('customers')
+      .select('id, profile_id')
+      .in('id', [...new Set(refundRows.map((r) => r.customer_id))]),
+    supabase
+      .from('profiles')
+      .select('id, full_name')
+      .in(
+        'id',
+        [...new Set(
+          refundRows.flatMap((r) => [r.requested_by, r.processed_by, r.approved_by]).filter((v): v is string => !!v)
+        )]
+      ),
+  ]);
+  if (bookingsRes.error) throw bookingsRes.error;
+  if (customersRes.error) throw customersRes.error;
+  if (profilesRes.error) throw profilesRes.error;
+
+  const bookingByRefund = Object.fromEntries(
+    (bookingsRes.data ?? []).map((b) => [b.id, b.booking_number])
+  );
+  const profileNames = Object.fromEntries(
+    (profilesRes.data ?? []).map((p) => [p.id, p.full_name])
+  );
+
+  // A flat "customer id → customer id" map is enough to keep the join cheap: we
+  // only ever render the customer's *name*, and names live on profiles.
+  const customerProfile = Object.fromEntries(
+    (customersRes.data ?? []).map((c) => [c.id, c.profile_id])
+  );
+
+  return {
+    refunds: refundRows.map((r) => ({
+      id: r.id,
+      bookingId: r.booking_id,
+      bookingNumber: bookingByRefund[r.booking_id] ?? null,
+      customerId: r.customer_id,
+      customerName: profileNames[customerProfile[r.customer_id]] ?? 'Customer',
+      amount: parseNumeric(r.amount),
+      currency: r.currency,
+      status: r.status,
+      route: r.route,
+      reasonCode: r.reason_code,
+      note: r.note,
+      requestedById: r.requested_by,
+      requestedByName: r.requested_by ? profileNames[r.requested_by] ?? null : null,
+      processedById: r.processed_by,
+      completedAt: r.completed_at,
+      requestedAt: r.requested_at,
+    })),
+    total: count ?? refundRows.length,
   };
 }
