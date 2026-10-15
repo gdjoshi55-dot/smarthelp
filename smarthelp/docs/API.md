@@ -2407,8 +2407,12 @@ both go through the one `assertCronSecret` guard — an unset `CRON_SECRET` is a
 Both return **200** — `{ sent }`. The reason the pass lives in SQL is that these codes
 are Realtime-only (`['in_app','push']`), and for those channels *writing the row is the
 delivery* — so the advisory lock, the idempotency guard and the inserts share one
-transaction and the lock actually holds. `vercel.json` schedules service reminders
-every 15 minutes and rating reminders once a day.
+transaction and the lock actually holds. `vercel.json` schedules rating reminders once
+a day. Service reminders need a 15-minute cadence, which the Vercel **Hobby** plan does
+not allow (2 cron jobs, each at most once per day), so that route is not in
+`vercel.json`: point an external scheduler at
+`GET /api/cron/service-reminders?secret=$CRON_SECRET` every 15 minutes (cron-job.org, a
+GitHub Actions schedule, or Supabase `pg_cron` + `pg_net` all work and cost nothing).
 
 ### The dispatcher (`lib/notifications.ts`)
 

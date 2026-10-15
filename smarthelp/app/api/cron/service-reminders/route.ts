@@ -24,6 +24,12 @@ export const dynamic = 'force-dynamic';
  * the lock actually holds and two overlapping passes cannot both claim a
  * booking. This route is the thin authenticated shell around it, exactly as the
  * reconciliation route is for `confirm_booking_payment`.
+ *
+ * Not in `vercel.json`: the Vercel Hobby plan allows 2 cron jobs, each at most
+ * once a day, and this pass needs a 15-minute cadence. Point any external
+ * scheduler at `GET /api/cron/service-reminders?secret=$CRON_SECRET` every 15
+ * minutes instead (cron-job.org, a GitHub Actions schedule, or Supabase
+ * `pg_cron` + `pg_net`). The guard below is what makes that safe.
  */
 export async function GET(req: Request) {
   return handle(req, 'cron.service-reminders', async () => {

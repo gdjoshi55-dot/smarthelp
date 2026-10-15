@@ -108,6 +108,19 @@ has to set it. Both are read from the environment rather than from
 `platform_settings`, in the same pattern as `instant_lead_minutes` and
 `maxBookingMinutes`.
 
+**Cron jobs and the Hobby plan.** `vercel.json` declares two daily crons —
+`reconcile-payments` and `rating-reminders` — because the Vercel Hobby plan allows
+only two cron jobs and each at most once per day. The service-reminder pass needs a
+15-minute cadence, which Hobby cannot schedule, so it is **not** in `vercel.json`.
+Trigger it from any external scheduler (cron-job.org, a GitHub Actions schedule, or
+Supabase `pg_cron` + `pg_net`) with:
+
+```
+GET https://<your-domain>/api/cron/service-reminders?secret=$CRON_SECRET
+```
+
+every 15 minutes. The route fails closed without the secret.
+
 ## 3. The database
 
 ```bash
