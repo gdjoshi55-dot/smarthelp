@@ -251,9 +251,11 @@ export interface TrackStep {
  * Every timer number is the server's: `remainingSeconds` arrives pre-computed
  * and `serverNow` is the instant it was computed at, so the countdown is
  * `endsAt − serverNow` and never `Date.now() − startedAt` (Interaction Contract
- * 2). `proLocation` is coordinates or null — never an invented ETA — and the OTP
- * block is present only while the booking is `arrived` and only for the
- * customer. In every case `otp_hash` is absent by construction.
+ * 2). `proLocation` is the professional's last fresh coordinates; `etaMinutes`
+ * and `distanceKm` are derived from those coordinates and the service address,
+ * and stay null when either is unknown. The OTP block is present only while the
+ * booking is `arrived` and only for the customer. In every case `otp_hash` is
+ * absent by construction.
  */
 export interface BookingTrackResult {
   booking: BookingRow;
@@ -269,6 +271,10 @@ export interface BookingTrackResult {
   extendedMinutes: number;
   /** The professional's last-known pin, or null when unknown or stale. */
   proLocation: { lat: number; lng: number } | null;
+  /** First-pass arrival estimate while the tracking map has no route yet. */
+  etaMinutes?: number | null;
+  /** Approximate road distance to the service address, in kilometres. */
+  distanceKm?: number | null;
   /** Customer + `arrived` only: when the current code stops being accepted. */
   otpExpiresAt?: string | null;
   /** Customer + `arrived` only: how many of the three generations are left. */

@@ -1,0 +1,846 @@
+
+> smarthelp@0.1.0 dev
+> next dev
+
+  ▲ Next.js 14.2.35
+  - Local:        http://localhost:3000
+  - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 3.9s
+ ○ Compiling /api/professionals/me/jobs ...
+ ✓ Compiled /api/professionals/me/jobs in 987ms (174 modules)
+ ✓ Compiled (176 modules)
+ GET /api/professionals/me/jobs 200 in 4057ms
+ GET /api/professionals/offers 200 in 4878ms
+ GET /api/professionals/me/jobs 200 in 1045ms
+ GET /api/professionals/offers 200 in 1561ms
+ GET /api/professionals/offers 200 in 1404ms
+ GET /api/professionals/me/jobs 200 in 995ms
+ GET /api/professionals/offers 200 in 1465ms
+ GET /api/professionals/offers 200 in 1723ms
+ GET /api/professionals/me/jobs 200 in 1009ms
+ GET /api/professionals/offers 200 in 1510ms
+ GET /api/professionals/offers 200 in 1536ms
+ GET /api/professionals/me/jobs 200 in 992ms
+ GET /api/professionals/offers 200 in 1579ms
+ GET /api/professionals/offers 200 in 1426ms
+ GET /api/professionals/me/jobs 200 in 1072ms
+ GET /api/professionals/offers 200 in 1608ms
+ GET /api/professionals/offers 200 in 1361ms
+ GET /api/professionals/me/jobs 200 in 1045ms
+ GET /api/professionals/offers 200 in 1618ms
+ GET /api/professionals/offers 200 in 1501ms
+ GET /api/professionals/me/jobs 200 in 1006ms
+ GET /api/professionals/offers 200 in 1885ms
+ GET /api/professionals/offers 200 in 1922ms
+ GET /api/professionals/me/jobs 200 in 1000ms
+ GET /api/professionals/offers 200 in 1511ms
+ GET /api/professionals/offers 200 in 1505ms
+ GET /api/professionals/me/jobs 200 in 1736ms
+ GET /api/professionals/offers 200 in 2433ms
+ GET /api/professionals/offers 200 in 1571ms
+ GET /api/professionals/me/jobs 200 in 1010ms
+ GET /api/professionals/offers 200 in 1686ms
+ GET /api/professionals/offers 200 in 1387ms
+ GET /api/professionals/me/jobs 200 in 1097ms
+ GET /api/professionals/offers 200 in 1747ms
+ GET /api/professionals/offers 200 in 1590ms
+ GET /api/professionals/me/jobs 200 in 1194ms
+ GET /api/professionals/offers 200 in 1732ms
+ GET /api/professionals/offers 200 in 1510ms
+ GET /api/professionals/me/jobs 200 in 1220ms
+ GET /api/professionals/offers 200 in 1941ms
+ GET /api/professionals/offers 200 in 1874ms
+ GET /api/professionals/me/jobs 200 in 1100ms
+ GET /api/professionals/offers 200 in 1696ms
+ GET /api/professionals/offers 200 in 1630ms
+ GET /api/professionals/me/jobs 200 in 1025ms
+ GET /api/professionals/offers 200 in 1812ms
+ GET /api/professionals/offers 200 in 1507ms
+ GET /api/professionals/me/jobs 200 in 1119ms
+ GET /api/professionals/offers 200 in 1709ms
+ GET /api/professionals/offers 200 in 1553ms
+ GET /api/professionals/me/jobs 200 in 1115ms
+ GET /api/professionals/offers 200 in 1570ms
+ GET /api/professionals/offers 200 in 1893ms
+ GET /api/professionals/me/jobs 200 in 1010ms
+ GET /api/professionals/offers 200 in 1856ms
+ GET /api/professionals/offers 200 in 1560ms
+ GET /api/professionals/me/jobs 200 in 991ms
+ GET /api/professionals/offers 200 in 1878ms
+ GET /api/professionals/offers 200 in 1417ms
+ GET /api/professionals/me/jobs 200 in 1018ms
+ GET /api/professionals/offers 200 in 1592ms
+ GET /api/professionals/offers 200 in 1594ms
+ GET /api/professionals/me/jobs 200 in 1022ms
+ GET /api/professionals/offers 200 in 1526ms
+ GET /api/professionals/offers 200 in 1460ms
+ GET /api/professionals/me/jobs 200 in 1035ms
+ GET /api/professionals/offers 200 in 1548ms
+ GET /api/professionals/offers 200 in 1426ms
+ GET /api/professionals/me/jobs 200 in 997ms
+ GET /api/professionals/offers 200 in 1463ms
+ GET /api/professionals/offers 200 in 1428ms
+ GET /api/professionals/me/jobs 200 in 1034ms
+ GET /api/professionals/offers 200 in 1612ms
+ GET /api/professionals/offers 200 in 1446ms
+ GET /api/professionals/me/jobs 200 in 1023ms
+ GET /api/professionals/offers 200 in 1555ms
+ GET /api/professionals/offers 200 in 1415ms
+ GET /api/professionals/me/jobs 200 in 1236ms
+ GET /api/professionals/offers 200 in 1730ms
+ GET /api/professionals/offers 200 in 1394ms
+ GET /api/professionals/me/jobs 200 in 1066ms
+ GET /api/professionals/offers 200 in 1526ms
+ GET /api/professionals/offers 200 in 1407ms
+ GET /api/professionals/me/jobs 200 in 1003ms
+ GET /api/professionals/offers 200 in 1571ms
+ GET /api/professionals/offers 200 in 1420ms
+ GET /api/professionals/me/jobs 200 in 1067ms
+ GET /api/professionals/offers 200 in 1531ms
+ GET /api/professionals/offers 200 in 1434ms
+ GET /api/professionals/me/jobs 200 in 1009ms
+ GET /api/professionals/offers 200 in 1911ms
+ GET /api/professionals/offers 200 in 1559ms
+ GET /api/professionals/me/jobs 200 in 1004ms
+ GET /api/professionals/offers 200 in 1563ms
+ GET /api/professionals/offers 200 in 1847ms
+ GET /api/professionals/me/jobs 200 in 1401ms
+ GET /api/professionals/offers 200 in 1856ms
+ GET /api/professionals/offers 200 in 1483ms
+ GET /api/professionals/me/jobs 200 in 1135ms
+ GET /api/professionals/offers 200 in 1833ms
+ GET /api/professionals/offers 200 in 1526ms
+ GET /api/professionals/me/jobs 200 in 1025ms
+ GET /api/professionals/offers 200 in 1656ms
+ GET /api/professionals/offers 200 in 1899ms
+ GET /api/professionals/me/jobs 200 in 1140ms
+ GET /api/professionals/offers 200 in 1724ms
+ GET /api/professionals/offers 200 in 1509ms
+ GET /api/professionals/me/jobs 200 in 1286ms
+ GET /api/professionals/offers 200 in 1810ms
+ GET /api/professionals/offers 200 in 1637ms
+ GET /api/professionals/me/jobs 200 in 1506ms
+ GET /api/professionals/offers 200 in 2799ms
+ GET /api/professionals/offers 200 in 2021ms
+ GET /api/professionals/me/jobs 200 in 1085ms
+ GET /api/professionals/offers 200 in 1755ms
+ GET /api/professionals/offers 200 in 1756ms
+ GET /api/professionals/me/jobs 200 in 1130ms
+ GET /api/professionals/offers 200 in 1824ms
+ GET /api/professionals/offers 200 in 1492ms
+ GET /api/professionals/me/jobs 200 in 1035ms
+ GET /api/professionals/offers 200 in 1588ms
+ GET /api/professionals/offers 200 in 1520ms
+ ○ Compiling /api/payments/create-order ...
+ ✓ Compiled /api/payments/create-order in 687ms (180 modules)
+ GET /api/professionals/me/jobs 200 in 1162ms
+ GET /api/professionals/offers 200 in 1473ms
+ POST /api/payments/create-order 201 in 4520ms
+ GET /api/professionals/offers 200 in 1817ms
+ GET /api/professionals/me/jobs 200 in 1066ms
+ GET /api/professionals/offers 200 in 1540ms
+ GET /api/professionals/offers 200 in 1523ms
+ GET /api/professionals/me/jobs 200 in 1056ms
+ GET /api/professionals/offers 200 in 1628ms
+ GET /api/professionals/offers 200 in 1547ms
+ GET /api/professionals/me/jobs 200 in 1018ms
+ GET /api/professionals/offers 200 in 1550ms
+ GET /api/professionals/offers 200 in 1420ms
+ GET /api/professionals/me/jobs 200 in 1017ms
+ GET /api/professionals/offers 200 in 1512ms
+ GET /api/professionals/offers 200 in 1516ms
+ GET /api/professionals/me/jobs 200 in 999ms
+ GET /api/professionals/offers 200 in 1530ms
+ ○ Compiling /api/payments/verify ...
+ ✓ Compiled /api/payments/verify in 634ms (183 modules)
+ GET /api/professionals/offers 200 in 1554ms
+ GET /api/professionals/me/jobs 200 in 1073ms
+ POST /api/payments/verify 200 in 6392ms
+ GET /api/professionals/offers 200 in 4652ms
+ GET /api/professionals/me/jobs 200 in 1014ms
+ GET /api/professionals/offers 200 in 1774ms
+ ○ Compiling /customer/bookings/[id] ...
+ GET /api/professionals/offers 200 in 2364ms
+ ✓ Compiled /api/professionals/offers/[id]/accept in 10.2s (957 modules)
+ ✓ Compiled in 1105ms (410 modules)
+ GET /api/professionals/me/jobs 200 in 9499ms
+ ✓ Compiled /api/bookings/[id] in 367ms (551 modules)
+ GET /api/professionals/offers 200 in 10594ms
+ GET /api/professionals/offers 200 in 1496ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 2663ms
+ ✓ Compiled /api/bookings/[id]/track in 322ms (553 modules)
+ ✓ Compiled (555 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1976ms
+ POST /api/professionals/offers/9628738f-2732-4af6-97f5-9ce85889ea63/accept 200 in 9458ms
+ ○ Compiling /api/availability ...
+ ✓ Compiled /api/availability in 680ms (560 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/invoice 200 in 3239ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 3689ms
+ GET /api/professionals/me/jobs 200 in 1910ms
+ GET /api/professionals/offers 200 in 2468ms
+ GET /api/availability?serviceId=1dbe6c1d-e733-4c83-b16f-b5cd6fd07137&date=2026-10-28&duration=30&area=Mogra&lat=22.987849&lng=88.38762 200 in 2864ms
+ GET /api/professionals/offers 200 in 1532ms
+ GET /api/availability?serviceId=1dbe6c1d-e733-4c83-b16f-b5cd6fd07137&date=2026-10-28&duration=30&area=Mogra&lat=22.987849&lng=88.38762 200 in 1838ms
+ GET /api/professionals/me/jobs 200 in 1065ms
+ GET /api/professionals/offers 200 in 1561ms
+ GET /api/professionals/offers 200 in 1497ms
+ GET /api/professionals/me/jobs 200 in 1007ms
+ GET /api/professionals/offers 200 in 1655ms
+ GET /api/professionals/offers 200 in 1671ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2158ms
+ GET /api/professionals/me/jobs 200 in 1040ms
+ GET /api/professionals/offers 200 in 1427ms
+ ○ Compiling /professional/jobs/[id] ...
+ ✓ Compiled /professional/jobs/[id] in 1825ms (989 modules)
+ GET /api/professionals/offers 200 in 3166ms
+ GET /api/professionals/me/jobs 200 in 991ms
+ GET /api/professionals/offers 200 in 1387ms
+ ✓ Compiled /api/professionals/jobs/[id]/on-the-way in 380ms (578 modules)
+ GET /api/professionals/offers 200 in 1814ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2035ms
+ POST /api/professionals/jobs/9e8828db-4426-43c6-90e7-a125104629da/on-the-way 200 in 5697ms
+ GET /api/professionals/offers 200 in 1520ms
+ GET /api/professionals/me/jobs 200 in 1001ms
+ ✓ Compiled /api/professionals/me/location in 409ms (576 modules)
+ POST /api/professionals/me/location 200 in 1562ms
+ GET /api/professionals/me/jobs 200 in 1008ms
+ GET /api/professionals/offers 200 in 1657ms
+ GET /api/professionals/offers 200 in 1564ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1888ms
+ GET /api/professionals/offers 200 in 1406ms
+ GET /api/professionals/me/jobs 200 in 1249ms
+ GET /api/professionals/offers 200 in 1997ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2334ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2439ms
+ ✓ Compiled /api/auth/me in 302ms (543 modules)
+ GET /api/professionals/me/jobs 200 in 1913ms
+ GET /api/auth/me 200 in 2208ms
+ GET /api/professionals/offers 200 in 2770ms
+ POST /api/professionals/me/location 200 in 992ms
+ GET /api/professionals/me/jobs 200 in 1021ms
+ GET /api/professionals/offers 200 in 1433ms
+ GET /api/professionals/offers 200 in 1504ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1838ms
+ GET /api/professionals/offers 200 in 1595ms
+ GET /api/professionals/me/jobs 200 in 1080ms
+ GET /api/professionals/offers 200 in 1560ms
+ GET /api/professionals/offers 200 in 1890ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2145ms
+ GET /api/professionals/offers 200 in 1504ms
+ GET /api/professionals/me/jobs 200 in 983ms
+ GET /api/professionals/offers 200 in 1844ms
+ GET /api/professionals/offers 200 in 2183ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2033ms
+ GET /api/professionals/offers 200 in 1536ms
+ GET /api/professionals/me/jobs 200 in 998ms
+ GET /api/professionals/offers 200 in 1477ms
+ GET /api/professionals/offers 200 in 1861ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2298ms
+ GET /api/professionals/offers 200 in 1585ms
+ GET /api/professionals/me/jobs 200 in 1071ms
+ GET /api/professionals/offers 200 in 1618ms
+ POST /api/professionals/me/location 200 in 984ms
+ GET /api/professionals/offers 200 in 1508ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2054ms
+ GET /api/professionals/offers 200 in 1597ms
+ GET /api/professionals/me/jobs 200 in 1234ms
+ GET /api/professionals/offers 200 in 1888ms
+ GET /api/professionals/offers 200 in 1608ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2112ms
+ GET /api/professionals/offers 200 in 1451ms
+ GET /api/professionals/me/jobs 200 in 1198ms
+ GET /api/professionals/offers 200 in 1613ms
+ GET /api/professionals/offers 200 in 1848ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1971ms
+ GET /api/professionals/offers 200 in 1639ms
+ POST /api/professionals/me/location 200 in 947ms
+ GET /api/professionals/me/jobs 200 in 1013ms
+ GET /api/professionals/offers 200 in 1621ms
+ GET /api/professionals/offers 200 in 1582ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2116ms
+ GET /api/professionals/offers 200 in 1614ms
+ GET /api/professionals/me/jobs 200 in 959ms
+ GET /api/professionals/offers 200 in 1520ms
+ GET /api/professionals/offers 200 in 2334ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2087ms
+ GET /api/professionals/offers 200 in 1888ms
+ GET /api/professionals/me/jobs 200 in 1032ms
+ GET /api/professionals/offers 200 in 1745ms
+ GET /api/professionals/offers 200 in 2742ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1908ms
+ GET /api/professionals/offers 200 in 1421ms
+ GET /api/professionals/me/jobs 200 in 1028ms
+ GET /api/professionals/offers 200 in 1592ms
+ POST /api/professionals/me/location 200 in 1200ms
+ GET /api/professionals/offers 200 in 1775ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2031ms
+ GET /api/professionals/offers 200 in 1448ms
+ GET /api/professionals/me/jobs 200 in 1097ms
+ GET /api/professionals/offers 200 in 1602ms
+ GET /api/professionals/offers 200 in 2030ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2313ms
+ GET /api/professionals/offers 200 in 1502ms
+ GET /api/professionals/me/jobs 200 in 1109ms
+ GET /api/professionals/offers 200 in 1720ms
+ GET /api/professionals/offers 200 in 1593ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2009ms
+ GET /api/professionals/offers 200 in 1564ms
+ GET /api/professionals/me/jobs 200 in 1149ms
+ GET /api/professionals/offers 200 in 1681ms
+ GET /api/professionals/offers 200 in 1988ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2379ms
+ GET /api/professionals/offers 200 in 2078ms
+ GET /api/professionals/me/jobs 200 in 1081ms
+ GET /api/professionals/offers 200 in 1739ms
+ ✓ Compiled in 1409ms (607 modules)
+ GET /api/professionals/offers 200 in 4051ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2486ms
+ GET /api/professionals/offers 200 in 1601ms
+ GET /api/professionals/me/jobs 200 in 1001ms
+ GET /api/professionals/offers 200 in 1682ms
+ ✓ Compiled in 679ms (605 modules)
+ GET /api/professionals/offers 200 in 2448ms
+ ✓ Compiled /api/professionals/me/location in 68ms (180 modules)
+ POST /api/professionals/me/location 200 in 1134ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2367ms
+ GET /api/professionals/offers 200 in 1441ms
+ GET /api/professionals/me/jobs 200 in 1042ms
+ GET /api/professionals/offers 200 in 2079ms
+ ✓ Compiled in 706ms (607 modules)
+ GET /api/professionals/offers 200 in 2008ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2230ms
+ GET /api/professionals/offers 200 in 1524ms
+ ✓ Compiled in 597ms (607 modules)
+ GET /api/professionals/me/jobs 200 in 1204ms
+ GET /api/professionals/offers 200 in 2120ms
+ GET /api/professionals/offers 200 in 1614ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2182ms
+ GET /api/professionals/offers 200 in 1432ms
+ GET /api/professionals/me/jobs 200 in 957ms
+ GET /api/professionals/offers 200 in 1440ms
+ POST /api/professionals/me/location 200 in 1304ms
+ GET /api/professionals/offers 200 in 1816ms
+ ✓ Compiled in 580ms (413 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2112ms
+ GET /api/professionals/offers 200 in 1525ms
+ GET /api/professionals/me/jobs 200 in 981ms
+ GET /api/professionals/offers 200 in 1552ms
+ ✓ Compiled in 1004ms (427 modules)
+ GET /api/professionals/offers 200 in 1762ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2345ms
+ GET /api/professionals/offers 200 in 1784ms
+ GET /api/professionals/me/jobs 200 in 1020ms
+ GET /api/professionals/offers 200 in 1809ms
+ GET /api/professionals/offers 200 in 2102ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1936ms
+ GET /api/professionals/offers 200 in 1518ms
+ POST /api/professionals/me/location 200 in 1082ms
+ GET /api/professionals/me/jobs 200 in 998ms
+ GET /api/professionals/offers 200 in 1527ms
+ GET /api/professionals/offers 200 in 2152ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2167ms
+ GET /api/professionals/offers 200 in 1794ms
+ GET /api/professionals/me/jobs 200 in 958ms
+ GET /api/professionals/offers 200 in 1414ms
+ GET /api/professionals/offers 200 in 1912ms
+ GET /api/professionals/offers 200 in 1404ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 3259ms
+ GET /api/professionals/me/jobs 200 in 1020ms
+ GET /api/professionals/offers 200 in 1589ms
+ GET /api/professionals/offers 200 in 1882ms
+ POST /api/professionals/me/location 200 in 1075ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2073ms
+ GET /api/professionals/offers 200 in 1645ms
+ GET /api/professionals/me/jobs 200 in 1437ms
+ GET /api/professionals/offers 200 in 1539ms
+ ○ Compiling /customer/bookings/[id] ...
+ ✓ Compiled /customer/bookings/[id] in 1757ms (544 modules)
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 4036ms
+ ✓ Compiled /api/auth/me in 304ms (546 modules)
+ GET /api/professionals/offers 200 in 1963ms
+ GET /api/auth/me 200 in 1558ms
+ ✓ Compiled /api/bookings/[id] in 346ms (548 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1951ms
+ ✓ Compiled /api/bookings/[id]/invoice in 207ms (550 modules)
+ GET /api/professionals/offers 200 in 2166ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/invoice 200 in 1744ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1831ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2537ms
+ GET /api/professionals/me/jobs 200 in 1122ms
+ GET /api/professionals/offers 200 in 1697ms
+ GET /api/professionals/offers 200 in 1520ms
+ ○ Compiling /professional/jobs/[id] ...
+ ✓ Compiled /professional/jobs/[id] in 525ms (569 modules)
+ GET /professional/jobs/9e8828db-4426-43c6-90e7-a125104629da 200 in 966ms
+ GET /api/professionals/offers 200 in 1158ms
+ GET /api/auth/me 200 in 988ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1994ms
+ GET /api/professionals/me/jobs 200 in 1038ms
+ GET /api/professionals/offers 200 in 1534ms
+ POST /api/professionals/me/location 200 in 981ms
+ GET /api/professionals/offers 200 in 1795ms
+ GET /api/professionals/offers 200 in 1816ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2145ms
+ GET /api/professionals/me/jobs 200 in 1056ms
+ GET /api/professionals/offers 200 in 1800ms
+ GET /api/professionals/offers 200 in 1614ms
+ GET /api/professionals/offers 200 in 1884ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1997ms
+ GET /api/professionals/me/jobs 200 in 1022ms
+ GET /api/professionals/offers 200 in 1539ms
+ GET /api/professionals/offers 200 in 2405ms
+ GET /api/professionals/offers 200 in 2155ms
+ POST /api/professionals/me/location 200 in 973ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1995ms
+ GET /api/professionals/me/jobs 200 in 1011ms
+ GET /api/professionals/offers 200 in 1817ms
+ GET /api/professionals/offers 200 in 1560ms
+ GET /api/professionals/offers 200 in 1546ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2078ms
+ GET /api/professionals/me/jobs 200 in 1054ms
+ GET /api/professionals/offers 200 in 1919ms
+ GET /api/professionals/offers 200 in 1784ms
+ GET /api/professionals/offers 200 in 1683ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1969ms
+ GET /api/professionals/me/jobs 200 in 1010ms
+ GET /api/professionals/offers 200 in 1528ms
+ GET /api/professionals/offers 200 in 1819ms
+ POST /api/professionals/me/location 200 in 1375ms
+ GET /api/professionals/offers 200 in 1481ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1922ms
+ GET /api/professionals/me/jobs 200 in 992ms
+ GET /api/professionals/offers 200 in 1605ms
+ GET /api/professionals/offers 200 in 1513ms
+ GET /api/professionals/offers 200 in 1508ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2558ms
+ ○ Compiling /_error ...
+ GET /api/professionals/me/jobs 500 in 8788ms
+ GET /api/professionals/offers 500 in 8789ms
+ GET /professional/jobs/9e8828db-4426-43c6-90e7-a125104629da 500 in 48ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 500 in 61ms
+ ✓ Compiled /_error in 1770ms (1218 modules)
+ ○ Compiling /_not-found ...
+ GET /professional/jobs/9e8828db-4426-43c6-90e7-a125104629da 200 in 964ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1376ms
+ ✓ Compiled /_not-found in 2.1s (1207 modules)
+ ✓ Compiled /api/auth/me in 514ms (605 modules)
+ GET /api/auth/me 200 in 3184ms
+ GET /api/auth/me 200 in 3532ms
+ ✓ Compiled /api/bookings/[id] in 349ms (607 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1754ms
+ GET /api/professionals/me/jobs 200 in 1538ms
+ ✓ Compiled /api/bookings/[id]/invoice in 453ms (609 modules)
+ GET /api/professionals/offers 200 in 2187ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1580ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/invoice 200 in 2313ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2975ms
+ ○ Compiling /api/professionals/me/location ...
+ ✓ Compiled /api/professionals/me/location in 531ms (611 modules)
+ POST /api/professionals/me/location 200 in 1975ms
+ GET /api/professionals/offers 200 in 2375ms
+ GET /api/professionals/offers 200 in 1834ms
+ ✓ Compiled in 2.5s (1227 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 2809ms
+ GET /api/professionals/me/jobs 200 in 999ms
+ GET /api/professionals/offers 200 in 1578ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1983ms
+ ✓ Compiled in 1565ms (1227 modules)
+ ✓ Compiled in 0ms (611 modules)
+ ✓ Compiled in 1ms (611 modules)
+ ✓ Compiled in 0ms (611 modules)
+ GET /api/professionals/me/jobs 200 in 2885ms
+ GET /api/professionals/offers 200 in 3648ms
+ GET /api/professionals/offers 200 in 1534ms
+ GET /api/professionals/offers 200 in 1659ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2006ms
+ GET /api/professionals/me/jobs 200 in 1213ms
+ GET /api/professionals/offers 200 in 1531ms
+ GET /api/professionals/offers 200 in 1577ms
+ GET /api/professionals/offers 200 in 1703ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1996ms
+ GET /api/professionals/me/jobs 200 in 1031ms
+ GET /api/professionals/offers 200 in 1758ms
+ GET /api/professionals/offers 200 in 1600ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 401ms
+ GET /api/auth/me 200 in 1023ms
+ GET /api/professionals/offers 200 in 1532ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1242ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1279ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/invoice 200 in 1792ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1944ms
+ GET /api/professionals/offers 200 in 1434ms
+ GET /api/professionals/me/jobs 200 in 1305ms
+ GET /api/professionals/offers 200 in 1607ms
+ POST /api/professionals/me/location 200 in 1097ms
+ GET /api/professionals/offers 200 in 1732ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2009ms
+ GET /api/professionals/me/jobs 200 in 1087ms
+ GET /api/professionals/offers 200 in 1799ms
+ GET /api/professionals/offers 200 in 1557ms
+ GET /api/professionals/offers 200 in 1546ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1896ms
+ GET /api/professionals/me/jobs 200 in 1210ms
+ GET /api/professionals/offers 200 in 1682ms
+ GET /api/professionals/offers 200 in 1716ms
+ GET /api/professionals/offers 200 in 1775ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2078ms
+ POST /api/professionals/me/location 200 in 974ms
+ GET /api/professionals/me/jobs 200 in 1095ms
+ GET /api/professionals/offers 200 in 1377ms
+ GET /api/professionals/offers 200 in 1974ms
+ ✓ Compiled in 1233ms (1224 modules)
+ GET /api/professionals/offers 200 in 2945ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2260ms
+ GET /api/professionals/me/jobs 200 in 1034ms
+ GET /api/professionals/offers 200 in 1456ms
+ GET /api/professionals/offers 200 in 1801ms
+ ✓ Compiled in 1612ms (1218 modules)
+ GET /api/professionals/offers 200 in 1800ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1863ms
+ GET /api/professionals/me/jobs 200 in 1125ms
+ GET /api/professionals/offers 200 in 2049ms
+ GET /api/professionals/offers 200 in 1645ms
+ GET /api/professionals/offers 200 in 1707ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2257ms
+ GET /api/professionals/me/jobs 200 in 1359ms
+ GET /api/professionals/offers 200 in 1630ms
+ GET /api/professionals/offers 200 in 1587ms
+ POST /api/professionals/me/location 200 in 1006ms
+ GET /api/professionals/offers 200 in 1701ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1916ms
+ GET /api/professionals/me/jobs 200 in 992ms
+ GET /api/professionals/offers 200 in 1543ms
+ GET /api/professionals/offers 200 in 2622ms
+ GET /api/professionals/offers 200 in 1454ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2465ms
+ GET /api/professionals/me/jobs 200 in 988ms
+ GET /api/professionals/offers 200 in 1558ms
+ GET /api/professionals/offers 200 in 1499ms
+ GET /api/professionals/offers 200 in 1743ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2159ms
+ GET /api/professionals/me/jobs 200 in 1197ms
+ GET /api/professionals/offers 200 in 1858ms
+ POST /api/professionals/me/location 200 in 984ms
+ GET /api/professionals/offers 200 in 1550ms
+ GET /api/professionals/offers 200 in 1525ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1996ms
+ GET /api/professionals/me/jobs 200 in 966ms
+ GET /api/professionals/offers 200 in 1463ms
+ GET /api/professionals/offers 200 in 1814ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 440ms
+ ✓ Compiled /api/auth/me in 402ms (606 modules)
+ GET /api/professionals/offers 200 in 2284ms
+ GET /api/auth/me 200 in 1541ms
+ ✓ Compiled /api/bookings/[id] in 339ms (608 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1607ms
+ ✓ Compiled /api/bookings/[id]/invoice in 316ms (610 modules)
+ GET /api/professionals/offers 200 in 1698ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1793ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/invoice 200 in 1975ms
+ GET /api/professionals/me/jobs 200 in 1969ms
+ GET /api/auth/me 200 in 1033ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1978ms
+ GET /api/professionals/offers 200 in 1483ms
+ GET /api/professionals/offers 200 in 2041ms
+ POST /api/professionals/me/location 200 in 1133ms
+ GET /api/professionals/me/jobs 200 in 973ms
+ GET /api/professionals/offers 200 in 1747ms
+ GET /api/professionals/offers 200 in 1611ms
+ GET /api/professionals/offers 200 in 1515ms
+ GET /api/professionals/me/jobs 200 in 1031ms
+ GET /api/professionals/offers 200 in 1569ms
+ GET /api/professionals/offers 200 in 1700ms
+ GET /api/professionals/offers 200 in 1614ms
+ GET /api/professionals/me/jobs 200 in 1449ms
+ GET /api/professionals/offers 200 in 2163ms
+ POST /api/professionals/me/location 200 in 983ms
+ GET /api/professionals/offers 200 in 1515ms
+ GET /api/professionals/offers 200 in 1533ms
+ GET /api/auth/me 200 in 2910ms
+ ✓ Compiled in 3.1s (1153 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 5090ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2749ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2470ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 566ms
+ GET /api/auth/me 200 in 1822ms
+ ✓ Compiled /api/bookings/[id] in 281ms (541 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1606ms
+ ✓ Compiled /api/bookings/[id]/invoice in 323ms (544 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/invoice 200 in 2472ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 2537ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2988ms
+ ○ Compiling /_not-found ...
+ ✓ Compiled /_not-found in 2.3s (1161 modules)
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 2742ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 44ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2129ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2188ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2327ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2448ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2310ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2289ms
+ ✓ Compiled in 1230ms (1151 modules)
+ ○ Compiling /_not-found ...
+ ✓ Compiled /_not-found in 523ms (1140 modules)
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 725ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 3670ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2508ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2537ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 171ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 45ms
+ ○ Compiling /api/auth/me ...
+ ✓ Compiled /api/auth/me in 855ms (1142 modules)
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 1037ms
+ GET /api/auth/me 200 in 2571ms
+ ○ Compiling /api/bookings/[id] ...
+ ✓ Compiled /api/bookings/[id] in 665ms (542 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 2050ms
+ ✓ Compiled /api/bookings/[id]/invoice in 500ms (545 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1610ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/invoice 200 in 2130ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2774ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2414ms
+ GET /api/auth/me 200 in 2929ms
+ ○ Compiling /customer/checkout ...
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 3716ms
+ ✓ Compiled /_not-found in 4s (1197 modules)
+ ✓ Compiled /api/services/[slug] in 339ms (570 modules)
+ GET /api/services/full-house-cleaning 200 in 3181ms
+ GET /api/services/full-house-cleaning 200 in 1416ms
+ ✓ Compiled /api/customers/me/addresses in 403ms (572 modules)
+ ○ Compiling /api/bookings/quote ...
+ ✓ Compiled /api/bookings/quote in 559ms (581 modules)
+ POST /api/bookings/quote 200 in 1764ms
+ GET /api/customers/me/addresses 200 in 2228ms
+ ○ Compiling /customer/bookings ...
+ ✓ Compiled /customer/bookings in 1023ms (1220 modules)
+ ✓ Compiled /api/bookings in 349ms (594 modules)
+ GET /api/bookings?limit=20&offset=0 200 in 1523ms
+ GET /api/bookings?limit=20&offset=0 200 in 948ms
+ ○ Compiling /api/bookings/[id] ...
+ ✓ Compiled /api/bookings/[id] in 852ms (596 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 2574ms
+ ✓ Compiled /api/bookings/[id]/invoice in 395ms (598 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 2168ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/invoice 200 in 2578ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2740ms
+ GET /api/auth/me 200 in 1353ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2444ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 213ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2257ms
+ ✓ Compiled in 3.2s (1132 modules)
+ ○ Compiling /api/bookings/[id]/track ...
+ ✓ Compiled /api/bookings/[id]/track in 1238ms (565 modules)
+ ○ Compiling /_not-found ...
+ ✓ Compiled /_not-found in 1773ms (1207 modules)
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 2797ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 2213ms
+ GET /api/auth/me 200 in 4466ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 4456ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 42ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 34ms
+ GET /api/auth/me 200 in 1373ms
+ ○ Compiling /api/bookings/[id] ...
+ ✓ Compiled /api/bookings/[id] in 558ms (576 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 2061ms
+ ✓ Compiled /api/bookings/[id]/invoice in 471ms (579 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1859ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/invoice 200 in 2510ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 3505ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2234ms
+ ○ Compiling /api/professionals/me/jobs ...
+ ✓ Compiled /api/professionals/me/jobs in 1032ms (641 modules)
+ ✓ Compiled (643 modules)
+ GET /api/professionals/me/jobs 200 in 2970ms
+ GET /api/auth/me 200 in 3119ms
+ GET /api/professionals/offers 200 in 3428ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2561ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 3830ms
+ ○ Compiling /api/professionals/me/jobs ...
+ ✓ Compiled /api/professionals/me/jobs in 3.4s (1132 modules)
+ ✓ Compiled in 1ms (571 modules)
+ ○ Compiling /api/bookings/[id]/track ...
+ ✓ Compiled /api/bookings/[id]/track in 983ms (573 modules)
+ ○ Compiling /_not-found ...
+ GET /api/professionals/me/jobs 200 in 5904ms
+ ✓ Compiled /_not-found in 4.2s (1223 modules)
+ ✓ Compiled /api/professionals/offers in 0ms (576 modules)
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 5070ms
+ ✓ Compiled in 1ms (639 modules)
+ ✓ Compiled in 1ms (639 modules)
+ ✓ Compiled in 0ms (639 modules)
+ GET /api/auth/me 200 in 4166ms
+ GET /api/auth/me 200 in 11082ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 336ms
+ GET /api/professionals/me/jobs 200 in 5066ms
+ GET /api/professionals/offers 200 in 6024ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 12381ms
+ ✓ Compiled /api/professionals/me/location in 392ms (641 modules)
+ POST /api/professionals/me/location 200 in 1527ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2160ms
+ GET /api/professionals/offers 200 in 1995ms
+ ✓ Compiled in 1154ms (1288 modules)
+ ✓ Compiled in 0ms (641 modules)
+ ✓ Compiled in 1ms (641 modules)
+ ✓ Compiled in 0ms (641 modules)
+ GET /api/professionals/me/jobs 200 in 3292ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 159ms
+ POST /api/professionals/me/location 200 in 937ms
+ GET /api/professionals/offers 200 in 1950ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2487ms
+ GET /api/professionals/offers 200 in 1411ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2021ms
+ ✓ Compiled in 1576ms (1288 modules)
+ ✓ Compiled in 1ms (641 modules)
+ GET /api/professionals/offers 200 in 2397ms
+ ✓ Compiled in 1ms (641 modules)
+ ✓ Compiled in 1ms (641 modules)
+ GET /api/professionals/me/jobs 200 in 4092ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 122ms
+ GET /api/professionals/offers 200 in 1754ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2009ms
+ GET /api/professionals/offers 200 in 1400ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2010ms
+ GET /api/professionals/offers 200 in 1476ms
+ GET /api/professionals/me/jobs 200 in 965ms
+ GET /api/professionals/offers 200 in 1549ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2086ms
+ GET /api/professionals/offers 200 in 1746ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2413ms
+ GET /api/professionals/offers 200 in 1469ms
+ GET /api/professionals/me/jobs 200 in 1050ms
+ GET /api/professionals/offers 200 in 1554ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2240ms
+ POST /api/professionals/me/location 200 in 955ms
+ GET /professional/jobs/9e8828db-4426-43c6-90e7-a125104629da 200 in 148ms
+ GET /api/professionals/offers 200 in 406ms
+ GET /api/auth/me 200 in 984ms
+ GET /api/professionals/me/jobs 200 in 1021ms
+ GET /api/professionals/offers 200 in 1657ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2227ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2420ms
+ POST /api/professionals/me/location 200 in 765ms
+ GET /api/professionals/offers 200 in 1530ms
+ GET /api/professionals/offers 200 in 1584ms
+ GET /api/professionals/me/jobs 200 in 1079ms
+ GET /api/professionals/offers 200 in 1548ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2004ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2300ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 127ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 147ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 66ms
+ GET /api/auth/me 200 in 1642ms
+ ○ Compiling /api/bookings/[id] ...
+ ✓ Compiled /api/bookings/[id] in 838ms (643 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 2695ms
+ ✓ Compiled /api/bookings/[id]/invoice in 489ms (645 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 1609ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/invoice 200 in 2501ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2983ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2040ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 3428ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2662ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2789ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2030ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2633ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2145ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2662ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2160ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2653ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 4047ms
+ ○ Compiling /api/professionals/me/jobs ...
+ ✓ Compiled /api/professionals/me/jobs in 2.4s (1216 modules)
+ ✓ Compiled in 1ms (573 modules)
+ GET /api/professionals/me/jobs 200 in 3326ms
+ ○ Compiling /_not-found ...
+ ✓ Compiled /_not-found in 711ms (1207 modules)
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 1161ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 3206ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2011ms
+ ✓ Compiled in 1079ms (1221 modules)
+ ✓ Compiled in 0ms (574 modules)
+ ✓ Compiled in 4ms (574 modules)
+ ✓ Compiled in 1ms (574 modules)
+ GET /api/professionals/me/jobs 200 in 2546ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 229ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2491ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2686ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2179ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 3645ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 132ms
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 120ms
+ ○ Compiling /api/auth/me ...
+ ✓ Compiled /api/auth/me in 1102ms (1209 modules)
+ GET /.well-known/appspecific/com.chrome.devtools.json 404 in 1052ms
+ GET /api/auth/me 200 in 2937ms
+ ○ Compiling /api/bookings/[id] ...
+ ✓ Compiled /api/bookings/[id] in 592ms (578 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 2553ms
+ ○ Compiling /api/bookings/[id]/invoice ...
+ ✓ Compiled /api/bookings/[id]/invoice in 549ms (581 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da 200 in 2377ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/invoice 200 in 2834ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2942ms
+ ○ Compiling /api/professionals/offers ...
+ ✓ Compiled /api/professionals/offers in 703ms (643 modules)
+ GET /professional/jobs/9e8828db-4426-43c6-90e7-a125104629da 200 in 252ms
+ GET /api/auth/me 200 in 2527ms
+ GET /api/professionals/offers 200 in 2550ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2428ms
+ GET /api/professionals/me/jobs 200 in 2533ms
+ GET /api/auth/me 200 in 1356ms
+ GET /api/professionals/me/jobs 200 in 1395ms
+ GET /api/professionals/offers 200 in 2020ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2039ms
+ ✓ Compiled /api/professionals/me/location in 456ms (645 modules)
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2105ms
+ POST /api/professionals/me/location 200 in 1614ms
+ GET /api/professionals/offers 200 in 1504ms
+ GET /api/professionals/offers 200 in 1820ms
+ GET /api/professionals/me/jobs 200 in 1043ms
+ GET /api/professionals/offers 200 in 1777ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2039ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 1867ms
+ GET /api/professionals/offers 200 in 1917ms
+ GET /professional/jobs/9e8828db-4426-43c6-90e7-a125104629da 200 in 348ms
+ GET /api/auth/me 200 in 1229ms
+ GET /api/professionals/me/jobs 200 in 967ms
+ GET /api/professionals/offers 200 in 1717ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 200 in 2068ms
+ POST /api/professionals/me/location 200 in 739ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 404 in 47ms
+ GET /api/professionals/offers 404 in 58ms
+ GET /api/professionals/offers 404 in 50ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 267ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 276ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 250ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 404 in 55ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 285ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 284ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 277ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 269ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 281ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 260ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 274ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 284ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 271ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 264ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 281ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 404 in 101ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 277ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 283ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 273ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 282ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 269ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 275ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 267ms
+ GET /api/bookings/9e8828db-4426-43c6-90e7-a125104629da/track 404 in 87ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 300ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 278ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 276ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 270ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 261ms
+ GET /customer/bookings/9e8828db-4426-43c6-90e7-a125104629da 404 in 255ms
+[?25h

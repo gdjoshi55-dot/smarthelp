@@ -48,6 +48,15 @@ export interface PublicLocation extends LocationQueryInput {
   hasLocation: boolean;
   setArea: (area: string) => void;
   /**
+   * A point chosen on the map, with the area Google resolved for it.
+   *
+   * The area is sent alongside the coordinates because the server tries names
+   * before points: if the pin is inside a known locality, naming it keeps the
+   * answer stable even if a boundary or radius changes. The point remains the
+   * fallback when no locality name matches.
+   */
+  setPoint: (point: { area?: string | null; lat: number; lng: number }) => void;
+  /**
    * Switch to a saved address.
    *
    * The id alone is sent. The address already knows its own area and point, and
@@ -153,6 +162,21 @@ export function PublicLocationProvider({
     [applyLocation]
   );
 
+  const setPoint = useCallback(
+    (point: { area?: string | null; lat: number; lng: number }) => {
+      const area = point.area?.trim() ?? '';
+      const next: LocationQueryInput = {
+        addressId: null,
+        area: area.length > 0 ? area : null,
+        lat: point.lat,
+        lng: point.lng,
+      };
+      applyLocation(next);
+      writeStoredLocation(next);
+    },
+    [applyLocation]
+  );
+
   const selectAddress = useCallback(
     (addressId: string) => {
       const trimmed = addressId.trim();
@@ -221,6 +245,7 @@ export function PublicLocationProvider({
         !!location?.area ||
         (location?.lat != null && location.lng != null),
       setArea,
+      setPoint,
       selectAddress,
       locateMe,
       clear,
@@ -232,6 +257,7 @@ export function PublicLocationProvider({
       resolving,
       problem,
       setArea,
+      setPoint,
       selectAddress,
       locateMe,
       clear,

@@ -1,11 +1,11 @@
-import { ApiHttpError } from './api';
+﻿import { ApiHttpError } from './api';
 import { createServerClient } from './supabaseServer';
 import { can, type Capability } from './roles';
 import type { Profile, UserRole } from './supabase';
 import { DEFAULT_PHONE_COUNTRY_CODE } from './constants';
 
 /**
- * Server-side validation and authorisation (§25.12, §26.2, §11 BUILD RULES).
+ * Server-side validation and authorisation (┬º25.12, ┬º26.2, ┬º11 BUILD RULES).
  *
  * Hand-written validators, deliberately: the stack has no zod and no ORM, and
  * a route with an explicit allow-list and length cap is easier to audit than a
@@ -15,7 +15,7 @@ import { DEFAULT_PHONE_COUNTRY_CODE } from './constants';
  * side, next to the Route Handler that uses it.
  */
 
-// ── Field primitives ────────────────────────────────────────
+// ΓöÇΓöÇ Field primitives ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 export type FieldErrors = Record<string, string>;
 
@@ -122,7 +122,7 @@ export function oneOf<T extends string>(
   return value as T;
 }
 
-// ── Auth ────────────────────────────────────────────────────
+// ΓöÇΓöÇ Auth ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 export interface AuthContext {
   userId: string;
@@ -135,9 +135,9 @@ export interface AuthContext {
 }
 
 /**
- * Layer 2 of the three authorisation layers (§26.2). Resolves the caller from
+ * Layer 2 of the three authorisation layers (┬º26.2). Resolves the caller from
  * the bearer token, then loads their profile so the role is the one the
- * database holds — never one the client asserted.
+ * database holds ΓÇö never one the client asserted.
  */
 export async function requireAuth(
   req: Request,
@@ -219,7 +219,7 @@ export async function requireCapability(
   return auth;
 }
 
-// ── Request body ────────────────────────────────────────────
+// ΓöÇΓöÇ Request body ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 export async function readJson(req: Request): Promise<Record<string, unknown>> {
   const body = await req.json().catch(() => null);
@@ -229,7 +229,7 @@ export async function readJson(req: Request): Promise<Record<string, unknown>> {
   return body as Record<string, unknown>;
 }
 
-// ── Endpoint validators ─────────────────────────────────────
+// ΓöÇΓöÇ Endpoint validators ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 // 'signup' and 'password_reset' arrive with 0026_otp_signup_and_reset_purposes.
 const OTP_PURPOSES = ['login', 'staff_login', 'admin_mfa', 'signup', 'password_reset'] as const;
@@ -282,7 +282,7 @@ export function validateStaffSignIn(body: Record<string, unknown>) {
  * towards writing it on a sticky note; the strength meter on the sign-up form
  * is where the real nudge lives.
  *
- * `trim: false` is deliberate — a password is opaque bytes, and silently
+ * `trim: false` is deliberate ΓÇö a password is opaque bytes, and silently
  * stripping the ends of one makes "correct password rejected" a support call.
  */
 export function password(value: unknown, field = 'password'): string {
@@ -308,7 +308,7 @@ function matchConfirmation(body: Record<string, unknown>, pw: string, field: str
 
 const USER_ROLES_ALLOWED = ['customer', 'professional'] as const;
 
-/** POST /api/auth/sign-in — any role, password only. */
+/** POST /api/auth/sign-in ΓÇö any role, password only. */
 export function validateSignIn(body: Record<string, unknown>) {
   return {
     email: email(body.email),
@@ -316,7 +316,7 @@ export function validateSignIn(body: Record<string, unknown>) {
   };
 }
 
-/** POST /api/auth/sign-up/start — proves the mailbox, creates nothing. */
+/** POST /api/auth/sign-up/start ΓÇö proves the mailbox, creates nothing. */
 export function validateSignUpStart(body: Record<string, unknown>) {
   return {
     email: email(body.email),
@@ -326,7 +326,7 @@ export function validateSignUpStart(body: Record<string, unknown>) {
 }
 
 /**
- * POST /api/auth/sign-up/complete — the verified half of sign-up.
+ * POST /api/auth/sign-up/complete ΓÇö the verified half of sign-up.
  *
  * The password arrives here for the first time. Nothing in this function may
  * log the body or the `password` field: `handle()` records the request id and
@@ -351,12 +351,12 @@ export function validateSignUpComplete(body: Record<string, unknown>) {
   };
 }
 
-/** POST /api/auth/password-reset/start — always the same answer. */
+/** POST /api/auth/password-reset/start ΓÇö always the same answer. */
 export function validatePasswordResetStart(body: Record<string, unknown>) {
   return { email: email(body.email) };
 }
 
-/** POST /api/auth/password-reset/complete — code plus the new password. */
+/** POST /api/auth/password-reset/complete ΓÇö code plus the new password. */
 export function validatePasswordResetComplete(body: Record<string, unknown>) {
   const pw = password(body.password);
   matchConfirmation(body, pw, 'password_confirm');
@@ -435,9 +435,9 @@ export function parsePaging(url: URL, defaultLimit = 25, maxLimit = 100) {
   return { limit, offset };
 }
 
-// ── Coordinates, dates, addresses (Phase 1) ─────────────────
+// ΓöÇΓöÇ Coordinates, dates, addresses (Phase 1) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
-/** A coordinate, as a decimal — the columns are `numeric(9,6)`. */
+/** A coordinate, as a decimal ΓÇö the columns are `numeric(9,6)`. */
 export function num(
   value: unknown,
   field: string,
@@ -521,7 +521,7 @@ export interface AddressInput {
 }
 
 /**
- * POST /api/customers/me/addresses — the §5.2 field list, and nothing else.
+ * POST /api/customers/me/addresses ΓÇö the ┬º5.2 field list, and nothing else.
  *
  * `customer_id` is not in the allow-list and cannot be reached from a payload;
  * the caller is the owner. `lat`/`lng` are optional here even though the column
@@ -561,7 +561,7 @@ export function validateAddressInput(body: Record<string, unknown>): AddressInpu
   return input;
 }
 
-/** PUT /api/customers/me/addresses/[id] — a subset, and at least one field. */
+/** PUT /api/customers/me/addresses/[id] ΓÇö a subset, and at least one field. */
 export function validateAddressPatch(body: Record<string, unknown>): Partial<AddressInput> {
   const hasLat = body.lat !== undefined && body.lat !== null && body.lat !== '';
   const hasLng = body.lng !== undefined && body.lng !== null && body.lng !== '';
@@ -611,7 +611,7 @@ export interface LocationQuery {
  * arrived.
  *
  * An `addressId` names a private row, so the caller must prove ownership before
- * it is honoured. That is the route's job — which is why it comes back here as
+ * it is honoured. That is the route's job ΓÇö which is why it comes back here as
  * a plain value and is checked there.
  */
 export function parseLocationQuery(
@@ -653,7 +653,7 @@ export interface AvailabilityQuery {
   location: LocationQuery;
 }
 
-/** GET /api/availability — the parameter list from §27.4. */
+/** GET /api/availability ΓÇö the parameter list from ┬º27.4. */
 export function parseAvailabilityQuery(url: URL, today = new Date()): AvailabilityQuery {
   const p = url.searchParams;
   const durationRaw = p.get('duration');
@@ -672,7 +672,7 @@ export function parseAvailabilityQuery(url: URL, today = new Date()): Availabili
   };
 }
 
-/** GET /api/services — the catalogue's own filter set. */
+/** GET /api/services ΓÇö the catalogue's own filter set. */
 export function parseCatalogueQuery(url: URL) {
   const p = url.searchParams;
   const availableOnlyRaw = p.get('availableOnly');
@@ -688,3 +688,31 @@ export function parseCatalogueQuery(url: URL) {
     location: parseLocationQuery(url),
   };
 }
+
+export function validateProfessionalAddress(body: Record<string, unknown>) {
+  const patch: Record<string, unknown> = {};
+
+  if (body.address_line1 !== undefined) patch.address_line1 = str(body.address_line1, 'address_line1', { min: 2, max: 160 });
+  if (body.address_line2 !== undefined) {
+    if (body.address_line2 === null || body.address_line2 === '') patch.address_line2 = null;
+    else patch.address_line2 = str(body.address_line2, 'address_line2', { max: 160 });
+  }
+  if (body.address_area !== undefined) patch.address_area = str(body.address_area, 'address_area', { min: 2, max: 120 });
+  if (body.address_city !== undefined) patch.address_city = str(body.address_city, 'address_city', { min: 2, max: 120 });
+  if (body.address_state !== undefined) patch.address_state = str(body.address_state, 'address_state', { min: 2, max: 120 });
+  if (body.address_pincode !== undefined) patch.address_pincode = pincode(body.address_pincode, 'address_pincode');
+  if (body.address_lat !== undefined) {
+    if (body.address_lat === null) patch.address_lat = null;
+    else patch.address_lat = latitude(body.address_lat, 'address_lat');
+  }
+  if (body.address_lng !== undefined) {
+    if (body.address_lng === null) patch.address_lng = null;
+    else patch.address_lng = longitude(body.address_lng, 'address_lng');
+  }
+
+  if (Object.keys(patch).length === 0) {
+    fail({}, 'Nothing to update');
+  }
+  return patch;
+}
+

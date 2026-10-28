@@ -268,6 +268,46 @@ describe('GET /api/bookings/[id]/track', () => {
     expect(json.data.proLocation).toBeNull();
   });
 
+  it('estimates the arrival time from the live pin and the service address', async () => {
+    fake = build({
+      booking: bookingRow({
+        status: 'on_the_way',
+        address_snapshot: { lat: 12.9716, lng: 77.5946 },
+      }),
+      professional: professionalRow({
+        current_lat: 12.9784,
+        current_lng: 77.6405,
+        location_updated_at: new Date().toISOString(),
+      }),
+    });
+
+    const json = await body(await track());
+
+    expect(json.data.proLocation).toEqual({ lat: 12.9784, lng: 77.6405 });
+    expect(json.data.etaMinutes).toBeGreaterThanOrEqual(1);
+    expect(json.data.distanceKm).toBeGreaterThan(0);
+  });
+
+  it('does not estimate an arrival time before the professional is on the way', async () => {
+    fake = build({
+      booking: bookingRow({
+        status: 'accepted',
+        address_snapshot: { lat: 12.9716, lng: 77.5946 },
+      }),
+      professional: professionalRow({
+        current_lat: 12.9784,
+        current_lng: 77.6405,
+        location_updated_at: new Date().toISOString(),
+      }),
+    });
+
+    const json = await body(await track());
+
+    expect(json.data.proLocation).toEqual({ lat: 12.9784, lng: 77.6405 });
+    expect(json.data.etaMinutes).toBeNull();
+    expect(json.data.distanceKm).toBeNull();
+  });
+
   it('answers proLocation null for a stale pin', async () => {
     fake = build({
       booking: bookingRow({ status: 'on_the_way' }),

@@ -844,6 +844,7 @@ mistake the person can act on.
     "bookableCount": 6,
     "maxRemaining": 3,
     "leadMinutes": 120,
+    "reason": null,
     "serverNow": "…"
   },
   "serverNow": "…"
@@ -861,6 +862,30 @@ client rather than a dead end. `day.leadMinutes` is the lead that actually gated
 this day, and it is `0` when the day is today — a same-day booking is dispatched
 the moment it is paid, so today's slots start at the next free professional
 window rather than after the works' lead.
+
+`day.reason` says why a day with nothing bookable is empty, and it is `null`
+when the day has bookable slots. It is one of:
+
+| `day.reason` | What it means |
+|---|---|
+| `lead_time` | Every slot on the day falls inside the notice period, or the day has already passed |
+| `at_capacity` | The day is full |
+| `no_professional_available` | There is cover, but not at any hour the customer asked for |
+| `no_working_hours` | Nobody's schedule covers that weekday |
+| `no_professional_on_shift` | The professionals who do the work are eligible, but none is on shift today |
+| `no_eligible_professional` | Nobody here holds the skill and is verified and trained |
+
+`no_eligible_professional` and `no_professional_on_shift` are the two that mean
+"no professionals" in different ways: the first says there is nobody here who
+does this work at all, the second says everybody who does is off shift right
+now. They are told apart because only the second one is worth trying again on
+another day.
+
+A professional's live `availability_status` (`online`, `busy`) filters the pool
+for **today only**. It is a dispatch signal — the professional is around now —
+not a schedule, so applying it to future days emptied the calendar of
+professionals who were working. Future days are driven by
+`professional_working_hours`.
 
 Note there are two different `location` fields and they are deliberately different
 types. The nested one inside `AvailabilityResult` is the *resolved* locality and
@@ -928,6 +953,12 @@ the estimate is always about now.
 minutes a person can read. `etaLabel` is always a complete sentence — `in 45 min`,
 `in 2 hr`, or `No slots today` — so the card has nothing left to invent.
 `serviceable` is absent on the "no locality" answer.
+
+`reason` is the day's own `reason` from `/api/availability` — one of
+`lead_time`, `at_capacity`, `no_professional_available`, `no_working_hours`,
+`no_professional_on_shift`, `no_eligible_professional`, or `null` when there is
+an estimate. It is the day that answers, not the first slot, so the reason
+never describes a slot the customer is not being offered.
 
 **Failures** — `VALIDATION_ERROR` 400 only, with `details.fields.duration` for an
 out-of-range duration. Everything else is a 200:

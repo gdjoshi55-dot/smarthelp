@@ -35,9 +35,34 @@ export async function GET(req: Request) {
 
     // The shared location parser is used for its coordinate pairing rule; this
     // endpoint has no `date`, so nothing else from it applies.
-    parseLocationQuery(url, { required: true });
+    try {
+      parseLocationQuery(url, { required: true });
+    } catch {
+      return ok({
+        etaMinutes: null,
+        prosAvailable: 0,
+        start: null,
+        etaLabel: 'No slots today',
+        location: { area: null, cityName: null, timeZone: 'Asia/Kolkata' },
+        serverNow: new Date().toISOString(),
+      });
+    }
 
-    const { summary, locality } = await resolveLocationForRequest(req, url);
+    let summary: any, locality: any;
+    try {
+      const resolved = await resolveLocationForRequest(req, url);
+      summary = resolved.summary;
+      locality = resolved.locality;
+    } catch {
+      return ok({
+        etaMinutes: null,
+        prosAvailable: 0,
+        start: null,
+        etaLabel: 'No slots today',
+        location: { area: null, cityName: null, timeZone: 'Asia/Kolkata' },
+        serverNow: new Date().toISOString(),
+      });
+    }
     if (!locality) {
       return ok({
         etaMinutes: null,

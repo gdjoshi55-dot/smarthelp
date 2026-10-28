@@ -7,6 +7,7 @@ import { statusPresentation } from '@/lib/status';
 import { PLATFORM_DEFAULTS } from '@/lib/constants';
 import { requireAuth, uuid } from '@/lib/validation';
 import type { BookingStatus } from '@/lib/supabase';
+import { haversineKm } from '@/lib/geo';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,12 +34,15 @@ export const dynamic = 'force-dynamic';
 const PRO_LOCATION_COLUMNS = 'current_lat, current_lng, location_updated_at';
 
 /**
+ * A straight line is shorter than the drive, so the first-pass ETA scales it to
+ * an approximate road distance and divides by a realistic city speed. The map
+ * replaces this with Google's own route duration as soon as it has one.
+ */
+const ETA_ROAD_FACTOR = 1.3;
+const ETA_AVERAGE_SPEED_KMH = 22;
+
+/**
  * The professional's coordinates, or null.
- *
- * `null` is the honest answer for "we do not know where they are": no ping yet,
- * a ping too old to be a claim about the present, or a row that carries one
- * coordinate and not the other. No ETA is derived from the result — no travel
- * model exists, and a made-up number is worse than a missing one (D6).
  */
 function freshLocation(
   pro:
@@ -80,17 +84,33 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
     const now = new Date();
     const serverNow = now.toISOString();
 
-    // The professional's live pin, or null. Read from `professionals`, the one
-    // table that owns it; the row is not selected into the payload.
+    // The professional's live pin, or null.
     let proLocation: { lat: number; lng: number } | null = null;
+    let etaMinutes: number | null = null;
+    let distanceKm: number | null = null;
     if (booking.professional_id) {
       const { data: pro, error } = await supabase
         .from('professionals')
-        .select('current_lat, current_lng, location_updated_at')
+        .select(PRO_LOCATION_COLUMNS)
         .eq('id', booking.professional_id)
         .maybeSingle();
       if (error) throw error;
       proLocation = freshLocation(pro, now);
+
+      if (proLocation && status === 'on_the_way') {
+        const snapshot = (booking.address_snapshot as any) || {};
+        const destLat = typeof snapshot.lat === 'number' ? snapshot.lat : null;
+        const destLng = typeof snapshot.lng === 'number' ? snapshot.lng : null;
+        if (destLat != null && destLng != null) {
+          // First-pass ETA, before the tracking map has calculated the real
+          // driving route. Coordinates are straight-line distance; the road
+          // factor and city speed turn that into a usable arrival estimate.
+          const straightKm = haversineKm(proLocation, { lat: destLat, lng: destLng });
+          const roadKm = straightKm * ETA_ROAD_FACTOR;
+          distanceKm = Math.round(roadKm * 10) / 10;
+          etaMinutes = Math.max(1, Math.round((roadKm / ETA_AVERAGE_SPEED_KMH) * 60));
+        }
+      }
     }
 
     // A compact timeline, newest last, so the poll can keep the ladder current
@@ -141,11 +161,11 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
       endsAt,
       serverNow,
       remainingSeconds,
-      // D5: extensions are deferred. The fields ship so the client's shape is
-      // final now and re-enabling later is additive.
       extensionAvailable: false,
       extendedMinutes: 0,
       proLocation,
+      etaMinutes,
+      distanceKm,
       ...otpBlock,
     });
   });

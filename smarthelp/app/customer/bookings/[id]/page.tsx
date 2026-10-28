@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import { ArrowLeft, CalendarClock, Loader2, XCircle } from 'lucide-react';
 import AuthGuard from '@/components/auth/AuthGuard';
 import RoleShell from '@/components/auth/RoleShell';
@@ -26,6 +27,7 @@ import {
 } from '@/lib/bookingClient';
 import type { BookingStatus } from '@/lib/supabase';
 import type { LocationQueryInput } from '@/lib/catalogueClient';
+import type { RouteInfo } from '@/components/map/RouteMap';
 
 /**
  * `/customer/bookings/[id]` (§20.6).
@@ -68,6 +70,18 @@ import type { LocationQueryInput } from '@/lib/catalogueClient';
  * blanking the screen.
  */
 
+// Google Maps touches `window` at import time, so the map is never part of the
+// server bundle: it is a client-only dynamic import that loads when a map first
+// renders and shows a plain placeholder until then.
+const TrackingMap = dynamic(() => import('@/components/map/TrackingMap'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-64 items-center justify-center rounded-lg bg-gray-100 text-xs text-gray-500">
+      Loading map…
+    </div>
+  ),
+});
+
 interface Loaded {
   detail: BookingDetailResult;
   invoice: InvoiceResult | null;
@@ -96,6 +110,7 @@ function BookingDetail({ id }: { id: string }) {
   const [notFound, setNotFound] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [track, setTrack] = useState<BookingTrackResult | null>(null);
+  const [routeInfo, setRouteInfo] = useState<RouteInfo | null>(null);
 
   const load = useCallback(async () => {
     const detail = await fetchBooking(id);
@@ -239,6 +254,28 @@ function BookingDetail({ id }: { id: string }) {
   const liveStatus = (track?.status ?? booking.status) as BookingStatus;
   const presentation = track?.presentation ?? status;
 
+  // The map's pins come from two independent sources: the address snapshot on
+  // the booking (where the job is) and the track poll's `proLocation` (where the
+  // professional is right now, or null when no fresh ping exists). Either pin
+  // alone is worth showing; with neither there is nothing to plot.
+  const proLocation = track?.proLocation ?? null;
+  const destination =
+    location && location.lat != null && location.lng != null
+      ? { lat: location.lat, lng: location.lng }
+      : null;
+  const showMap = proLocation != null || destination != null;
+
+  // The map's route duration is the accurate one; the track payload's fallback
+  // covers the first seconds before Google has calculated the route.
+  const liveEtaMinutes =
+    liveStatus === 'on_the_way' && proLocation
+      ? routeInfo?.durationMinutes ?? track?.etaMinutes ?? null
+      : null;
+  const liveDistanceKm =
+    liveStatus === 'on_the_way' && proLocation
+      ? routeInfo?.distanceKm ?? track?.distanceKm ?? null
+      : null;
+
   const firstServiceId = items[0]?.service_id ?? null;
   const showReschedule = reschedulable && firstServiceId != null;
 
@@ -263,6 +300,39 @@ function BookingDetail({ id }: { id: string }) {
               {formatBookingWhen(booking.scheduled_start_at)}
             </p>
             <p className="mt-1 text-sm text-gray-600">{presentation.description}</p>
+            {liveStatus === 'on_the_way' ? (
+              <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
+                {proLocation ? (
+                  liveEtaMinutes != null ? (
+                    <div className="flex flex-wrap items-end justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">
+                          Arriving in
+                        </p>
+                        <p className="mt-1 text-3xl font-bold leading-none text-blue-900">
+                          ~{liveEtaMinutes} min
+                        </p>
+                      </div>
+                      {liveDistanceKm != null ? (
+                        <p className="text-sm font-medium text-blue-800">
+                          {liveDistanceKm.toFixed(1)} km away
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <p className="text-sm font-medium text-blue-900">
+                      {destination
+                        ? 'Your professional is on the way. Calculating the arrival time…'
+                        : 'Your professional is on the way. Arrival time is unavailable for this address.'}
+                    </p>
+                  )
+                ) : (
+                  <p className="text-sm font-medium text-blue-900">
+                    Your professional is on the way. Waiting for their live location&hellip;
+                  </p>
+                )}
+              </div>
+            ) : null}
             {liveStatus === 'payment_pending' ? (
               // A booking is created in `payment_pending` because payment is the
               // next release, not because the customer did something wrong. Landing
@@ -338,6 +408,30 @@ function BookingDetail({ id }: { id: string }) {
         </div>
 
         <div className="space-y-5 lg:col-span-2">
+          {showMap ? (
+            <section className="rounded-xl border border-gray-200 bg-white p-5">
+              <h2 className="mb-3 text-sm font-semibold text-gray-900">
+                {proLocation ? 'Live location' : 'Service location'}
+              </h2>
+              <TrackingMap
+                destination={destination}
+                pro={proLocation}
+                className="h-64 w-full rounded-lg"
+                showRoute
+                onRoute={setRouteInfo}
+              />
+              {proLocation ? (
+                <p className="mt-2 text-xs text-gray-500">
+                  Live &mdash; the professional&rsquo;s position keeps updating while they are on the way.
+                </p>
+              ) : liveStatus === 'on_the_way' ? (
+                <p className="mt-2 text-xs text-gray-500">
+                  Waiting for the professional to share their live location.
+                </p>
+              ) : null}
+            </section>
+          ) : null}
+
           <section className="rounded-xl border border-gray-200 bg-white p-5">
             <h2 className="mb-3 text-sm font-semibold text-gray-900">Services</h2>
             <ul className="space-y-2">

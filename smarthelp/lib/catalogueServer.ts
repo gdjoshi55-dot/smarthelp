@@ -101,14 +101,41 @@ export async function resolveRequestLocality(
     return { resolution: { locality: null, city: null, matchedBy: null, distanceKm: null }, addressId: owned.id };
   }
 
+  const resolution = resolveLocality({
+    localities: geography.localities,
+    cities: geography.cities,
+    area: location.area,
+    city: location.city,
+    point: location.lat != null && location.lng != null ? { lat: location.lat, lng: location.lng } : null,
+  });
+
+  // If we have a point but no locality matched (e.g. new area or professional
+  // address outside seeded localities), create a synthetic locality so coverage
+  // can be checked by professionals rather than by seed data.
+  if (!resolution.locality && location.lat != null && location.lng != null) {
+    const city = geography.cities[0] ?? null;
+    const synthetic: any = {
+      id: `synthetic:${location.lat.toFixed(6)},${location.lng.toFixed(6)}`,
+      city_id: city?.id ?? 'synthetic',
+      name: location.area || city?.name || 'Service area',
+      lat: Number(location.lat),
+      lng: Number(location.lng),
+      radius_km: 25,
+      is_active: true,
+    };
+    return {
+      resolution: {
+        locality: synthetic,
+        city,
+        matchedBy: 'coordinates',
+        distanceKm: null,
+      },
+      addressId: null,
+    };
+  }
+
   return {
-    resolution: resolveLocality({
-      localities: geography.localities,
-      cities: geography.cities,
-      area: location.area,
-      city: location.city,
-      point: location.lat != null && location.lng != null ? { lat: location.lat, lng: location.lng } : null,
-    }),
+    resolution,
     addressId: null,
   };
 }

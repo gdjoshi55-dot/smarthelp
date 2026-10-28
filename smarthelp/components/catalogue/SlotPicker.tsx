@@ -6,6 +6,7 @@ import { ApiRequestError, fetchAvailability } from '@/lib/catalogueClient';
 import type { AvailabilityResponse } from '@/lib/catalogueClientTypes';
 import type { LocationQueryInput } from '@/lib/catalogueClient';
 import type { LocationSummary } from '@/lib/catalogue';
+import { emptyDayMessage } from '@/lib/availability';
 import { durationLabel } from '@/lib/catalogue';
 import { useOptionalPublicLocation } from './PublicLocationContext';
 
@@ -21,8 +22,10 @@ import { useOptionalPublicLocation } from './PublicLocationContext';
  *
  *   422, `reason: 'outside_coverage'` — we do not serve this area. The right
  *     answer is the server's sentence, not "no slots available".
- *   200 with zero slots          — we serve the area, and the professionals are
- *     full on that day. "No slots" with the reason the server gave.
+ *   200 with zero slots          — we serve the area, and the day is empty for
+ *     some reason. The engine says which reason, and the copy follows it, so
+ *     the customer is never told to wait out a notice period that had nothing
+ *     to do with why the day was empty.
  *
  * Slots that exist but are not bookable are shown greyed with their reason. A
  * person who can see that 14:00 is at capacity understands the day better than
@@ -48,21 +51,32 @@ function addDays(date: string, days: number): string {
   return parsed.toISOString().slice(0, 10);
 }
 
-function dayLabel(date: string, timeZone: string | null, index: number): string {
-  const when = new Date(`${date}T00:00:00Z`);
-  if (index === 0) return 'Today';
-  if (index === 1) return 'Tomorrow';
+function dayLabel(date: string, timeZone: string | null, today: string): string {
+  // Labelled against the city's today rather than against the tab's position,
+  // because the week moves when a day is picked: the tab that was "Tomorrow"
+  // becomes "Today", and a label that follows the position instead of the date
+  // calls the wrong day both of those things.
+  if (date === today) return 'Today';
+  if (date === addDays(today, 1)) return 'Tomorrow';
   try {
     return new Intl.DateTimeFormat('en-IN', {
       weekday: 'short',
       day: 'numeric',
       month: 'short',
       timeZone: timeZone ?? 'UTC',
-    }).format(when);
+    }).format(new Date(`${date}T00:00:00Z`));
   } catch {
-    return new Intl.DateTimeFormat('en-IN', { weekday: 'short', day: 'numeric' }).format(when);
+    return new Intl.DateTimeFormat('en-IN', { weekday: 'short', day: 'numeric' }).format(
+      new Date(`${date}T00:00:00Z`)
+    );
   }
 }
+
+/**
+ * The sentence for a day with nothing bookable on it comes from the engine,
+ * which is the only side that knows why the day is empty. See
+ * `emptyDayMessage` in `lib/availability.ts`.
+ */
 
 /** A fixed location has an answer when any one of the three forms is present. */
 function locationIsUsable(location: LocationQueryInput): boolean {
@@ -134,9 +148,18 @@ export function SlotPicker({
   // is corrected — unless the customer has already picked one.
   useEffect(() => {
     const serverZone = data?.location.timeZone;
-    if (!serverZone || chosenDay.current) return;
+    if (!serverZone) return;
     const correct = todayIn(serverZone);
-    setDate((current) => (current === correct ? current : correct));
+    setDate((current) => {
+      // A day that has already passed in the city's zone cannot be booked at
+      // all, so it is corrected whatever the customer chose. Left alone it is a
+      // day of slots that are all "too soon", which reads as a broken
+      // calendar. Any other correction waits for a deliberate choice, so the
+      // week is not yanked out from under a click.
+      if (current < correct) return correct;
+      if (chosenDay.current) return current;
+      return current === correct ? current : correct;
+    });
   }, [data]);
 
   useEffect(() => {
@@ -176,9 +199,10 @@ export function SlotPicker({
       });
   }, [service.id, durationMinutes, date, hasLocation, area, lat, lng]);
 
+  const today = todayIn(timeZone);
   const days = [0, 1, 2, 3, 4, 5, 6].map((offset) => {
     const value = addDays(date, offset);
-    return { value, label: dayLabel(value, timeZone, offset) };
+    return { value, label: dayLabel(value, timeZone, today) };
   });
 
   const uncovered = error?.code === 'VALIDATION_ERROR' && error.details?.reason === 'outside_coverage';
@@ -232,11 +256,7 @@ export function SlotPicker({
           </p>
         ) : data && data.day.slots.filter((slot) => slot.bookable).length === 0 ? (
           <p className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-600">
-            No slots for {durationLabel(durationMinutes)} on this day
-            {data.day.leadMinutes > 0
-              ? ` — bookings need ${durationLabel(data.day.leadMinutes)} notice.`
-              : '.'}
-            Try another day.
+            {emptyDayMessage(data.day)}
           </p>
         ) : data ? (
           <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4">

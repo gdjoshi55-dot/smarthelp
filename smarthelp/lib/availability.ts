@@ -1,4 +1,5 @@
 import type { Serviceability } from './catalogue';
+import { durationLabel } from './catalogue';
 import { SLOT_GRANULARITY_MIN } from './constants';
 
 /**
@@ -147,6 +148,16 @@ export interface SlotQuery {
   /** `service_areas.slot_capacity`. */
   capacity: number;
   professionals: ProfessionalAvailability[];
+  /**
+   * How many professionals hold this skill and are eligible for it at all,
+   * before presence is applied.
+   *
+   * The engine cannot tell "nobody here does this work" from "everybody who
+   * does is off shift right now" — both arrive as an empty pool, and the two
+   * call for opposite advice. The caller knows, because it is the one that
+   * applied the presence filter. Defaults to the size of the pool.
+   */
+  eligibleCount?: number;
   /** The server clock. Passed in so the tests can pin it. */
   now?: Date;
   /** Whole-day holds (a locality closure, a Phase 5 reservation set). */
@@ -155,6 +166,23 @@ export interface SlotQuery {
 }
 
 export type SlotReason = 'lead_time' | 'no_professional_available' | 'at_capacity';
+
+/**
+ * Why a whole *day* has no bookable slot.
+ *
+ * The slot reasons cover a day that has candidates but cannot offer them. A
+ * day with no candidates at all needs two more, and the difference between
+ * them is the difference between advice that helps and advice that does not:
+ *
+ *   no_eligible_professional  nobody holds this skill, so no other day helps
+ *   no_professional_on_shift   they do, but none of them is working right now
+ *   no_working_hours          they do, but not that weekday, so another day does
+ */
+export type DayReason =
+  | SlotReason
+  | 'no_eligible_professional'
+  | 'no_professional_on_shift'
+  | 'no_working_hours';
 
 export interface Slot {
   /** Instants, ISO 8601 with `Z`. */
@@ -181,6 +209,17 @@ export interface SlotDay {
   maxRemaining: number;
   /** The lead that gated this day, so the client can quote the real cutoff. */
   leadMinutes: number;
+  /**
+   * Why the day has no bookable slot, when it has none. `null` when it has.
+   *
+   * The client quotes this rather than the lead. The lead is a property of the
+   * service, and on a day more than a few hours away it rules out nothing at
+   * all, so blaming it for an empty day tells the customer to wait out a
+   * notice period that is not what stopped them. That sentence — "bookings
+   * need 1 hr notice" — is how an empty calendar ended up reading as a
+   * scheduling rule instead of as "nobody was free".
+   */
+  reason: DayReason | null;
   serverNow: string;
 }
 
@@ -277,6 +316,47 @@ function isFree(
 }
 
 const MINUTES_PER_DAY = 1440;
+
+/**
+ * Why a day with nothing bookable on it is empty.
+ *
+ * A day can be empty for reasons that call for opposite advice, so the day
+ * says which one it is rather than leaving the client to guess:
+ *
+ *   nobody is eligible for the service  -> another day will not help
+ *   nobody works that weekday          -> another day will
+ *   the day is full                     -> another day will
+ *   everything is inside the notice     -> the notice is the answer
+ *
+ * The notice period is the weakest of the reasons, because it only ever rules
+ * out the slots nearest now, so a day blocked by several things is explained
+ * by the other one.
+ */
+function dayReasonFor(
+  slots: Slot[],
+  professionalCount: number,
+  eligibleCount: number
+): DayReason | null {
+  if (slots.some((s) => s.bookable)) return null;
+
+  if (slots.length === 0) {
+    // No candidates at all. Either nobody is eligible for the service, or the
+    // ones who are do not work this weekday — or their shift is shorter than
+    // the service, which reads the same way from out here.
+    if (professionalCount === 0) {
+      return eligibleCount === 0 ? 'no_eligible_professional' : 'no_professional_on_shift';
+    }
+    return 'no_working_hours';
+  }
+
+  const reasons = new Set(slots.map((s) => s.reason));
+  if (reasons.size === 1) return [...reasons][0] as DayReason;
+
+  for (const reason of ['no_professional_available', 'at_capacity', 'lead_time'] as const) {
+    if (reasons.has(reason)) return reason;
+  }
+  return 'at_capacity';
+}
 
 /**
  * The slots for one day, every candidate accounted for.
@@ -383,6 +463,11 @@ export function computeSlots(query: SlotQuery): SlotDay {
     bookableCount: slots.filter((s) => s.bookable).length,
     maxRemaining: slots.reduce((max, s) => Math.max(max, s.remaining), 0),
     leadMinutes,
+    reason: dayReasonFor(
+      slots,
+      professionals.length,
+      query.eligibleCount ?? professionals.length
+    ),
     serverNow: now.toISOString(),
   };
 }
@@ -396,7 +481,8 @@ export interface InstantEstimate {
   etaMinutes: number | null;
   prosAvailable: number;
   start: string | null;
-  reason: SlotReason | null;
+  /** Why there is no ETA, when there is none. `null` when there is one. */
+  reason: DayReason | null;
 }
 
 /**
@@ -405,6 +491,9 @@ export interface InstantEstimate {
  * Measured from now, not from midnight, so `etaMinutes` is a number of minutes
  * a person can read. `null` means there is no slot today at all — which is an
  * answer, and the copy says so, rather than a slot at some invented time.
+ *
+ * The reason is the day's own, not the first slot's: a day where every slot
+ * was refused for the same reason has one explanation, and the day knows it.
  */
 export function estimateInstant(day: SlotDay, now: Date = new Date()): InstantEstimate {
   const slot = earliestBookableSlot(day);
@@ -413,7 +502,7 @@ export function estimateInstant(day: SlotDay, now: Date = new Date()): InstantEs
       etaMinutes: null,
       prosAvailable: 0,
       start: null,
-      reason: day.slots.length > 0 ? (day.slots[0].reason ?? 'at_capacity') : 'no_professional_available',
+      reason: day.reason ?? 'no_professional_available',
     };
   }
   return {
@@ -431,4 +520,40 @@ export function etaLabel(minutes: number | null): string {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return rest === 0 ? `in ${hours} hr` : `in ${hours} hr ${rest} min`;
+}
+
+/**
+ * The sentence for a day with nothing bookable on it.
+ *
+ * The reason comes from the engine, because the engine is the only side that
+ * knows why the day is empty. The lead is deliberately not the answer: it is a
+ * property of the service, and on a day more than a few hours away it rules
+ * out nothing at all — so quoting it tells the customer to wait out a notice
+ * period that is not what stopped them. That sentence is how a professional
+ * who was working that day came to read as unavailable.
+ */
+export function emptyDayMessage(day: SlotDay): string {
+  const what = `No slots for ${durationLabel(day.durationMinutes)} on this day`;
+
+  switch (day.reason) {
+    case 'lead_time':
+      // The notice period only ever rules out the slots nearest now, so it is
+      // the answer exactly when it is what refused them.
+      return day.leadMinutes > 0
+        ? `${what} — bookings need ${durationLabel(day.leadMinutes)} notice. Try another day.`
+        : `${what} — every slot for this day has already passed. Try another day.`;
+    case 'at_capacity':
+      return `${what} — that day is fully booked. Try another day.`;
+    case 'no_professional_available':
+      return `${what} — nobody is free at that time. Try another day.`;
+    case 'no_working_hours':
+      return `${what} — nobody is working that day. Try another day.`;
+    case 'no_professional_on_shift':
+      return `${what} — nobody is free for this service today. Try another day.`;
+    case 'no_eligible_professional':
+      // Another day would not help here, so the copy must not say it would.
+      return 'We do not have a professional for this service in your area yet, so there are no slots to show.';
+    default:
+      return `${what}. Try another day.`;
+  }
 }

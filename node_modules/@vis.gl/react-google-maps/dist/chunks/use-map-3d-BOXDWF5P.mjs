@@ -1,0 +1,2205 @@
+import * as React from 'react';
+import React__default, { useRef, useEffect, useMemo, useState, useReducer, useCallback, useContext, useLayoutEffect, forwardRef, useImperativeHandle, createContext } from 'react';
+import { createPortal } from 'react-dom';
+
+/* eslint-disable react-hooks/immutability -- Google Maps API objects are designed to be mutated */
+/**
+ * Internally used to copy values from props into API-Objects
+ * whenever they change.
+ *
+ * A prop the consumer never provided is not written at all. Assigning
+ * `undefined` would clobber the default the Maps API set up on the object
+ * (see #867) and, for deprecated or channel-gated properties, log a warning
+ * the consumer did not cause. Once a value has been written to an object,
+ * a later `undefined` still clears it.
+ *
+ * @example
+ *   usePropBinding(marker, 'position', position);
+ *
+ * @internal
+ */
+function usePropBinding(object, prop, value) {
+    const writtenTo = useRef(null);
+    useEffect(() => {
+        if (!object)
+            return;
+        if (value === undefined && writtenTo.current !== object)
+            return;
+        writtenTo.current = object;
+        // We use any here because GmpWritableElementProp<T[K]> is a broader type than T[K]
+        // and can't be assigned directly without this cast.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        object[prop] = value;
+    }, [object, prop, value]);
+}
+
+// Copyright (c) 2025 Sanity
+// This file is derived from sanity-io/use-effect-event (MIT Licensed)
+//
+// https://github.com/sanity-io/use-effect-event
+/**
+ * A clone of the React namespace for reading APIs that may be missing in older
+ * supported React versions. Bundlers can rewrite direct React.someNewApi reads
+ * into named imports, which breaks React 17. Reading from this cloned object
+ * keeps those lookups optional.
+ *
+ * @see https://github.com/mui/material-ui/issues/41190#issuecomment-2040873379
+ */
+const SafeReact = Object.assign({}, React);
+const useInsertionEffect = SafeReact.useInsertionEffect;
+const useSafeInsertionEffect = 
+// React 17 doesn't have useInsertionEffect.
+useInsertionEffect &&
+    // Preact replaces useInsertionEffect with useLayoutEffect and fires too late.
+    useInsertionEffect !== SafeReact.useLayoutEffect
+    ? useInsertionEffect
+    : (fn) => {
+        fn();
+    };
+function forbiddenInRender() {
+    throw new Error('useEffectEvent: invalid call during rendering.');
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function useEffectEventPolyfill(fn) {
+    /**
+     * Initialize the ref with `forbiddenInRender`, to catch illegal calls during
+     * rendering. After the insertion effect ran, the ref will contain the actual
+     * function, so all effects can see the actual value.
+     */
+    const ref = useRef(forbiddenInRender);
+    useSafeInsertionEffect(() => {
+        ref.current = fn;
+    }, [fn]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return ((...args) => ref.current(...args));
+}
+/**
+ * Uses a polyfill implementation of `useEffectEvent`. The native useEffectEvent
+ * implementation was causing issues that we do not fully understand yet.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const useEffectEvent = useEffectEventPolyfill;
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+const noop = () => { };
+/**
+ * Internally used to bind events to DOM nodes.
+ * @internal
+ */
+function useDomEventListener(target, name, callback) {
+    const eventFn = useEffectEvent(callback !== null && callback !== void 0 ? callback : noop);
+    const isCallbackDefined = Boolean(callback);
+    useEffect(() => {
+        if (!target || !name || !isCallbackDefined)
+            return;
+        // Note: eventFn is not guaranteed to be stable across renders, so we need
+        // to use a local variable to be sure to remove the very same listener
+        // function that has been added
+        const listenerCallback = eventFn;
+        target.addEventListener(name, listenerCallback);
+        return () => target.removeEventListener(name, listenerCallback);
+    }, [target, name, isCallbackDefined]);
+}
+
+/******************************************************************************
+Copyright (c) Microsoft Corporation.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
+***************************************************************************** */
+/* global Reflect, Promise, SuppressedError, Symbol, Iterator */
+
+
+function __rest(s, e) {
+    var t = {};
+    for (var p in s) if (Object.prototype.hasOwnProperty.call(s, p) && e.indexOf(p) < 0)
+        t[p] = s[p];
+    if (s != null && typeof Object.getOwnPropertySymbols === "function")
+        for (var i = 0, p = Object.getOwnPropertySymbols(s); i < p.length; i++) {
+            if (e.indexOf(p[i]) < 0 && Object.prototype.propertyIsEnumerable.call(s, p[i]))
+                t[p[i]] = s[p[i]];
+        }
+    return t;
+}
+
+function __awaiter(thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+}
+
+typeof SuppressedError === "function" ? SuppressedError : function (error, suppressed, message) {
+    var e = new Error(message);
+    return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
+};
+
+const MSG_REPEATED_SET_OPTIONS = (options) => `The setOptions() function should only be called once. The options passed ` +
+    `to the additional call (${JSON.stringify(options)}) will be ignored.`;
+const MSG_IMPORT_LIBRARY_EXISTS = (options) => `The google.maps.importLibrary() function is already defined, and ` +
+    `@googlemaps/js-api-loader will use the existing function instead of ` +
+    `overwriting it. The options passed to setOptions ` +
+    `(${JSON.stringify(options)}) will be ignored.`;
+const MSG_SET_OPTIONS_NOT_CALLED = "No options were set before calling importLibrary. Make sure to configure " +
+    "the loader using setOptions().";
+const MSG_SCRIPT_ELEMENT_EXISTS = "There already is a script loading the Google Maps JavaScript " +
+    "API, and no google.maps.importLibrary function is defined. " +
+    "@googlemaps/js-api-loader will proceed to bootstrap the API " +
+    "with the specified options, but the existing script might cause " +
+    "problems using the API. Make sure to remove the script " +
+    "loading the API.";
+const MSG_API_KEY_USED = "The 'apiKey' parameter was used in setOptions(), but 'key' is the correct " +
+    "parameter name. Please update your configuration.";
+const MSG_TRUSTED_TYPES_POLICY_FAILED = (policyName, error) => `Failed to create Trusted Types policy "${policyName}": ${error instanceof Error ? error.message : String(error)}.\n\n` +
+    `If your Content Security Policy uses "require-trusted-types-for 'script'", ` +
+    `allow this policy with "trusted-types ${policyName} google-maps-api-loader google-maps-api#html lit-html". ` +
+    `The "google-maps-api-loader", "lit-html", and "google-maps-api#html" policies are required for full Maps JavaScript API execution. ` +
+    `Falling back to a string script URL.`;
+const __DEV__$1 = process.env.NODE_ENV !== 'production';
+const logDevWarning = __DEV__$1
+    ? (message) => {
+        console.warn(`[@googlemaps/js-api-loader] ${message}`);
+    }
+    : () => { };
+const logDevNotice = __DEV__$1
+    ? (message) => {
+        console.info(`[@googlemaps/js-api-loader] ${message}`);
+    }
+    : () => { };
+
+/*
+ * Copyright 2025 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
+ */
+const TRUSTED_TYPES_POLICY_NAME = "@googlemaps/js-api-loader";
+const fallbackPolicy = { createScriptURL: (url) => url };
+let policy;
+/*
+ * Tries to create a Trusted Types policy when supported. Falls back to a string passthrough
+ * when Trusted Types is unsupported, blocked by CSP, or already registered.
+ */
+function getPolicy() {
+    if (policy) {
+        return policy;
+    }
+    const trustedTypes = globalThis.trustedTypes;
+    if (!trustedTypes) {
+        policy = fallbackPolicy;
+        return policy;
+    }
+    try {
+        policy = trustedTypes.createPolicy(TRUSTED_TYPES_POLICY_NAME, {
+            createScriptURL: (url) => url,
+        });
+    }
+    catch (e) {
+        logDevWarning(MSG_TRUSTED_TYPES_POLICY_FAILED(TRUSTED_TYPES_POLICY_NAME, e));
+        policy = fallbackPolicy;
+    }
+    return policy;
+}
+function setScriptSrc(script, src) {
+    script.src = getPolicy().createScriptURL(src);
+}
+
+/*
+ * Copyright 2025 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+
+const bootstrap = bootstrapParams => {
+  var bootstrapPromise;
+  var script;
+  var bootstrapParamsKey;
+  var PRODUCT_NAME = "The Google Maps JavaScript API";
+  var GOOGLE = "google";
+  var IMPORT_API_NAME = "importLibrary";
+  var PENDING_BOOTSTRAP_KEY = "__ib__";
+  var doc = document;
+  var global_ = window;
+  var google_ = global_[GOOGLE] || (global_[GOOGLE] = {});
+  var namespace = google_.maps || (google_.maps = {});
+  var libraries = new Set();
+  var searchParams = new URLSearchParams();
+  var triggerBootstrap = () => bootstrapPromise || (bootstrapPromise = new Promise(async(resolve, reject) => {
+    await (script = doc.createElement("script"));
+    searchParams.set("libraries", [...libraries] + "");
+    for (bootstrapParamsKey in bootstrapParams) {
+      searchParams.set(bootstrapParamsKey.replace(/[A-Z]/g, g => "_" + g[0].toLowerCase()), bootstrapParams[bootstrapParamsKey]);
+    }
+    searchParams.set("callback", GOOGLE + ".maps." + PENDING_BOOTSTRAP_KEY);
+    setScriptSrc(script, "https://maps.googleapis.com/maps/api/js?" + searchParams);
+    namespace[PENDING_BOOTSTRAP_KEY] = resolve;
+    script.onerror = () => bootstrapPromise = reject(Error(PRODUCT_NAME + " could not load."));
+    script.nonce = doc.querySelector("script[nonce]")?.nonce || "";
+    doc.head.append(script);
+  }));
+  namespace[IMPORT_API_NAME] ? console.warn(PRODUCT_NAME + " only loads once. Ignoring:", bootstrapParams) : namespace[IMPORT_API_NAME] = (libraryName, ...args) => libraries.add(libraryName) && triggerBootstrap().then(() => namespace[IMPORT_API_NAME](libraryName, ...args));
+};
+
+/*
+ * Copyright 2025 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+const __DEV__ = process.env.NODE_ENV !== "production";
+let setOptionsWasCalled_ = false;
+/**
+ * Sets the options for the Maps JavaScript API.
+ *
+ * Has to be called before any library is loaded.
+ *
+ * See https://developers.google.com/maps/documentation/javascript/load-maps-js-api#required_parameters
+ * for the full documentation of available options.
+ *
+ * @param options The options to set.
+ */
+function setOptions(options) {
+    if (setOptionsWasCalled_) {
+        logDevWarning(MSG_REPEATED_SET_OPTIONS(options));
+        return;
+    }
+    if (options.apiKey) {
+        logDevWarning(MSG_API_KEY_USED);
+        if (!options.key) {
+            options.key = options.apiKey;
+        }
+    }
+    installImportLibrary_(options);
+    setOptionsWasCalled_ = true;
+}
+async function importLibrary(libraryName) {
+    if (!setOptionsWasCalled_) {
+        logDevWarning(MSG_SET_OPTIONS_NOT_CALLED);
+    }
+    if (!window?.google?.maps?.importLibrary) {
+        throw new Error("google.maps.importLibrary is not installed.");
+    }
+    return (await google.maps.importLibrary(libraryName));
+}
+/**
+ * The installImportLibrary_ function makes sure that a usable version of the
+ * `google.maps.importLibrary` function exists.
+ */
+function installImportLibrary_(options) {
+    const importLibraryExists = Boolean(window.google?.maps?.importLibrary);
+    if (importLibraryExists) {
+        logDevNotice(MSG_IMPORT_LIBRARY_EXISTS(options));
+    }
+    else if (__DEV__) {
+        const scriptEl = document.querySelector('script[src*="maps.googleapis.com/maps/api/js"]');
+        if (scriptEl) {
+            logDevWarning(MSG_SCRIPT_ELEMENT_EXISTS);
+        }
+    }
+    // If the google.maps.importLibrary function already exists, bootstrap()
+    // won't do anything, so we won't call it
+    if (!importLibraryExists) {
+        bootstrap(options);
+    }
+}
+
+const APILoadingStatus = {
+    NOT_LOADED: 'NOT_LOADED',
+    LOADING: 'LOADING',
+    LOADED: 'LOADED',
+    FAILED: 'FAILED',
+    AUTH_FAILURE: 'AUTH_FAILURE'
+};
+
+// This file is automatically updated by the build process.
+const VERSION = '1.10.1';
+
+const DEFAULT_SOLUTION_CHANNEL = 'GMP_visgl_rgmlibrary_v1_default';
+const DEFAULT_INTERNAL_USAGE_ATTRIBUTION_IDS = [
+    `gmp_visgl_reactgooglemaps_v${VERSION}`
+];
+const APIProviderContext = React__default.createContext(null);
+// loading the Maps JavaScript API can only happen once in the runtime, so these
+// variables are kept at the module level.
+let loadingStatus = APILoadingStatus.NOT_LOADED;
+let serializedApiParams;
+const listeners = new Set();
+/**
+ * Called to update the local status and notify the listeners for any mounted
+ * components.
+ * @internal
+ */
+function updateLoadingStatus(status) {
+    if (status === loadingStatus) {
+        return;
+    }
+    loadingStatus = status;
+    listeners.forEach(listener => listener(loadingStatus));
+}
+/**
+ * Local hook to set up the map-instance management context.
+ * @internal
+ */
+function useMapInstances() {
+    const [mapInstances, setMapInstances] = useState({});
+    const addMapInstance = (mapInstance, id = 'default') => {
+        setMapInstances(instances => (Object.assign(Object.assign({}, instances), { [id]: mapInstance })));
+    };
+    const removeMapInstance = (id = 'default') => {
+        setMapInstances((_a) => {
+            var _b = id; _a[_b]; var remaining = __rest(_a, [typeof _b === "symbol" ? _b : _b + ""]);
+            return remaining;
+        });
+    };
+    const clearMapInstances = () => {
+        setMapInstances({});
+    };
+    return { mapInstances, addMapInstance, removeMapInstance, clearMapInstances };
+}
+/**
+ * local hook to set up the 3D map-instance management context.
+ */
+function useMap3DInstances() {
+    const [map3dInstances, setMap3DInstances] = useState({});
+    const addMap3DInstance = (map3dInstance, id = 'default') => {
+        setMap3DInstances(instances => (Object.assign(Object.assign({}, instances), { [id]: map3dInstance })));
+    };
+    const removeMap3DInstance = (id = 'default') => {
+        setMap3DInstances((_a) => {
+            var _b = id; _a[_b]; var remaining = __rest(_a, [typeof _b === "symbol" ? _b : _b + ""]);
+            return remaining;
+        });
+    };
+    const clearMap3DInstances = () => {
+        setMap3DInstances({});
+    };
+    return {
+        map3dInstances,
+        addMap3DInstance,
+        removeMap3DInstance,
+        clearMap3DInstances
+    };
+}
+/**
+ * Local hook to handle the loading of the maps API.
+ * @internal
+ */
+function useGoogleMapsApiLoader(props) {
+    const { onLoad, onError, apiKey, version, libraries = [], region, language, authReferrerPolicy, channel, solutionChannel, fetchAppCheckToken } = props;
+    const [status, setStatus] = useState(loadingStatus);
+    const [loadedLibraries, addLoadedLibrary] = useReducer((loadedLibraries, action) => {
+        return loadedLibraries[action.name]
+            ? loadedLibraries
+            : Object.assign(Object.assign({}, loadedLibraries), { [action.name]: action.value });
+    }, {});
+    const currentSerializedParams = useMemo(() => {
+        const params = {
+            apiKey,
+            version,
+            libraries: libraries.join(','),
+            region,
+            language,
+            authReferrerPolicy,
+            channel,
+            solutionChannel
+        };
+        return JSON.stringify(params);
+    }, [
+        apiKey,
+        version,
+        libraries,
+        region,
+        language,
+        authReferrerPolicy,
+        channel,
+        solutionChannel
+    ]);
+    const importLibraryCallback = useCallback((name) => __awaiter(this, void 0, void 0, function* () {
+        if (loadedLibraries[name]) {
+            return loadedLibraries[name];
+        }
+        const res = yield importLibrary(name);
+        addLoadedLibrary({ name, value: res });
+        return res;
+    }), [loadedLibraries]);
+    // effect: we want to get notified of global loading-status changes
+    useEffect(() => {
+        listeners.add(setStatus);
+        // sync component state on mount (shouldn't be different from the initial state)
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional synchronization of status from singleton
+        setStatus(loadingStatus);
+        return () => {
+            listeners.delete(setStatus);
+        };
+    }, []);
+    // effect: set and store options
+    useEffect(() => {
+        (() => __awaiter(this, void 0, void 0, function* () {
+            var _a, _b;
+            try {
+                // This indicates that the API has been loaded with a different set of parameters.
+                // While this is not blocking, it's not recommended and we should warn the user.
+                if (serializedApiParams &&
+                    serializedApiParams !== currentSerializedParams) {
+                    console.warn(`The Google Maps JavaScript API has already been loaded with different parameters. ` +
+                        `The new parameters will be ignored. If you need to use different parameters, ` +
+                        `please refresh the page.`);
+                }
+                const librariesToLoad = [
+                    'core',
+                    'maps',
+                    ...libraries
+                ];
+                const options = Object.fromEntries(Object.entries({
+                    key: apiKey,
+                    v: version,
+                    libraries,
+                    region,
+                    language,
+                    authReferrerPolicy
+                }).filter(([, value]) => value !== undefined));
+                if (channel !== undefined && channel >= 0 && channel <= 999) {
+                    options.channel = String(channel);
+                }
+                // solution-channel: when undefined, use the default; otherwise use
+                // an explicit value.
+                if (solutionChannel === undefined) {
+                    options.solutionChannel = DEFAULT_SOLUTION_CHANNEL;
+                }
+                else if (solutionChannel !== '') {
+                    options.solutionChannel = solutionChannel;
+                }
+                // If the google.maps namespace is already available, the API has been loaded externally.
+                if ((_b = (_a = window.google) === null || _a === void 0 ? void 0 : _a.maps) === null || _b === void 0 ? void 0 : _b.importLibrary) {
+                    const shouldUpdateLoadingStatus = !serializedApiParams;
+                    if (shouldUpdateLoadingStatus) {
+                        serializedApiParams = currentSerializedParams;
+                        setOptions(options);
+                    }
+                    yield Promise.all(librariesToLoad.map(name => importLibraryCallback(name)));
+                    if (shouldUpdateLoadingStatus) {
+                        updateLoadingStatus(APILoadingStatus.LOADED);
+                    }
+                    if (onLoad)
+                        onLoad();
+                    return;
+                }
+                // Abort if the API is already loading or has been loaded.
+                if (loadingStatus === APILoadingStatus.LOADING ||
+                    loadingStatus === APILoadingStatus.LOADED) {
+                    if (loadingStatus === APILoadingStatus.LOADED && onLoad)
+                        onLoad();
+                    return;
+                }
+                serializedApiParams = currentSerializedParams;
+                updateLoadingStatus(APILoadingStatus.LOADING);
+                // this will actually trigger loading the maps API
+                setOptions(options);
+                // wait for all requested libraries (inluding 'core' and 'maps') to
+                // finish loading
+                yield Promise.all(librariesToLoad.map(name => importLibraryCallback(name)));
+                updateLoadingStatus(APILoadingStatus.LOADED);
+                if (onLoad) {
+                    onLoad();
+                }
+            }
+            catch (error) {
+                updateLoadingStatus(APILoadingStatus.FAILED);
+                if (onError) {
+                    onError(error);
+                }
+                else {
+                    console.error('The Google Maps JavaScript API failed to load.', error);
+                }
+            }
+        }))();
+    }, 
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentSerializedParams, onLoad, onError, importLibraryCallback, libraries]);
+    // set the fetchAppCheckToken if provided
+    useEffect(() => {
+        if (status !== APILoadingStatus.LOADED)
+            return;
+        const settings = google.maps.Settings.getInstance();
+        if (fetchAppCheckToken) {
+            settings.fetchAppCheckToken = fetchAppCheckToken;
+        }
+    }, [status, fetchAppCheckToken]);
+    return {
+        status,
+        loadedLibraries,
+        importLibrary: importLibraryCallback
+    };
+}
+function useInternalUsageAttributionIds(props) {
+    return useMemo(() => props.disableUsageAttribution
+        ? null
+        : DEFAULT_INTERNAL_USAGE_ATTRIBUTION_IDS, [props.disableUsageAttribution]);
+}
+/**
+ * Component to wrap the components from this library and load the Google Maps JavaScript API
+ */
+const APIProvider = props => {
+    const { children } = props, loaderProps = __rest(props, ["children"]);
+    const { mapInstances, addMapInstance, removeMapInstance, clearMapInstances } = useMapInstances();
+    const { map3dInstances, addMap3DInstance, removeMap3DInstance, clearMap3DInstances } = useMap3DInstances();
+    const { status, loadedLibraries, importLibrary } = useGoogleMapsApiLoader(loaderProps);
+    const internalUsageAttributionIds = useInternalUsageAttributionIds(loaderProps);
+    const contextValue = useMemo(() => ({
+        mapInstances,
+        addMapInstance,
+        removeMapInstance,
+        clearMapInstances,
+        map3dInstances,
+        addMap3DInstance,
+        removeMap3DInstance,
+        clearMap3DInstances,
+        status,
+        loadedLibraries,
+        importLibrary,
+        internalUsageAttributionIds
+    }), [
+        mapInstances,
+        addMapInstance,
+        removeMapInstance,
+        clearMapInstances,
+        map3dInstances,
+        addMap3DInstance,
+        removeMap3DInstance,
+        clearMap3DInstances,
+        status,
+        loadedLibraries,
+        importLibrary,
+        internalUsageAttributionIds
+    ]);
+    return (React__default.createElement(APIProviderContext.Provider, { value: contextValue }, children));
+};
+/**
+ * @internal
+ * Resets module-level state for testing purposes only.
+ * This should never be used in production code.
+ */
+function __resetModuleState() {
+    loadingStatus = APILoadingStatus.NOT_LOADED;
+    serializedApiParams = undefined;
+    listeners.clear();
+}
+
+function useCallbackRef() {
+    const [el, setEl] = useState(null);
+    const ref = useCallback((value) => setEl(value), [setEl]);
+    return [el, ref];
+}
+
+function useApiLoadingStatus() {
+    var _a;
+    return ((_a = useContext(APIProviderContext)) === null || _a === void 0 ? void 0 : _a.status) || APILoadingStatus.NOT_LOADED;
+}
+
+/**
+ * Hook to check if the Maps JavaScript API is loaded
+ */
+function useApiIsLoaded() {
+    const status = useApiLoadingStatus();
+    return status === APILoadingStatus.LOADED;
+}
+
+function useMapsLibrary(name) {
+    var _a;
+    const apiIsLoaded = useApiIsLoaded();
+    const ctx = useContext(APIProviderContext);
+    useEffect(() => {
+        if (!apiIsLoaded || !ctx)
+            return;
+        // Trigger loading the libraries via our proxy-method.
+        // The returned promise is ignored, since importLibrary will update loadedLibraries
+        // list in the context, triggering a re-render.
+        void ctx.importLibrary(name);
+    }, [apiIsLoaded, ctx, name]);
+    return ((_a = ctx === null || ctx === void 0 ? void 0 : ctx.loadedLibraries[name]) !== null && _a !== void 0 ? _a : null);
+}
+
+function useForceUpdate() {
+    const [, forceUpdate] = useReducer(x => x + 1, 0);
+    return forceUpdate;
+}
+
+const DEFAULT_CAMERA_STATE = {
+    center: { lat: 0, lng: 0, altitude: 0 },
+    range: 0,
+    heading: 0,
+    tilt: 0,
+    roll: 0
+};
+/**
+ * Camera property names that correspond to gmp-*change events.
+ */
+const CAMERA_PROPS = ['center', 'range', 'heading', 'tilt', 'roll'];
+/**
+ * Updates the camera state ref with values from the map element.
+ */
+function updateCameraState(map3d, ref, prop) {
+    const value = map3d[prop];
+    if (value == null)
+        return;
+    if (prop === 'center') {
+        // The center property returns a LatLngAltitude object, convert to literal
+        const center = value;
+        ref.current.center = center.toJSON
+            ? center.toJSON()
+            : center;
+    }
+    else {
+        ref.current[prop] = value;
+    }
+}
+/**
+ * Creates a mutable ref object to track the last known state of the 3D map camera.
+ * This is used in `useMap3DCameraParams` to reduce stuttering by avoiding updates
+ * of the map camera with values that have already been processed.
+ *
+ * @internal
+ */
+function useTrackedCameraStateRef3D(map3d) {
+    const forceUpdate = useForceUpdate();
+    const ref = useRef(Object.assign({}, DEFAULT_CAMERA_STATE));
+    useEffect(() => {
+        if (!map3d)
+            return;
+        const listeners = [];
+        for (const prop of CAMERA_PROPS) {
+            const eventName = `gmp-${prop}change`;
+            const handler = () => {
+                updateCameraState(map3d, ref, prop);
+                forceUpdate();
+            };
+            map3d.addEventListener(eventName, handler);
+            listeners.push(() => map3d.removeEventListener(eventName, handler));
+        }
+        return () => {
+            for (const removeListener of listeners) {
+                removeListener();
+            }
+        };
+    }, [map3d, forceUpdate]);
+    return ref;
+}
+
+/**
+ * Hook to manage the Map3DElement instance lifecycle.
+ *
+ * Handles:
+ * - Waiting for the 'maps3d' library to load
+ * - Waiting for the 'gmp-map-3d' custom element to be defined
+ * - Creating a callback ref for the element
+ * - Applying initial options when the element is ready
+ * - Tracking camera state
+ *
+ * @internal
+ */
+function useMap3DInstance(props) {
+    const maps3dLib = useMapsLibrary('maps3d');
+    const [customElementReady, setCustomElementReady] = useState(false);
+    const [, containerRef] = useCallbackRef();
+    const [map3d, map3dRef] = useCallbackRef();
+    const cameraStateRef = useTrackedCameraStateRef3D(map3d);
+    useEffect(() => {
+        customElements.whenDefined('gmp-map-3d').then(() => {
+            setCustomElementReady(true);
+        });
+    }, []);
+    // Apply initial options once when the element is first available
+    useEffect(() => {
+        if (!map3d)
+            return;
+        const { center, heading, tilt, range, roll, defaultCenter, defaultHeading, defaultTilt, defaultRange, defaultRoll, 
+        // Non-element props to exclude
+        id, style, className, children, onCenterChanged, onHeadingChanged, onTiltChanged, onRangeChanged, onRollChanged, onCameraChanged, onClick, onSteadyChange, onAnimationEnd, onError, mode, gestureHandling } = props, elementOptions = __rest(props, ["center", "heading", "tilt", "range", "roll", "defaultCenter", "defaultHeading", "defaultTilt", "defaultRange", "defaultRoll", "id", "style", "className", "children", "onCenterChanged", "onHeadingChanged", "onTiltChanged", "onRangeChanged", "onRollChanged", "onCameraChanged", "onClick", "onSteadyChange", "onAnimationEnd", "onError", "mode", "gestureHandling"]);
+        const initialCenter = center !== null && center !== void 0 ? center : defaultCenter;
+        const initialHeading = heading !== null && heading !== void 0 ? heading : defaultHeading;
+        const initialTilt = tilt !== null && tilt !== void 0 ? tilt : defaultTilt;
+        const initialRange = range !== null && range !== void 0 ? range : defaultRange;
+        const initialRoll = roll !== null && roll !== void 0 ? roll : defaultRoll;
+        const initialOptions = Object.assign({}, elementOptions);
+        if (initialCenter)
+            initialOptions.center = initialCenter;
+        if (initialHeading !== undefined)
+            initialOptions.heading = initialHeading;
+        if (initialTilt !== undefined)
+            initialOptions.tilt = initialTilt;
+        if (initialRange !== undefined)
+            initialOptions.range = initialRange;
+        if (initialRoll !== undefined)
+            initialOptions.roll = initialRoll;
+        Object.assign(map3d, initialOptions);
+    }, 
+    // this effect should only run when the map3d element first becomes
+    // available, so we skip re-running it when other props change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [map3d]);
+    const isReady = !!maps3dLib && customElementReady;
+    return [map3d, containerRef, map3dRef, cameraStateRef, isReady];
+}
+
+/* eslint-disable react-hooks/immutability -- Google Maps API objects are designed to be mutated */
+/**
+ * Converts a LatLngAltitude or LatLngAltitudeLiteral to a literal object.
+ */
+function toLatLngAltitudeLiteral(value) {
+    if (!value)
+        return null;
+    // Check if it's a LatLngAltitude object with toJSON method
+    if ('toJSON' in value && typeof value.toJSON === 'function') {
+        return value.toJSON();
+    }
+    return value;
+}
+/**
+ * Hook to update Map3D camera parameters when props change.
+ * Compares the current camera state with props and updates only when there are differences.
+ *
+ * @internal
+ */
+function useMap3DCameraParams(map3d, cameraStateRef, props) {
+    var _a, _b, _c, _d, _e, _f, _g;
+    const centerLiteral = toLatLngAltitudeLiteral(props.center);
+    const lat = (_a = centerLiteral === null || centerLiteral === void 0 ? void 0 : centerLiteral.lat) !== null && _a !== void 0 ? _a : null;
+    const lng = (_b = centerLiteral === null || centerLiteral === void 0 ? void 0 : centerLiteral.lng) !== null && _b !== void 0 ? _b : null;
+    const altitude = (_c = centerLiteral === null || centerLiteral === void 0 ? void 0 : centerLiteral.altitude) !== null && _c !== void 0 ? _c : null;
+    const range = (_d = props.range) !== null && _d !== void 0 ? _d : null;
+    const heading = (_e = props.heading) !== null && _e !== void 0 ? _e : null;
+    const tilt = (_f = props.tilt) !== null && _f !== void 0 ? _f : null;
+    const roll = (_g = props.roll) !== null && _g !== void 0 ? _g : null;
+    // Runs on every render to sync controlled camera props with the map element
+    useLayoutEffect(() => {
+        var _a;
+        if (!map3d)
+            return;
+        const currentState = cameraStateRef.current;
+        if (lat !== null &&
+            lng !== null &&
+            (currentState.center.lat !== lat ||
+                currentState.center.lng !== lng ||
+                (altitude !== null && currentState.center.altitude !== altitude))) {
+            map3d.center = {
+                lat,
+                lng,
+                altitude: (_a = altitude !== null && altitude !== void 0 ? altitude : currentState.center.altitude) !== null && _a !== void 0 ? _a : 0
+            };
+        }
+        if (range !== null && currentState.range !== range) {
+            map3d.range = range;
+        }
+        if (heading !== null && currentState.heading !== heading) {
+            map3d.heading = heading;
+        }
+        if (tilt !== null && currentState.tilt !== tilt) {
+            map3d.tilt = tilt;
+        }
+        if (roll !== null && currentState.roll !== roll) {
+            map3d.roll = roll;
+        }
+    });
+}
+
+/**
+ * Camera-related event types for the aggregated onCameraChanged handler.
+ */
+const CAMERA_EVENTS = [
+    'gmp-centerchange',
+    'gmp-headingchange',
+    'gmp-tiltchange',
+    'gmp-rangechange',
+    'gmp-rollchange'
+];
+/**
+ * Creates a camera changed event with current camera state.
+ */
+function createCameraEvent(map3d, type) {
+    const center = map3d.center;
+    // Normalize center to LatLngAltitudeLiteral
+    // If center is a LatLngAltitude class instance, it has a toJSON method
+    // Otherwise it's already a literal object
+    let centerLiteral;
+    if (center && 'toJSON' in center && typeof center.toJSON === 'function') {
+        centerLiteral = center.toJSON();
+    }
+    else if (center) {
+        centerLiteral = center;
+    }
+    else {
+        centerLiteral = { lat: 0, lng: 0, altitude: 0 };
+    }
+    return {
+        type,
+        map3d,
+        detail: {
+            center: centerLiteral,
+            range: map3d.range || 0,
+            heading: map3d.heading || 0,
+            tilt: map3d.tilt || 0,
+            roll: map3d.roll || 0
+        }
+    };
+}
+/**
+ * Creates a click event from a LocationClickEvent or PlaceClickEvent.
+ */
+function createClickEvent(map3d, srcEvent) {
+    const placeClickEvent = srcEvent;
+    return {
+        type: 'gmp-click',
+        map3d,
+        detail: {
+            position: srcEvent.position || null,
+            placeId: placeClickEvent.placeId
+        }
+    };
+}
+/**
+ * Creates a steady change event.
+ */
+function createSteadyChangeEvent(map3d, srcEvent) {
+    return {
+        type: 'gmp-steadychange',
+        map3d,
+        detail: {
+            isSteady: srcEvent.isSteady
+        }
+    };
+}
+/**
+ * Hook to set up event handlers for Map3D events.
+ *
+ * @internal
+ */
+function useMap3DEvents(map3d, props) {
+    const { onCenterChanged, onHeadingChanged, onTiltChanged, onRangeChanged, onRollChanged, onCameraChanged, onClick, onSteadyChange, onAnimationEnd, onError } = props;
+    useMap3DEvent(map3d, 'gmp-centerchange', onCenterChanged, createCameraEvent);
+    useMap3DEvent(map3d, 'gmp-headingchange', onHeadingChanged, createCameraEvent);
+    useMap3DEvent(map3d, 'gmp-tiltchange', onTiltChanged, createCameraEvent);
+    useMap3DEvent(map3d, 'gmp-rangechange', onRangeChanged, createCameraEvent);
+    useMap3DEvent(map3d, 'gmp-rollchange', onRollChanged, createCameraEvent);
+    // onCameraChanged aggregates all camera property change events into one handler
+    useEffect(() => {
+        if (!map3d || !onCameraChanged)
+            return;
+        const handler = () => {
+            onCameraChanged(createCameraEvent(map3d, 'camerachange'));
+        };
+        for (const eventName of CAMERA_EVENTS) {
+            map3d.addEventListener(eventName, handler);
+        }
+        return () => {
+            for (const eventName of CAMERA_EVENTS) {
+                map3d.removeEventListener(eventName, handler);
+            }
+        };
+    }, [map3d, onCameraChanged]);
+    useEffect(() => {
+        if (!map3d || !onClick)
+            return;
+        const handler = (ev) => {
+            onClick(createClickEvent(map3d, ev));
+        };
+        map3d.addEventListener('gmp-click', handler);
+        return () => map3d.removeEventListener('gmp-click', handler);
+    }, [map3d, onClick]);
+    useEffect(() => {
+        if (!map3d || !onSteadyChange)
+            return;
+        const handler = (ev) => {
+            onSteadyChange(createSteadyChangeEvent(map3d, ev));
+        };
+        map3d.addEventListener('gmp-steadychange', handler);
+        return () => map3d.removeEventListener('gmp-steadychange', handler);
+    }, [map3d, onSteadyChange]);
+    useMap3DEvent(map3d, 'gmp-animationend', onAnimationEnd, (map3d, type) => ({
+        type,
+        map3d
+    }));
+    useMap3DEvent(map3d, 'gmp-error', onError, (map3d, type) => ({
+        type,
+        map3d
+    }));
+}
+/**
+ * Helper hook for individual events.
+ */
+function useMap3DEvent(map3d, eventName, handler, createEvent) {
+    useEffect(() => {
+        if (!map3d || !handler)
+            return;
+        const listener = () => {
+            handler(createEvent(map3d, eventName));
+        };
+        map3d.addEventListener(eventName, listener);
+        return () => map3d.removeEventListener(eventName, listener);
+    }, [map3d, eventName, handler, createEvent]);
+}
+
+/* eslint-disable react-hooks/refs */
+// refs should not be used in render because changes to refs won't
+// trigger a re-render, making them unreliable for holding state.
+// In this case though, that is exactly what we want.
+function useMemoized(value, isEqual) {
+    const ref = useRef(value);
+    if (!isEqual(value, ref.current)) {
+        ref.current = value;
+    }
+    return ref.current;
+}
+
+function useCustomCompareEffect(effect, dependencies, isEqual) {
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(effect, [useMemoized(dependencies, isEqual)]);
+}
+
+const { getOwnPropertyNames, getOwnPropertySymbols } = Object;
+const { hasOwnProperty } = Object.prototype;
+/**
+ * Combine two comparators into a single comparators.
+ */
+function combineComparators(comparatorA, comparatorB) {
+    return function isEqual(a, b, state) {
+        return comparatorA(a, b, state) && comparatorB(a, b, state);
+    };
+}
+/**
+ * Wrap the provided `areItemsEqual` method to manage the circular state, allowing
+ * for circular references to be safely included in the comparison without creating
+ * stack overflows.
+ */
+function createIsCircular(areItemsEqual) {
+    return function isCircular(a, b, state) {
+        if (!a || !b || typeof a !== 'object' || typeof b !== 'object') {
+            return areItemsEqual(a, b, state);
+        }
+        const { cache } = state;
+        const cachedA = cache.get(a);
+        const cachedB = cache.get(b);
+        if (cachedA && cachedB) {
+            return cachedA === b && cachedB === a;
+        }
+        cache.set(a, b);
+        cache.set(b, a);
+        const result = areItemsEqual(a, b, state);
+        cache.delete(a);
+        cache.delete(b);
+        return result;
+    };
+}
+/**
+ * Get the properties to strictly examine, which include both own properties that are
+ * not enumerable and symbol properties.
+ */
+function getStrictProperties(object) {
+    const symbols = getOwnPropertySymbols(object);
+    return symbols.length
+        ? getOwnPropertyNames(object).concat(symbols)
+        : getOwnPropertyNames(object);
+}
+/**
+ * Whether the object contains the property passed as an own property.
+ */
+const hasOwn = 
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+Object.hasOwn || ((object, property) => hasOwnProperty.call(object, property));
+
+const PREACT_VNODE = '__v';
+const PREACT_OWNER = '__o';
+const REACT_OWNER = '_owner';
+// `Float16Array` is recent enough that it cannot be referenced unguarded, and capturing its
+// availability once keeps that detail out of the comparison itself.
+const HAS_FLOAT_16_ARRAY = typeof Float16Array !== 'undefined';
+const { getOwnPropertyDescriptor, keys } = Object;
+/**
+ * Whether the values passed are equal based on a [SameValue](https://262.ecma-international.org/7.0/#sec-samevalue) basis.
+ * Simplified, this maps to if the two values are referentially equal to one another (`a === b`) or both are `NaN`.
+ *
+ * @note
+ * When available in the environment, this is just a re-export of the global
+ * [`Object.is`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/is) method.
+ */
+const sameValueEqual = 
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+Object.is
+    || function sameValueEqual(a, b) {
+        return a === b ? a !== 0 || 1 / a === 1 / b : a !== a && b !== b;
+    };
+/**
+ * Whether the values passed are equal based on a
+ * [Strict Equality Comparison](https://262.ecma-international.org/7.0/#sec-strict-equality-comparison) basis.
+ * Simplified, this maps to if the two values are referentially equal to one another (`a === b`).
+ *
+ * @note
+ * This is mainly available as a convenience function, such as being a default when a function to determine equality between
+ * two objects is used.
+ */
+function strictEqual(a, b) {
+    return a === b;
+}
+/**
+ * Whether the array buffers are equal in value.
+ */
+function areArrayBuffersEqual(a, b) {
+    return a.byteLength === b.byteLength && areTypedArraysEqual(new Uint8Array(a), new Uint8Array(b));
+}
+/**
+ * Whether the arrays are equal in value.
+ */
+function areArraysEqual(a, b, state) {
+    let index = a.length;
+    if (b.length !== index) {
+        return false;
+    }
+    while (index-- > 0) {
+        if (!state.equals(a[index], b[index], index, index, a, b, state)) {
+            return false;
+        }
+    }
+    return true;
+}
+/**
+ * Whether the dataviews are equal in value.
+ */
+function areDataViewsEqual(a, b) {
+    return (a.byteLength === b.byteLength
+        && areTypedArraysEqual(new Uint8Array(a.buffer, a.byteOffset, a.byteLength), new Uint8Array(b.buffer, b.byteOffset, b.byteLength)));
+}
+/**
+ * Whether the dates passed are equal in value.
+ */
+function areDatesEqual(a, b) {
+    return sameValueEqual(a.getTime(), b.getTime());
+}
+/**
+ * Whether the errors passed are equal in value.
+ *
+ * @note
+ * `name`, `message` and `stack` are own properties but are not enumerable, so they are compared
+ * explicitly. `cause` is compared by value rather than by reference, matching how every other
+ * nested value in the comparison is treated. Own enumerable properties (which custom `Error`
+ * subclasses commonly add) are compared by composing this with the object comparator in the
+ * comparator config, so that the strict and circular variants apply to them as well.
+ */
+function areErrorsEqual(a, b, state) {
+    return (a.name === b.name
+        && a.message === b.message
+        && a.stack === b.stack
+        && state.equals(a.cause, b.cause, 'cause', 'cause', a, b, state));
+}
+/**
+ * Whether the `Map`s are equal in value.
+ */
+function areMapsEqual(a, b, state) {
+    const size = a.size;
+    if (size !== b.size) {
+        return false;
+    }
+    if (!size) {
+        return true;
+    }
+    const matchedIndices = new Uint8Array(size);
+    const aIterable = a.entries();
+    let aResult;
+    let bResult;
+    let index = 0;
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    while ((aResult = aIterable.next())) {
+        if (aResult.done) {
+            break;
+        }
+        const bIterable = b.entries();
+        let hasMatch = 0;
+        let matchIndex = 0;
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        while ((bResult = bIterable.next())) {
+            if (bResult.done) {
+                break;
+            }
+            if (matchedIndices[matchIndex]) {
+                matchIndex++;
+                continue;
+            }
+            const aEntry = aResult.value;
+            const bEntry = bResult.value;
+            if (state.equals(aEntry[0], bEntry[0], index, matchIndex, a, b, state)
+                && state.equals(aEntry[1], bEntry[1], aEntry[0], bEntry[0], a, b, state)) {
+                hasMatch = matchedIndices[matchIndex] = 1;
+                break;
+            }
+            matchIndex++;
+        }
+        if (!hasMatch) {
+            return false;
+        }
+        index++;
+    }
+    return true;
+}
+/**
+ * Whether the objects are equal in value.
+ */
+function areObjectsEqual(a, b, state) {
+    const properties = keys(a);
+    let index = properties.length;
+    if (keys(b).length !== index) {
+        return false;
+    }
+    // Decrementing `while` showed faster results than either incrementing or
+    // decrementing `for` loop and than an incrementing `while` loop. Declarative
+    // methods like `some` / `every` were not used to avoid incurring the garbage
+    // cost of anonymous callbacks.
+    while (index-- > 0) {
+        if (!isPropertyEqual(a, b, state, properties[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+/**
+ * Whether the objects are equal in value with strict property checking.
+ */
+function areObjectsEqualStrict(a, b, state) {
+    const properties = getStrictProperties(a);
+    let index = properties.length;
+    if (getStrictProperties(b).length !== index) {
+        return false;
+    }
+    let property;
+    let descriptorA;
+    let descriptorB;
+    // Decrementing `while` showed faster results than either incrementing or
+    // decrementing `for` loop and than an incrementing `while` loop. Declarative
+    // methods like `some` / `every` were not used to avoid incurring the garbage
+    // cost of anonymous callbacks.
+    while (index-- > 0) {
+        property = properties[index];
+        if (!isPropertyEqual(a, b, state, property)) {
+            return false;
+        }
+        descriptorA = getOwnPropertyDescriptor(a, property);
+        descriptorB = getOwnPropertyDescriptor(b, property);
+        if ((descriptorA || descriptorB)
+            && (!descriptorA
+                || !descriptorB
+                || descriptorA.configurable !== descriptorB.configurable
+                || descriptorA.enumerable !== descriptorB.enumerable
+                || descriptorA.writable !== descriptorB.writable)) {
+            return false;
+        }
+    }
+    return true;
+}
+/**
+ * Whether the primitive wrappers passed are equal in value.
+ */
+function arePrimitiveWrappersEqual(a, b) {
+    return sameValueEqual(a.valueOf(), b.valueOf());
+}
+/**
+ * Whether the regexps passed are equal in value.
+ */
+function areRegExpsEqual(a, b) {
+    return a.source === b.source && a.flags === b.flags;
+}
+/**
+ * Whether the `Set`s are equal in value.
+ */
+function areSetsEqual(a, b, state) {
+    const size = a.size;
+    if (size !== b.size) {
+        return false;
+    }
+    if (!size) {
+        return true;
+    }
+    const matchedIndices = new Uint8Array(size);
+    const aIterable = a.values();
+    let aResult;
+    let bResult;
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    while ((aResult = aIterable.next())) {
+        if (aResult.done) {
+            break;
+        }
+        const bIterable = b.values();
+        let hasMatch = 0;
+        let matchIndex = 0;
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        while ((bResult = bIterable.next())) {
+            if (bResult.done) {
+                break;
+            }
+            if (!matchedIndices[matchIndex]
+                && state.equals(aResult.value, bResult.value, aResult.value, bResult.value, a, b, state)) {
+                hasMatch = matchedIndices[matchIndex] = 1;
+                break;
+            }
+            matchIndex++;
+        }
+        if (!hasMatch) {
+            return false;
+        }
+    }
+    return true;
+}
+/**
+ * Whether the TypedArray instances are equal in value.
+ */
+function areTypedArraysEqual(a, b) {
+    let index = a.length;
+    if (b.length !== index || a.byteOffset !== b.byteOffset) {
+        return false;
+    }
+    // Only float-backed views can hold `NaN`, and the additional check needed to treat it as equal
+    // to itself measurably slows the loop, so integer views keep the plain comparison. This is
+    // hoisted out of the loop so the cost is paid once per call rather than once per element.
+    if (a instanceof Float64Array || a instanceof Float32Array || (HAS_FLOAT_16_ARRAY && a instanceof Float16Array)) {
+        while (index-- > 0) {
+            // `NaN` is the only value not equal to itself, and it is treated as equal here to match
+            // the SameValueZero semantics used for every other numeric comparison in the library.
+            if (a[index] !== b[index] && (a[index] === a[index] || b[index] === b[index])) {
+                return false;
+            }
+        }
+        return true;
+    }
+    while (index-- > 0) {
+        if (a[index] !== b[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+/**
+ * Whether the URL instances are equal in value.
+ */
+function areUrlsEqual(a, b) {
+    // `href` is the normalized serialization of every component, so matching hrefs are equal without
+    // any further work. Only a difference in query parameter ordering can survive a mismatch here.
+    if (a.href === b.href) {
+        return true;
+    }
+    return (a.protocol === b.protocol
+        && a.username === b.username
+        && a.password === b.password
+        // `host` covers both the hostname and the port.
+        && a.host === b.host
+        && a.pathname === b.pathname
+        && a.hash === b.hash
+        && areSearchParamsEqual(a.searchParams, b.searchParams));
+}
+/**
+ * Whether the search params passed are equal in value.
+ *
+ * @note
+ * Order is not significant, matching how the other unordered collections in the library are
+ * compared. Repeated keys are, so this is a comparison of multisets rather than of sets:
+ * `a=1&a=2` is equal to `a=2&a=1`, but not to `a=1&a=1`.
+ */
+function areSearchParamsEqual(a, b) {
+    const serializedA = a.toString();
+    const serializedB = b.toString();
+    // Identical serializations are equal under any ordering, and this is by far the common case, so
+    // it is worth checking before sorting anything.
+    return serializedA === serializedB || sortSearchParams(serializedA) === sortSearchParams(serializedB);
+}
+/**
+ * Reorder a serialized query string so that params holding the same pairs compare as equal
+ * regardless of the order they appear in.
+ *
+ * @note
+ * The serializer percent-encodes `&` and `=` wherever they appear inside a name or a value, so
+ * splitting on `&` recovers exactly the pairs and nothing else.
+ */
+function sortSearchParams(serialized) {
+    return serialized.split('&').sort().join('&');
+}
+function isPropertyEqual(a, b, state, property) {
+    if ((property === REACT_OWNER || property === PREACT_OWNER || property === PREACT_VNODE)
+        && (a.$$typeof || b.$$typeof)) {
+        return true;
+    }
+    return hasOwn(b, property) && state.equals(a[property], b[property], property, property, a, b, state);
+}
+
+const toString = Object.prototype.toString;
+/**
+ * Create a comparator method based on the type-specific equality comparators passed.
+ */
+function createEqualityComparator(config) {
+    const supportedComparatorMap = createSupportedComparatorMap(config);
+    const { areArraysEqual, areDatesEqual, areFunctionsEqual, areMapsEqual, areNumbersEqual, areObjectsEqual, areRegExpsEqual, areSetsEqual, getUnsupportedCustomComparator, } = config;
+    /**
+     * compare the value of the two objects and return true if they are equivalent in values
+     */
+    return function comparator(a, b, state) {
+        // If the items are strictly equal, no need to do a value comparison.
+        if (a === b) {
+            return true;
+        }
+        // If either of the items are nullish and fail the strictly equal check
+        // above, then they must be unequal.
+        if (a == null || b == null) {
+            return false;
+        }
+        const type = typeof a;
+        if (type !== typeof b) {
+            return false;
+        }
+        if (type !== 'object') {
+            if (type === 'number' || type === 'bigint') {
+                return areNumbersEqual(a, b, state);
+            }
+            if (type === 'function') {
+                return areFunctionsEqual(a, b, state);
+            }
+            // If a primitive value that is not strictly equal, it must be unequal.
+            return false;
+        }
+        const constructor = a.constructor;
+        // Checks are listed in order of commonality of use-case:
+        //   1. Common complex object types (plain object, array)
+        //   2. Common data values (date, regexp)
+        //   3. Less-common complex object types (map, set)
+        //   4. Less-common data values (promise, primitive wrappers)
+        // Inherently this is both subjective and assumptive, however
+        // when reviewing comparable libraries in the wild this order
+        // appears to be generally consistent.
+        // Constructors should match, otherwise there is potential for false positives
+        // between class and subclass or custom object and POJO.
+        if (constructor !== b.constructor) {
+            return false;
+        }
+        // Try to fast-path equality checks for other complex object types in the
+        // same realm to avoid capturing the string tag. Strict equality is used
+        // instead of `instanceof` because it is more performant for the common
+        // use-case. If someone is creating a subclass from a native class, it will be
+        // handled with the string tag comparison.
+        if (constructor === Object) {
+            return areObjectsEqual(a, b, state);
+        }
+        if (constructor === Array) {
+            return areArraysEqual(a, b, state);
+        }
+        if (constructor === Date) {
+            return areDatesEqual(a, b, state);
+        }
+        if (constructor === RegExp) {
+            return areRegExpsEqual(a, b, state);
+        }
+        if (constructor === Map) {
+            return areMapsEqual(a, b, state);
+        }
+        if (constructor === Set) {
+            return areSetsEqual(a, b, state);
+        }
+        if (constructor === Promise) {
+            // Avoid tag checks for promise values, since we know if they are not referentially equal
+            // then they are not equal.
+            return false;
+        }
+        // `isArray()` works on subclasses and is cross-realm, so we can avoid capturing
+        // the string tag or doing an `instanceof` in edge cases.
+        if (Array.isArray(a)) {
+            return areArraysEqual(a, b, state);
+        }
+        // Since this is a custom object, capture the string tag to determining its type.
+        // This is reasonably performant in modern environments like v8 and SpiderMonkey.
+        const tag = toString.call(a);
+        const supportedComparator = supportedComparatorMap[tag];
+        if (supportedComparator) {
+            return supportedComparator(a, b, state);
+        }
+        const unsupportedCustomComparator = getUnsupportedCustomComparator && getUnsupportedCustomComparator(a, b, state, tag);
+        if (unsupportedCustomComparator) {
+            return unsupportedCustomComparator(a, b, state);
+        }
+        // If not matching any tags that require a specific type of comparison, then we hard-code false because
+        // the only thing remaining is strict equality, which has already been compared. This is for a few reasons:
+        //   - Certain types that cannot be introspected (e.g., `WeakMap`). For these types, this is the only
+        //     comparison that can be made.
+        //   - For types that can be introspected but do not have an objective definition of what
+        //     equality is (`Error`, etc.), the subjective decision is to be conservative and strictly compare.
+        // In all cases, these decisions should be reevaluated based on changes to the language and
+        // common development practices.
+        return false;
+    };
+}
+/**
+ * Create the configuration object used for building comparators.
+ */
+function createEqualityComparatorConfig({ circular, createCustomConfig, strict, }) {
+    let config = {
+        areArrayBuffersEqual,
+        areArraysEqual: strict ? areObjectsEqualStrict : areArraysEqual,
+        areDataViewsEqual,
+        areDatesEqual: areDatesEqual,
+        // `Error` subclasses routinely carry their own enumerable properties (`status`, `code`, ...),
+        // which the error comparator alone does not see, so it is composed with the object comparator.
+        // `name` / `message` / `stack` are own but not enumerable, which is why errors need a
+        // comparator of their own rather than being treated as plain objects in the first place.
+        areErrorsEqual: strict
+            ? combineComparators(areErrorsEqual, areObjectsEqualStrict)
+            : combineComparators(areErrorsEqual, areObjectsEqual),
+        areFunctionsEqual: strictEqual,
+        areMapsEqual: strict ? combineComparators(areMapsEqual, areObjectsEqualStrict) : areMapsEqual,
+        areNumbersEqual: sameValueEqual,
+        areObjectsEqual: strict ? areObjectsEqualStrict : areObjectsEqual,
+        arePrimitiveWrappersEqual: arePrimitiveWrappersEqual,
+        areRegExpsEqual: areRegExpsEqual,
+        areSetsEqual: strict ? combineComparators(areSetsEqual, areObjectsEqualStrict) : areSetsEqual,
+        areTypedArraysEqual: strict
+            ? combineComparators(areTypedArraysEqual, areObjectsEqualStrict)
+            : areTypedArraysEqual,
+        areUrlsEqual: areUrlsEqual,
+        getUnsupportedCustomComparator: undefined,
+    };
+    if (createCustomConfig) {
+        config = Object.assign({}, config, createCustomConfig(config));
+    }
+    if (circular) {
+        const areArraysEqual = createIsCircular(config.areArraysEqual);
+        // Errors are included because comparing `cause` and own properties by value means an error
+        // that references itself would otherwise recurse without bound.
+        const areErrorsEqual = createIsCircular(config.areErrorsEqual);
+        const areMapsEqual = createIsCircular(config.areMapsEqual);
+        const areObjectsEqual = createIsCircular(config.areObjectsEqual);
+        const areSetsEqual = createIsCircular(config.areSetsEqual);
+        config = Object.assign({}, config, {
+            areArraysEqual,
+            areErrorsEqual,
+            areMapsEqual,
+            areObjectsEqual,
+            areSetsEqual,
+        });
+    }
+    return config;
+}
+/**
+ * Default equality comparator pass-through, used as the standard `isEqual` creator for
+ * use inside the built comparator.
+ */
+function createInternalEqualityComparator(compare) {
+    return function (a, b, _indexOrKeyA, _indexOrKeyB, _parentA, _parentB, state) {
+        return compare(a, b, state);
+    };
+}
+/**
+ * Create the `isEqual` function used by the consuming application.
+ */
+function createIsEqual({ circular, comparator, createState, equals, strict }) {
+    if (createState) {
+        return function isEqual(a, b) {
+            const { cache = circular ? new WeakMap() : undefined, meta } = createState();
+            return comparator(a, b, {
+                cache,
+                equals,
+                meta,
+                strict,
+            });
+        };
+    }
+    if (circular) {
+        return function isEqual(a, b) {
+            return comparator(a, b, {
+                cache: new WeakMap(),
+                equals,
+                meta: undefined,
+                strict,
+            });
+        };
+    }
+    const state = {
+        cache: undefined,
+        equals,
+        meta: undefined,
+        strict,
+    };
+    return function isEqual(a, b) {
+        return comparator(a, b, state);
+    };
+}
+/**
+ * Create a map of `toString()` values to their respective handlers for `tag`-based lookups.
+ */
+function createSupportedComparatorMap({ areArrayBuffersEqual, areArraysEqual, areDataViewsEqual, areDatesEqual, areErrorsEqual, areFunctionsEqual, areMapsEqual, areObjectsEqual, arePrimitiveWrappersEqual, areRegExpsEqual, areSetsEqual, areTypedArraysEqual, areUrlsEqual, }) {
+    return {
+        '[object Arguments]': areObjectsEqual,
+        '[object Array]': areArraysEqual,
+        '[object ArrayBuffer]': areArrayBuffersEqual,
+        '[object AsyncGeneratorFunction]': areFunctionsEqual,
+        '[object BigInt]': arePrimitiveWrappersEqual,
+        '[object BigInt64Array]': areTypedArraysEqual,
+        '[object BigUint64Array]': areTypedArraysEqual,
+        '[object Boolean]': arePrimitiveWrappersEqual,
+        '[object DataView]': areDataViewsEqual,
+        '[object Date]': areDatesEqual,
+        // If an error tag, it should be tested explicitly. Like RegExp, the properties are not
+        // enumerable, and therefore will give false positives if tested like a standard object.
+        '[object Error]': areErrorsEqual,
+        '[object Float16Array]': areTypedArraysEqual,
+        '[object Float32Array]': areTypedArraysEqual,
+        '[object Float64Array]': areTypedArraysEqual,
+        '[object Function]': areFunctionsEqual,
+        '[object GeneratorFunction]': areFunctionsEqual,
+        '[object Int8Array]': areTypedArraysEqual,
+        '[object Int16Array]': areTypedArraysEqual,
+        '[object Int32Array]': areTypedArraysEqual,
+        '[object Map]': areMapsEqual,
+        '[object Number]': arePrimitiveWrappersEqual,
+        '[object Object]': (a, b, state) => 
+        // The exception for value comparison is custom `Promise`-like class instances. These should
+        // be treated the same as standard `Promise` objects, which means strict equality, and if
+        // it reaches this point then that strict equality comparison has already failed.
+        typeof a.then !== 'function' && typeof b.then !== 'function' && areObjectsEqual(a, b, state),
+        // For RegExp, the properties are not enumerable, and therefore will give false positives if
+        // tested like a standard object.
+        '[object RegExp]': areRegExpsEqual,
+        '[object Set]': areSetsEqual,
+        '[object String]': arePrimitiveWrappersEqual,
+        '[object URL]': areUrlsEqual,
+        '[object Uint8Array]': areTypedArraysEqual,
+        '[object Uint8ClampedArray]': areTypedArraysEqual,
+        '[object Uint16Array]': areTypedArraysEqual,
+        '[object Uint32Array]': areTypedArraysEqual,
+    };
+}
+
+/**
+ * Whether the items passed are deeply-equal in value.
+ */
+const deepEqual = createCustomEqual();
+/**
+ * Whether the items passed are deeply-equal in value based on strict comparison.
+ */
+createCustomEqual({ strict: true });
+/**
+ * Whether the items passed are deeply-equal in value, including circular references.
+ */
+createCustomEqual({ circular: true });
+/**
+ * Whether the items passed are deeply-equal in value, including circular references,
+ * based on strict comparison.
+ */
+createCustomEqual({
+    circular: true,
+    strict: true,
+});
+/**
+ * Whether the items passed are shallowly-equal in value.
+ */
+createCustomEqual({
+    createInternalComparator: () => sameValueEqual,
+});
+/**
+ * Whether the items passed are shallowly-equal in value based on strict comparison
+ */
+createCustomEqual({
+    strict: true,
+    createInternalComparator: () => sameValueEqual,
+});
+/**
+ * Whether the items passed are shallowly-equal in value, including circular references.
+ */
+createCustomEqual({
+    circular: true,
+    createInternalComparator: () => sameValueEqual,
+});
+/**
+ * Whether the items passed are shallowly-equal in value, including circular references,
+ * based on strict comparison.
+ */
+createCustomEqual({
+    circular: true,
+    createInternalComparator: () => sameValueEqual,
+    strict: true,
+});
+/**
+ * Create a custom equality comparison method.
+ *
+ * This can be done to create very targeted comparisons in extreme hot-path scenarios
+ * where the standard methods are not performant enough, but can also be used to provide
+ * support for legacy environments that do not support expected features like
+ * `RegExp.prototype.flags` out of the box.
+ */
+function createCustomEqual(options = {}) {
+    const { circular = false, createInternalComparator: createCustomInternalComparator, createState, strict = false, } = options;
+    const config = createEqualityComparatorConfig(options);
+    const comparator = createEqualityComparator(config);
+    const equals = createCustomInternalComparator
+        ? createCustomInternalComparator(comparator)
+        : createInternalEqualityComparator(comparator);
+    return createIsEqual({ circular, comparator, createState, equals, strict });
+}
+
+function useDeepCompareEffect(effect, dependencies) {
+    useCustomCompareEffect(effect, dependencies, deepEqual);
+}
+
+/**
+ * Set of option keys that can be updated on Map3DElement.
+ * Camera props (center, heading, tilt, range, roll) are handled separately.
+ */
+const MAP_3D_OPTION_KEYS = new Set([
+    'bounds',
+    'defaultUIHidden',
+    'gestureHandling',
+    'internalUsageAttributionIds',
+    'maxAltitude',
+    'maxHeading',
+    'maxTilt',
+    'minAltitude',
+    'minHeading',
+    'minTilt',
+    'mode'
+]);
+/**
+ * Hook to update Map3D options when props change.
+ *
+ * @internal
+ */
+function useMap3DOptions(map3d, props) {
+    // Filter props to only include valid option keys, memoized to avoid
+    // creating a new object on every render
+    const options = useMemo(() => {
+        const result = {};
+        const keys = Object.keys(props);
+        for (const key of keys) {
+            if (!MAP_3D_OPTION_KEYS.has(key))
+                continue;
+            const value = props[key];
+            if (value === undefined)
+                continue;
+            result[key] = value;
+        }
+        return result;
+    }, [props]);
+    useDeepCompareEffect(() => {
+        if (!map3d)
+            return;
+        Object.assign(map3d, options);
+    }, [map3d, options]);
+}
+
+/**
+ * MapMode for specifying how the 3D map should be rendered.
+ * This mirrors google.maps.maps3d.MapMode but is available without waiting for the API to load.
+ */
+const MapMode = {
+    /** This map mode displays a transparent layer of major streets on satellite imagery. */
+    HYBRID: 'HYBRID',
+    /** This map mode displays satellite or photorealistic imagery. */
+    SATELLITE: 'SATELLITE'
+};
+/**
+ * GestureHandling for specifying how gesture events should be handled on the map.
+ * This mirrors google.maps.maps3d.GestureHandling but is available without waiting for the API to load.
+ */
+const GestureHandling = {
+    /**
+     * This lets the map choose whether to use cooperative or greedy gesture handling.
+     * This is the default behavior if not specified.
+     */
+    AUTO: 'AUTO',
+    /**
+     * This forces cooperative mode, where modifier keys or two-finger gestures
+     * are required to scroll the map.
+     */
+    COOPERATIVE: 'COOPERATIVE',
+    /**
+     * This forces greedy mode, where the host page cannot be scrolled from user
+     * events on the map element.
+     */
+    GREEDY: 'GREEDY'
+};
+/**
+ * React context for accessing the Map3D instance from child components.
+ */
+const GoogleMaps3DContext = React__default.createContext(null);
+/**
+ * Default styles for the map container.
+ */
+const DEFAULT_CONTAINER_STYLE = {
+    width: '100%',
+    height: '100%',
+    position: 'relative'
+};
+/**
+ * A React component that renders a 3D map using the Google Maps JavaScript API.
+ *
+ * @example
+ * ```tsx
+ * <APIProvider apiKey={API_KEY}>
+ *   <Map3D
+ *     defaultCenter={{ lat: 37.7749, lng: -122.4194, altitude: 1000 }}
+ *     defaultRange={5000}
+ *     defaultHeading={0}
+ *     defaultTilt={45}
+ *   />
+ * </APIProvider>
+ * ```
+ */
+const Map3D = forwardRef((props, ref) => {
+    const { children, id, className, style } = props;
+    // Verify we're inside an APIProvider
+    const context = useContext(APIProviderContext);
+    if (!context) {
+        throw new Error('<Map3D> can only be used inside an <APIProvider> component.');
+    }
+    const { addMap3DInstance, removeMap3DInstance } = context;
+    const [map3d, containerRef, map3dRef, cameraStateRef, isReady] = useMap3DInstance(props);
+    useMap3DCameraParams(map3d, cameraStateRef, props);
+    useMap3DEvents(map3d, props);
+    useMap3DOptions(map3d, props);
+    useEffect(() => {
+        if (!map3d)
+            return;
+        const instanceId = id !== null && id !== void 0 ? id : 'default';
+        addMap3DInstance(map3d, instanceId);
+        return () => {
+            removeMap3DInstance(instanceId);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [map3d, id]);
+    useImperativeHandle(ref, () => ({
+        map3d,
+        flyCameraAround: (options) => {
+            map3d === null || map3d === void 0 ? void 0 : map3d.flyCameraAround(options);
+        },
+        flyCameraTo: (options) => {
+            map3d === null || map3d === void 0 ? void 0 : map3d.flyCameraTo(options);
+        },
+        stopCameraAnimation: () => {
+            map3d === null || map3d === void 0 ? void 0 : map3d.stopCameraAnimation();
+        }
+    }), [map3d]);
+    const combinedStyle = useMemo(() => (Object.assign(Object.assign({}, DEFAULT_CONTAINER_STYLE), style)), [style]);
+    const contextValue = useMemo(() => ({ map3d }), [map3d]);
+    if (!isReady) {
+        return (React__default.createElement("div", Object.assign({ ref: containerRef, "data-testid": "map-3d", style: className ? undefined : combinedStyle, className: className }, (id ? { id } : {}))));
+    }
+    return (React__default.createElement("div", Object.assign({ ref: containerRef, "data-testid": "map-3d", style: className ? undefined : combinedStyle, className: className }, (id ? { id } : {})),
+        React__default.createElement("gmp-map-3d", { ref: map3dRef, style: { width: '100%', height: '100%' } }, map3d && (React__default.createElement(GoogleMaps3DContext.Provider, { value: contextValue }, children)))));
+});
+Map3D.displayName = 'Map3D';
+
+const Marker3DContext = createContext(null);
+/**
+ * Hook to access the Marker3D context.
+ */
+function useMarker3D() {
+    return useContext(Marker3DContext);
+}
+/**
+ * Marker3D component for displaying markers on a Map3D.
+ *
+ * Automatically uses Marker3DInteractiveElement when onClick is provided,
+ * otherwise uses Marker3DElement.
+ *
+ * Children can include:
+ * - `<img>` elements (automatically wrapped in <template>)
+ * - `<svg>` elements (automatically wrapped in <template>)
+ * - PinElement instances (passed through directly)
+ *
+ * @example
+ * ```tsx
+ * // Basic marker
+ * <Marker3D position={{ lat: 37.7749, lng: -122.4194 }} label="SF" />
+ *
+ * // Interactive marker
+ * <Marker3D
+ *   position={{ lat: 37.7749, lng: -122.4194 }}
+ *   onClick={() => console.log('clicked')}
+ *   title="Click me"
+ * />
+ *
+ * // Custom marker with image
+ * <Marker3D position={{ lat: 37.7749, lng: -122.4194 }}>
+ *   <img src="/icon.png" width={32} height={32} />
+ * </Marker3D>
+ * ```
+ */
+const Marker3D = forwardRef(function Marker3D(props, ref) {
+    const { children, onClick, position, altitudeMode, collisionBehavior, drawsWhenOccluded, extruded, label, sizePreserved, zIndex, title } = props;
+    const isInteractive = Boolean(onClick);
+    const [marker, setMarker] = useState(null);
+    // Track if a child component (like Pin) is handling its own content
+    const [contentHandledExternally, setContentHandledExternally] = useState(false);
+    // Create a container for rendering React children to be wrapped and relocated
+    // into the parent gmp-marker-3d element.
+    const contentContainer = useMemo(() => {
+        const container = document.createElement('div');
+        container.style.display = 'none';
+        document.body.appendChild(container);
+        return container;
+    }, []);
+    // Remove the container on unmount
+    useEffect(() => {
+        return () => contentContainer.remove();
+    }, [contentContainer]);
+    // Callback ref that sets both internal state and forwards the ref
+    const markerRef = useCallback((node) => {
+        setMarker(node);
+        if (typeof ref === 'function') {
+            ref(node);
+        }
+        else if (ref) {
+            ref.current = node;
+        }
+    }, [ref]);
+    useDomEventListener(marker, 'gmp-click', onClick);
+    // Move React children to marker's slot, wrapping img/svg in <template> as required by the API
+    useLayoutEffect(() => {
+        if (contentHandledExternally)
+            return;
+        if (!marker || !contentContainer)
+            return;
+        while (marker.firstChild) {
+            marker.removeChild(marker.firstChild);
+        }
+        const childNodes = Array.from(contentContainer.childNodes);
+        for (const node of childNodes) {
+            if (node.nodeType !== Node.ELEMENT_NODE)
+                continue;
+            const element = node;
+            const tagName = element.tagName.toLowerCase();
+            if (tagName === 'img' || tagName === 'svg') {
+                const template = document.createElement('template');
+                template.content.appendChild(element.cloneNode(true));
+                marker.appendChild(template);
+            }
+            else {
+                marker.appendChild(element.cloneNode(true));
+            }
+        }
+    }, [marker, contentContainer, children, contentHandledExternally]);
+    const contextValue = useMemo(() => ({ marker, setContentHandledExternally }), [marker]);
+    usePropBinding(marker, 'position', position);
+    usePropBinding(marker, 'altitudeMode', altitudeMode);
+    usePropBinding(marker, 'collisionBehavior', collisionBehavior);
+    usePropBinding(marker, 'drawsWhenOccluded', drawsWhenOccluded);
+    usePropBinding(marker, 'extruded', extruded);
+    usePropBinding(marker, 'label', label);
+    usePropBinding(marker, 'sizePreserved', sizePreserved);
+    usePropBinding(marker, 'zIndex', zIndex);
+    usePropBinding(marker, 'title', title !== null && title !== void 0 ? title : '');
+    return (React__default.createElement(Marker3DContext.Provider, { value: contextValue },
+        isInteractive ? (React__default.createElement("gmp-marker-3d-interactive", { ref: markerRef })) : (React__default.createElement("gmp-marker-3d", { ref: markerRef })),
+        createPortal(children, contentContainer)));
+});
+Marker3D.displayName = 'Marker3D';
+
+function setValueForStyles(element, styles, prevStyles) {
+    if (styles != null && typeof styles !== 'object') {
+        throw new Error('The `style` prop expects a mapping from style properties to values, ' +
+            "not a string. For example, style={{marginRight: spacing + 'em'}} when " +
+            'using JSX.');
+    }
+    const elementStyle = element.style;
+    // without `prevStyles`, just set all values
+    if (prevStyles == null) {
+        if (styles == null)
+            return;
+        for (const styleName in styles) {
+            if (!styles.hasOwnProperty(styleName))
+                continue;
+            setValueForStyle(elementStyle, styleName, styles[styleName]);
+        }
+        return;
+    }
+    // unset all styles in `prevStyles` that aren't in `styles`
+    for (const styleName in prevStyles) {
+        if (prevStyles.hasOwnProperty(styleName) &&
+            (styles == null || !styles.hasOwnProperty(styleName))) {
+            // Clear style
+            const isCustomProperty = styleName.indexOf('--') === 0;
+            if (isCustomProperty) {
+                elementStyle.setProperty(styleName, '');
+            }
+            else if (styleName === 'float') {
+                elementStyle.cssFloat = '';
+            }
+            else {
+                elementStyle[styleName] = '';
+            }
+        }
+    }
+    // only assign values from `styles` that are different from `prevStyles`
+    if (styles == null)
+        return;
+    for (const styleName in styles) {
+        const value = styles[styleName];
+        if (styles.hasOwnProperty(styleName) &&
+            prevStyles[styleName] !== value) {
+            setValueForStyle(elementStyle, styleName, value);
+        }
+    }
+}
+function setValueForStyle(elementStyle, styleName, value) {
+    const isCustomProperty = styleName.indexOf('--') === 0;
+    // falsy values will unset the style property
+    if (value == null || typeof value === 'boolean' || value === '') {
+        if (isCustomProperty) {
+            elementStyle.setProperty(styleName, '');
+        }
+        else if (styleName === 'float') {
+            elementStyle.cssFloat = '';
+        }
+        else {
+            elementStyle[styleName] = '';
+        }
+    }
+    // custom properties can't be directly assigned
+    else if (isCustomProperty) {
+        elementStyle.setProperty(styleName, value);
+    }
+    // numeric values are treated as 'px' unless the style property expects unitless numbers
+    else if (typeof value === 'number' &&
+        value !== 0 &&
+        !isUnitlessNumber(styleName)) {
+        elementStyle[styleName] = value + 'px'; // Presumes implicit 'px' suffix for unitless numbers
+    }
+    // everything else can just be assigned
+    else {
+        if (styleName === 'float') {
+            elementStyle.cssFloat = value;
+        }
+        else {
+            elementStyle[styleName] = ('' + value).trim();
+        }
+    }
+}
+// CSS properties which accept numbers but are not in units of "px".
+const unitlessNumbers = new Set([
+    'animationIterationCount',
+    'aspectRatio',
+    'borderImageOutset',
+    'borderImageSlice',
+    'borderImageWidth',
+    'boxFlex',
+    'boxFlexGroup',
+    'boxOrdinalGroup',
+    'columnCount',
+    'columns',
+    'flex',
+    'flexGrow',
+    'flexPositive',
+    'flexShrink',
+    'flexNegative',
+    'flexOrder',
+    'gridArea',
+    'gridRow',
+    'gridRowEnd',
+    'gridRowSpan',
+    'gridRowStart',
+    'gridColumn',
+    'gridColumnEnd',
+    'gridColumnSpan',
+    'gridColumnStart',
+    'fontWeight',
+    'lineClamp',
+    'lineHeight',
+    'opacity',
+    'order',
+    'orphans',
+    'scale',
+    'tabSize',
+    'widows',
+    'zIndex',
+    'zoom',
+    'fillOpacity', // SVG-related properties
+    'floodOpacity',
+    'stopOpacity',
+    'strokeDasharray',
+    'strokeDashoffset',
+    'strokeMiterlimit',
+    'strokeOpacity',
+    'strokeWidth'
+]);
+function isUnitlessNumber(name) {
+    return unitlessNumbers.has(name);
+}
+
+/**
+ * Popover component for displaying info windows on a Map3D.
+ *
+ * Similar to InfoWindow for 2D maps, Popover provides a way to show
+ * contextual information at a specific location or attached to a marker
+ * on a 3D map.
+ *
+ * @example
+ * ```tsx
+ * // Basic popover at position
+ * <Popover
+ *   position={{ lat: 37.7749, lng: -122.4194 }}
+ *   open={isOpen}
+ * >
+ *   <div>Hello from San Francisco!</div>
+ * </Popover>
+ *
+ * // Popover anchored to a marker (place as sibling, use anchor prop)
+ * <Marker3D
+ *   ref={markerRef}
+ *   position={{ lat: 37.7749, lng: -122.4194 }}
+ *   onClick={() => setOpen(true)}
+ * />
+ * <Popover
+ *   anchor={markerRef.current}
+ *   open={isOpen}
+ *   onClose={() => setOpen(false)}
+ * >
+ *   <div>Marker info</div>
+ * </Popover>
+ * ```
+ */
+const Popover = forwardRef(function Popover(props, ref) {
+    var _a;
+    const { children, headerContent, style, className, open = true, position, anchor, anchorId, altitudeMode, lightDismissDisabled, autoPanDisabled, onClose } = props;
+    const [popover, setPopover] = useState(null);
+    const prevStyleRef = useRef(null);
+    // Forward the ref to the parent
+    useImperativeHandle(ref, () => popover, [popover]);
+    // Observe the open attribute and call onClose when popover is automatically
+    // closed by the Maps API (light dismiss)
+    usePopoverCloseObserver(popover, open, onClose);
+    // Set properties on the popover element
+    usePropBinding(popover, 'open', open !== null && open !== void 0 ? open : false);
+    usePropBinding(popover, 'altitudeMode', altitudeMode);
+    usePropBinding(popover, 'lightDismissDisabled', lightDismissDisabled);
+    usePropBinding(popover, 'autoPanDisabled', autoPanDisabled);
+    // positionAnchor accepts a position, marker element, or marker ID string
+    const positionAnchor = (_a = anchor !== null && anchor !== void 0 ? anchor : anchorId) !== null && _a !== void 0 ? _a : position;
+    usePropBinding(popover, 'positionAnchor', positionAnchor);
+    // Set styles via ref for compatibility with older React versions
+    useLayoutEffect(() => {
+        if (!popover)
+            return;
+        setValueForStyles(popover, style || null, prevStyleRef.current);
+        prevStyleRef.current = style || null;
+    }, [popover, style]);
+    return (React__default.createElement("gmp-popover", { ref: setPopover, className: className },
+        headerContent && React__default.createElement("div", { slot: "header" }, headerContent),
+        children));
+});
+Popover.displayName = 'Popover';
+/**
+ * Custom hook to observe the open attribute of a popover element
+ * and call onClose when it transitions from open to closed due to light dismiss.
+ * Does not call onClose when the open prop changes programmatically.
+ */
+function usePopoverCloseObserver(popover, open, onClose) {
+    const previousOpenState = useRef(undefined);
+    const openPropRef = useRef(open);
+    // Track the open prop value
+    useEffect(() => {
+        openPropRef.current = open;
+    }, [open]);
+    useEffect(() => {
+        if (!popover || !onClose)
+            return;
+        const observer = new MutationObserver(mutations => {
+            for (const mutation of mutations) {
+                if (mutation.type === 'attributes' &&
+                    mutation.attributeName === 'open') {
+                    const isOpen = popover.hasAttribute('open');
+                    // Only call onClose when:
+                    // 1. Transitioning from open to closed
+                    // 2. The prop hasn't changed to false (meaning this was light dismiss, not programmatic)
+                    if (previousOpenState.current === true &&
+                        !isOpen &&
+                        openPropRef.current !== false) {
+                        onClose();
+                    }
+                    previousOpenState.current = isOpen;
+                }
+            }
+        });
+        observer.observe(popover, {
+            attributes: true,
+            attributeFilter: ['open']
+        });
+        // Initialize the previous state
+        previousOpenState.current = popover.hasAttribute('open');
+        return () => {
+            observer.disconnect();
+        };
+    }, [popover, onClose]);
+}
+
+const shownMessages = new Set();
+function logErrorOnce(...args) {
+    const key = JSON.stringify(args);
+    if (!shownMessages.has(key)) {
+        shownMessages.add(key);
+        console.error(...args);
+    }
+}
+
+/**
+ * Hook to retrieve a Map3DElement instance from context.
+ *
+ * When called without an id, it returns the map from the nearest parent Map3D
+ * component. When called with an id, it retrieves the map with that id from
+ * the APIProvider context.
+ *
+ * @param id - Optional id of the map to retrieve. If not specified, returns
+ *   the parent map instance or the default map instance.
+ *
+ * @example
+ * ```tsx
+ * // Get the parent Map3D instance
+ * function MyComponent() {
+ *   const map3d = useMap3D();
+ *   // ...
+ * }
+ *
+ * // Get a specific Map3D instance by id
+ * function ControlPanel() {
+ *   const mainMap = useMap3D('main-map');
+ *   const miniMap = useMap3D('mini-map');
+ *   // ...
+ * }
+ * ```
+ */
+function useMap3D(id = null) {
+    const apiContext = useContext(APIProviderContext);
+    const map3dContext = useContext(GoogleMaps3DContext);
+    if (apiContext === null) {
+        logErrorOnce('useMap3D(): failed to retrieve APIProviderContext. ' +
+            'Make sure that the <APIProvider> component exists and that the ' +
+            'component you are calling `useMap3D()` from is a child of the ' +
+            '<APIProvider>.');
+        return null;
+    }
+    const { map3dInstances } = apiContext;
+    // Lookup priority: explicit id > parent context > default instance
+    if (id !== null)
+        return map3dInstances[id] || null;
+    if (map3dContext === null || map3dContext === void 0 ? void 0 : map3dContext.map3d)
+        return map3dContext.map3d;
+    return map3dInstances['default'] || null;
+}
+
+export { APIProviderContext as A, GestureHandling as G, Map3D as M, Popover as P, VERSION as V, __rest as _, useDomEventListener as a, GoogleMaps3DContext as b, MapMode as c, Marker3D as d, Marker3DContext as e, useMap3D as f, useMarker3D as g, useDeepCompareEffect as h, useForceUpdate as i, useApiIsLoaded as j, useCallbackRef as k, useApiLoadingStatus as l, APILoadingStatus as m, logErrorOnce as n, useEffectEvent as o, useMapsLibrary as p, deepEqual as q, useMemoized as r, setValueForStyles as s, APIProvider as t, usePropBinding as u, __resetModuleState as v };
+//# sourceMappingURL=use-map-3d-BOXDWF5P.mjs.map

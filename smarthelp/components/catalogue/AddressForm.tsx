@@ -2,14 +2,30 @@
 
 import { useState } from 'react';
 import type { ReactNode } from 'react';
-import { Loader2, MapPinPlus } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import { Loader2, MapPin, MapPinPlus, X } from 'lucide-react';
 import {
   AddressApiError,
   createAddress,
   type AddressTypeInput,
   type CreateAddressResult,
 } from '@/lib/addressClient';
+import type { AddressSelection, LatLng } from '@/lib/googleMapsAddress';
 import { usePublicLocation } from './PublicLocationContext';
+
+/**
+ * The picker is client-only: Google Maps touches `window` at import time.
+ * Keeping it out of the server bundle also keeps the map script off every page
+ * that merely imports the address form.
+ */
+const AddressMapPicker = dynamic(() => import('@/components/map/AddressMapPicker'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-56 items-center justify-center rounded-lg bg-gray-100 text-xs text-gray-500">
+      Loading the map…
+    </div>
+  ),
+});
 
 /**
  * Save an address, for a customer who has none to save (§5.2).
@@ -113,15 +129,61 @@ function Field({
   );
 }
 
-export function AddressForm({ onCreated }: { onCreated?: (created: CreateAddressResult) => void }) {
+export function AddressForm({
+  onCreated,
+  onCancel,
+}: {
+  onCreated?: (created: CreateAddressResult) => void;
+  onCancel?: () => void;
+}) {
   const { selectAddress } = usePublicLocation();
   const [fields, setFields] = useState<Fields>(EMPTY);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [point, setPoint] = useState<LatLng | null>(null);
+  const [pinProblem, setPinProblem] = useState<string | null>(null);
 
-  const set = (key: keyof Fields) => (value: string) =>
+  // Editing an identity field after the pin was placed would leave the saved
+  // point vouching for a different area. Drop the pin rather than save a pair
+  // that disagrees with the address beside it.
+  const clearsPin: Array<keyof Fields> = ['area', 'city', 'state', 'pincode'];
+
+  const set = (key: keyof Fields) => (value: string) => {
     setFields((current) => ({ ...current, [key]: value }));
+    if (point && clearsPin.includes(key)) {
+      setPoint(null);
+      setPinProblem('Address edited by hand, so the map pin was cleared. Pick it again to keep an exact location.');
+    }
+  };
+
+  /**
+   * A place chosen on the map replaces the fields Google knows, and keeps the
+   * ones only the customer can supply (`landmark`, `access_notes`, the label).
+   * Empty values never overwrite something already typed.
+   */
+  function applySelection(selection: AddressSelection) {
+    setPoint({ lat: selection.lat, lng: selection.lng });
+    setPinProblem(null);
+    setFields((current) => ({
+      ...current,
+      line1: selection.line1 || current.line1,
+      line2: selection.line2 || current.line2,
+      area: selection.area || current.area,
+      city: selection.city || current.city,
+      state: selection.state || current.state,
+      pincode: selection.pincode || current.pincode,
+    }));
+    setErrors((current) => {
+      const next = { ...current };
+      if (selection.line1) delete next.line1;
+      if (selection.area) delete next.area;
+      if (selection.city) delete next.city;
+      if (selection.state) delete next.state;
+      if (selection.pincode) delete next.pincode;
+      return next;
+    });
+  }
 
   async function save() {
     const found = check(fields);
@@ -142,6 +204,7 @@ export function AddressForm({ onCreated }: { onCreated?: (created: CreateAddress
         ...(fields.line2.trim() ? { line2: fields.line2.trim() } : {}),
         ...(fields.landmark.trim() ? { landmark: fields.landmark.trim() } : {}),
         ...(fields.accessNotes.trim() ? { accessNotes: fields.accessNotes.trim() } : {}),
+        ...(point ? { lat: point.lat, lng: point.lng } : {}),
       });
       // Selected first: see the note at the top of the file.
       selectAddress(created.address.id);
@@ -177,6 +240,34 @@ export function AddressForm({ onCreated }: { onCreated?: (created: CreateAddress
         to it. We match the area you type to a service area — a landmark is what turns that area
         into a door.
       </p>
+
+      <div className="mt-3 rounded-lg border border-gray-200 bg-white p-3">
+        <AddressMapPicker onSelect={applySelection} />
+        {point ? (
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-md bg-green-50 px-2.5 py-2">
+            <p className="flex items-center gap-1.5 text-xs font-medium text-green-800">
+              <MapPin className="h-3.5 w-3.5" aria-hidden="true" />
+              Exact pin saved: {point.lat.toFixed(5)}, {point.lng.toFixed(5)}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setPoint(null);
+                setPinProblem(null);
+              }}
+              className="inline-flex items-center gap-1 text-xs font-medium text-green-900 hover:underline"
+            >
+              <X className="h-3 w-3" aria-hidden="true" />
+              Remove pin
+            </button>
+          </div>
+        ) : null}
+        {pinProblem ? (
+          <p role="status" className="mt-2 text-xs text-amber-700">
+            {pinProblem}
+          </p>
+        ) : null}
+      </div>
 
       <div className="mt-3 space-y-3">
         <div className="grid gap-3 sm:grid-cols-[1fr_9rem]">
@@ -303,20 +394,32 @@ export function AddressForm({ onCreated }: { onCreated?: (created: CreateAddress
         </p>
       ) : null}
 
-      <button
-        type="submit"
-        disabled={busy}
-        className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {busy ? (
-          <>
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            Saving…
-          </>
-        ) : (
-          'Save address and continue'
-        )}
-      </button>
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+        <button
+          type="submit"
+          disabled={busy}
+          className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {busy ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Saving…
+            </>
+          ) : (
+            'Save address and continue'
+          )}
+        </button>
+        {onCancel ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        ) : null}
+      </div>
     </form>
   );
 }

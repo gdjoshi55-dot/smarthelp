@@ -336,12 +336,39 @@ Six states, all of which exist:
 | Loading | Spinner and "Checking availability for {duration}" |
 | Uncovered area | Amber panel, `MapPinOff` icon, and the server's own sentence. A 422 whose `details.reason` is `outside_coverage` |
 | Other error | Red panel with the server's message |
-| Served, nothing bookable | "No slots for {duration} on this day — bookings need {lead} notice. Try another day." The lead is quoted from `day.leadMinutes`. Today that is 0 — a same-day booking is dispatched immediately — so today's empty message carries no "notice" clause |
+| Served, nothing bookable | The engine's own sentence for `day.reason`, not a guess. See "**Why a day is empty**" below |
 | Served, slots | The grid |
 
 The results container is `aria-live="polite"` with `aria-busy` while in flight,
 so a screen reader is told when the answer changes without being interrupted
 mid-sentence.
+
+**Why a day is empty.** `day.reason` says which of these it is, and the copy
+follows it:
+
+| `day.reason` | What it means | What the customer reads |
+|---|---|---|
+| `lead_time` | Every slot on the day falls inside the notice period, or the day has passed | "bookings need {lead} notice. Try another day." — or "every slot for this day has already passed" when the lead is 0 |
+| `at_capacity` | The day is full | "that day is fully booked. Try another day." |
+| `no_professional_available` | There is cover, but not at any hour the customer asked for | "nobody is free at that time. Try another day." |
+| `no_working_hours` | Nobody's schedule covers that weekday | "nobody is working that day. Try another day." |
+| `no_professional_on_shift` | The professionals who do the work are eligible, but none is on shift today | "nobody is free for this service today. Try another day." |
+| `no_eligible_professional` | Nobody here holds the skill and is verified and trained | "We do not have a professional for this service in your area yet" — and deliberately *not* "try another day", because another day would not help |
+
+The notice period is quoted **only** when the notice period is what refused
+the day. It used to be quoted for every empty day, which is how a professional
+who was working that day came to read as unavailable: the service area carried
+an hour's notice, the day was empty, and the customer was told to wait out a
+notice period that had nothing to do with it.
+
+**Presence gates today only.** A professional's live `availability_status`
+(`online`, `busy`) is a dispatch signal for *today* — it says they are around
+now. It is not a schedule, and applying it to future days emptied the calendar
+of professionals who were working. So presence filters the pool for today
+only, and future days are driven by `professional_working_hours`. The two
+counts are kept apart, which is what lets the engine tell "nobody here does
+this work" (`no_eligible_professional`) from "everybody who does is off shift
+right now" (`no_professional_on_shift`).
 
 **Why the server never hides a slot.** `computeSlots` returns every candidate
 start inside a merged working window, including the ones it will not offer, with

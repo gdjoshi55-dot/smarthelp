@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2, ShieldCheck, Tag } from 'lucide-react';
+import { Loader2, MapPin, ShieldCheck, Tag } from 'lucide-react';
 import { PriceBreakdown } from './PriceBreakdown';
 import { SavedAddressPicker } from './SavedAddressPicker';
 import { AddressForm } from './AddressForm';
@@ -236,6 +236,10 @@ export function CheckoutForm({
   // request twice on one screen.
   const [addressList, setAddressList] = useState<AddressListResult | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
+  // A customer with saved addresses may still want to book somewhere new. The
+  // form — and with it the map picker — is opened on request rather than always,
+  // so the saved list stays the first answer to "where should we come?".
+  const [showAddressForm, setShowAddressForm] = useState(false);
 
   const handleLoaded = useCallback((result: AddressListResult) => {
     setAddressList(result);
@@ -246,6 +250,7 @@ export function CheckoutForm({
     // `ready`. This re-reads the list so the picker — which rendered nothing a
     // moment ago — shows it, rather than leaving a saved address with no control
     // on the screen that just saved it.
+    setShowAddressForm(false);
     setRefreshToken((token) => token + 1);
   }, []);
 
@@ -253,6 +258,7 @@ export function CheckoutForm({
   // and has not been chosen yet is a question, and the picker is what asks it.
   const needsAddressForm =
     addressList !== null && addressList.addresses.length === 0 && !addressId;
+  const addressFormOpen = needsAddressForm || showAddressForm;
 
   // One key per attempt. See the note above.
   const idempotencyKey = useRef<string>(createIdempotencyKey());
@@ -635,13 +641,30 @@ export function CheckoutForm({
           <div className="mt-3">
             <SavedAddressPicker onLoaded={handleLoaded} refreshToken={refreshToken} />
           </div>
-          {needsAddressForm ? (
-            <AddressForm onCreated={handleAddressCreated} />
-          ) : addressList !== null && !addressId ? (
-            <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              Pick a saved address to continue.
-            </p>
-          ) : null}
+          {addressFormOpen ? (
+            <AddressForm
+              onCreated={handleAddressCreated}
+              onCancel={showAddressForm ? () => setShowAddressForm(false) : undefined}
+            />
+          ) : (
+            <>
+              {addressList !== null && !addressId ? (
+                <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  Pick a saved address to continue.
+                </p>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setShowAddressForm(true)}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:border-blue-400 hover:text-blue-700"
+              >
+                <MapPin className="h-4 w-4" aria-hidden="true" />
+                {addressList !== null && addressList.addresses.length > 0
+                  ? 'Use a different address on the map'
+                  : 'Add an address on the map'}
+              </button>
+            </>
+          )}
         </section>
 
         <section className="rounded-xl border border-gray-200 bg-white p-5">

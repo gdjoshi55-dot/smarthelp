@@ -1,0 +1,30 @@
+ ⨯ ./components/map/TrackingMap.tsx:10:32
+Module not found: Can't resolve './RouteMap'
+[0m [90m  8 |[39m[0m
+[0m [90m  9 |[39m [36mconst[39m [33mGoogleMap[39m [33m=[39m dynamic(() [33m=>[39m [36mimport[39m([32m'./GoogleMap'[39m)[33m,[39m { ssr[33m:[39m [36mfalse[39m })[33m;[39m[0m
+[0m[31m[1m>[22m[39m[90m 10 |[39m [36mconst[39m [33mRouteMap[39m [33m=[39m dynamic(() [33m=>[39m [36mimport[39m([32m'./RouteMap'[39m)[33m,[39m { ssr[33m:[39m [36mfalse[39m })[33m;[39m[0m
+[0m [90m    |[39m                                [31m[1m^[22m[39m[0m
+[0m [90m 11 |[39m[0m
+[0m [90m 12 |[39m [36minterface[39m [33mTrackingMapProps[39m {[0m
+[0m [90m 13 |[39m   destination[33m?[39m[33m:[39m [33mLatLng[39m [33m|[39m [36mnull[39m[33m;[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+
+Import trace for requested module:
+./app/customer/bookings/[id]/page.tsx
+ ⨯ ./components/map/TrackingMap.tsx:10:32
+Module not found: Can't resolve './RouteMap'
+[0m [90m  8 |[39m[0m
+[0m [90m  9 |[39m [36mconst[39m [33mGoogleMap[39m [33m=[39m dynamic(() [33m=>[39m [36mimport[39m([32m'./GoogleMap'[39m)[33m,[39m { ssr[33m:[39m [36mfalse[39m })[33m;[39m[0m
+[0m[31m[1m>[22m[39m[90m 10 |[39m [36mconst[39m [33mRouteMap[39m [33m=[39m dynamic(() [33m=>[39m [36mimport[39m([32m'./RouteMap'[39m)[33m,[39m { ssr[33m:[39m [36mfalse[39m })[33m;[39m[0m
+[0m [90m    |[39m                                [31m[1m^[22m[39m[0m
+[0m [90m 11 |[39m[0m
+[0m [90m 12 |[39m [36minterface[39m [33mTrackingMapProps[39m {[0m
+[0m [90m 13 |[39m   destination[33m?[39m[33m:[39m [33mLatLng[39m [33m|[39m [36mnull[39m[33m;[39m[0m
+
+https://nextjs.org/docs/messages/module-not-found
+
+Import trace for requested module:
+./app/customer/bookings/[id]/page.tsx
+ ⚠ Fast Refresh had to perform a full reload due to a runtime error.
+ ⚠ Fast Refresh had to perform a full reload due to a runtime error.

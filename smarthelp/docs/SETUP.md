@@ -34,6 +34,11 @@ and the owner login differ. See `.env.example` for the full list.
 | `SUPABASE_DB_URL` | Project Settings → Database → Connection string, session mode |
 | `SMARTHELP_OWNER_LOGIN` | Whatever you want the owner account to be |
 | `SMTP_*` | Your mail provider, for OTP delivery |
+| `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` | Google Cloud Console → APIs & Services → Credentials; see [GOOGLE_MAPS.md](./GOOGLE_MAPS.md) |
+
+Google Maps is optional for the app to boot, but address search, map pinning and
+the tracking maps need it. The key is a restricted browser key; the setup,
+free-tier caps and cost controls are in [GOOGLE_MAPS.md](./GOOGLE_MAPS.md).
 
 `SMARTHELP_OWNER_LOGIN` is the only way a `super_admin` is ever created: an
 allow-list of exactly one login, matched against the email or the bare name.

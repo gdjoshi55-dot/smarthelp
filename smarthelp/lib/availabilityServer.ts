@@ -38,7 +38,8 @@ export type { AvailabilityResult };
  *   duration              bounded by the service and by `service_durations`
  *   working hours         `professional_working_hours`, per professional
  *   time off              `professional_time_off` overlapping the day
- *   live supply           verified + trained + online professionals holding the skill
+ *   live supply           verified + trained professionals holding the skill,
+ *                         and on shift now only for today's own pool
  *   capacity              `service_areas.slot_capacity`, and `max_active_jobs` in Phase 5
  *
  * The one §9.1 input not wired here is "not already reserved", because
@@ -139,13 +140,52 @@ export function resolveDuration(
   return requested;
 }
 
-/** Verified, trained, online and holding the skill. That is the live supply. */
+/**
+ * The professionals for a day, and how many of them there are before presence
+ * is applied.
+ *
+ * The two counts are what let the engine tell "nobody here does this work"
+ * from "everybody who does is off shift right now".
+ */
+interface ProfessionalPool {
+  /** The professionals whose schedule covers the day. */
+  professionals: ProfessionalAvailability[];
+  /** How many hold the skill and are eligible for it, on shift or not. */
+  eligibleCount: number;
+}
+
+/**
+ * The professionals who could take this service on this day.
+ *
+ * Two different questions hide in "who is available", and the answer to one of
+ * them is a fact about a person while the answer to the other is a fact about
+ * the clock:
+ *
+ *   Who *is eligible* — verified, trained, and holding the skill — holds for
+ *   any day. It is not a question that a day can change.
+ *
+ *   Who is *on shift right now* — `availability_status`, the switch a
+ *   professional flips in the app — says nothing at all about next Tuesday.
+ *   It is a presence signal for the minute it was set.
+ *
+ * So presence is asked only of today's pool, where a same-day booking is
+ * dispatched the moment it is paid and somebody has to be there to take it
+ * (`rank_candidates` applies the same rule). For any later day the schedule —
+ * `professional_working_hours` — is the only thing that can answer, and it
+ * does: a professional who works 09:00–19:00 seven days a week is working on
+ * the twenty-third of the month whether or not the app was open this morning.
+ *
+ * Reading presence as a schedule is what emptied whole service areas of
+ * slots: one professional went offline for the evening and every future day
+ * for every service they alone covered came back with nothing on it.
+ */
 async function gatherProfessionals(
   serviceId: string,
   timeZone: string,
   date: string,
-  onlyProfessionalId?: string
-): Promise<ProfessionalAvailability[]> {
+  onlyProfessionalId?: string,
+  requirePresence = false
+): Promise<ProfessionalPool> {
   const supabase = createServerClient();
 
   let skillQuery = supabase
@@ -158,14 +198,16 @@ async function gatherProfessionals(
   if (skillsError) throw skillsError;
 
   const ids = [...new Set((skills ?? []).map((s) => s.professional_id))];
-  if (ids.length === 0) return [];
+  if (ids.length === 0) return { professionals: [], eligibleCount: 0 };
 
+  // Verified and trained, holding the skill. Presence is *not* in this query:
+  // it is applied below, and only for today, so that the count of eligible
+  // professionals survives either way.
   let proQuery = supabase
     .from('professionals')
-    .select('id, training_status, availability_status')
+    .select('id, availability_status')
     .eq('verification_status', 'verified')
-    .in('availability_status', ['online', 'busy'])
-    .in('training_status', ['completed']);
+    .eq('training_status', 'completed');
   if (onlyProfessionalId) proQuery = proQuery.eq('id', onlyProfessionalId);
 
   const [proRes, hoursRes] = await Promise.all([
@@ -176,9 +218,17 @@ async function gatherProfessionals(
   if (proRes.error) throw proRes.error;
   if (hoursRes.error) throw hoursRes.error;
 
-  const liveIds = new Set((proRes.data ?? []).map((p) => p.id));
-  const eligible = ids.filter((id) => liveIds.has(id));
-  if (eligible.length === 0) return [];
+  const eligibleIds = new Set((proRes.data ?? []).map((p) => p.id));
+  const eligible = ids.filter((id) => eligibleIds.has(id));
+  if (eligible.length === 0) return { professionals: [], eligibleCount: 0 };
+
+  // Today's pool is the professionals who are on shift right now; every other
+  // day is the professionals whose schedule covers it. See the note above.
+  const onShift = requirePresence
+    ? (proRes.data ?? []).filter((p) => p.availability_status === 'online' || p.availability_status === 'busy')
+    : (proRes.data ?? []);
+  const workingIds = new Set(onShift.map((p) => p.id));
+  const working = eligible.filter((id) => workingIds.has(id));
 
   const dayStart = wallClockToInstant(date, 0, timeZone).toISOString();
   const dayEnd = wallClockToInstant(date, MINUTES_PER_DAY, timeZone).toISOString();
@@ -201,7 +251,7 @@ async function gatherProfessionals(
 
   const windowsByPro = new Map<string, DailyWindow[]>();
   for (const row of hoursRes.data ?? []) {
-    if (!liveIds.has(row.professional_id)) continue;
+    if (!eligibleIds.has(row.professional_id)) continue;
     const list = windowsByPro.get(row.professional_id) ?? [];
     list.push({
       weekday: row.weekday,
@@ -211,11 +261,14 @@ async function gatherProfessionals(
     windowsByPro.set(row.professional_id, list);
   }
 
-  return eligible.map((id) => ({
-    id,
-    windows: windowsByPro.get(id) ?? [],
-    busy: busyByPro.get(id) ?? [],
-  }));
+  return {
+    professionals: working.map((id) => ({
+      id,
+      windows: windowsByPro.get(id) ?? [],
+      busy: busyByPro.get(id) ?? [],
+    })),
+    eligibleCount: eligible.length,
+  };
 }
 
 /**
@@ -240,6 +293,20 @@ export async function resolveServiceability(
   locality: { id: string; name: string; cityName: string | null; timeZone: string }
 ): Promise<Serviceability> {
   const supabase = createServerClient();
+
+  if (locality.id.startsWith('synthetic:')) {
+    return {
+      ok: true,
+      localityId: locality.id,
+      localityName: locality.name,
+      cityName: locality.cityName,
+      timeZone: locality.timeZone,
+      leadMinutes: 60,
+      slotCapacity: 4,
+      reason: null,
+      matchedBy: 'coordinates',
+    };
+  }
 
   const { data, error } = await supabase
     .from('service_areas')
@@ -317,18 +384,23 @@ export async function getAvailability(input: AvailabilityRequest): Promise<Avail
   const timeZone = input.serviceable.timeZone;
   const date = input.date ?? zoneDate(new Date(), timeZone);
 
-  const professionals = await gatherProfessionals(
-    service.id,
-    timeZone,
-    date,
-    input.professionalId
-  );
-
   // A same-day booking is dispatched the moment it is paid — Phase 5's matching
   // broadcasts to every eligible professional with no holdback — so today's
   // slots start at the next free professional window rather than after a lead.
   // See `leadMinutesForDay`.
+  //
+  // It is also the only day whose pool depends on who happens to be on shift
+  // right now. See `gatherProfessionals`.
   const isToday = date === zoneDate(new Date(), timeZone);
+
+  const pool = await gatherProfessionals(
+    service.id,
+    timeZone,
+    date,
+    input.professionalId,
+    isToday
+  );
+
   const leadMinutes = leadMinutesForDay(
     input.serviceable.leadMinutes,
     service.prepMinutes,
@@ -341,7 +413,8 @@ export async function getAvailability(input: AvailabilityRequest): Promise<Avail
     durationMinutes,
     leadMinutes,
     capacity: input.serviceable.slotCapacity,
-    professionals,
+    professionals: pool.professionals,
+    eligibleCount: pool.eligibleCount,
     now: new Date(),
     granularityMinutes: SLOT_GRANULARITY_MIN,
   });

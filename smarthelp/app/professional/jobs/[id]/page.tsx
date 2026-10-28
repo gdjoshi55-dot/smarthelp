@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import { AlertCircle, ArrowLeft, CheckCircle, Clock, MapPin, Navigation, Timer, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import AuthGuard from '@/components/auth/AuthGuard';
@@ -12,9 +13,11 @@ import { formatDateTime } from '@/components/catalogue/bookingFormat';
 import { OtpEntry } from '@/components/booking/OtpEntry';
 import { ServiceTimer } from '@/components/booking/ServiceTimer';
 import { usePoll } from '@/components/professional/usePoll';
+import { useLocationSharing } from '@/components/professional/useLocationSharing';
 import { VERIFICATION_COPY } from '@/components/professional/verificationCopy';
 import { useAuth } from '@/contexts/AuthContext';
 import { PLATFORM_DEFAULTS } from '@/lib/constants';
+import { directionsUrl } from '@/lib/googleMapsAddress';
 import { statusPresentation } from '@/lib/status';
 import {
   arriveJob,
@@ -35,6 +38,17 @@ const NO_SHOW_REASONS = [
   'I could not access the address',
   'The address was not found',
 ] as const;
+
+// Google Maps needs `window`, so the map is client-only and code-split; until
+// it loads the card shows a plain placeholder at the same height.
+const TrackingMap = dynamic(() => import('@/components/map/TrackingMap'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-64 items-center justify-center rounded-lg bg-gray-100 text-xs text-gray-500">
+      Loading map…
+    </div>
+  ),
+});
 
 /**
  * `/professional/jobs/[id]` — the job's own screen (§20.6, §20.8).
@@ -140,6 +154,11 @@ function JobDetail({ id }: { id: string }) {
 
   const job = finishedJob ?? liveJob;
 
+  // Location is shared only while the professional is actually travelling. The
+  // hook also hands back the latest fix so this screen can draw the pro's own
+  // pin immediately rather than waiting for the 15 s track poll.
+  const locationSharing = useLocationSharing(job?.status === 'on_the_way');
+
   if (!verified) {
     const copy = VERIFICATION_COPY[verificationStatus] ?? VERIFICATION_COPY.not_submitted;
     return (
@@ -208,7 +227,7 @@ function JobDetail({ id }: { id: string }) {
   const destinationLng = coordinate(snapshot.lng);
   const navigateHref =
     destinationLat !== null && destinationLng !== null
-      ? `https://www.google.com/maps/dir/?api=1&destination=${destinationLat},${destinationLng}`
+      ? directionsUrl({ lat: destinationLat, lng: destinationLng })
       : null;
 
   const startJourneyNow = async () => {
@@ -375,10 +394,48 @@ function JobDetail({ id }: { id: string }) {
             Navigate
           </a>
         ) : null}
+        {destinationLat !== null && destinationLng !== null ? (
+          <div className="mt-4">
+            <TrackingMap
+              destination={{ lat: destinationLat, lng: destinationLng }}
+              pro={locationSharing.position}
+              className="h-64 w-full rounded-lg"
+              showRoute={locationSharing.position != null}
+            />
+            {job.status === 'on_the_way' ? (
+              <p className="mt-2 text-xs text-gray-500">
+                {locationSharing.position
+                  ? 'Live route between you and the customer.'
+                  : 'Live location is on. The route appears once your position is available.'}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="rounded-2xl bg-white p-6 shadow-xl">
         <h2 className="text-sm font-semibold text-gray-900">{presentation.label}</h2>
+
+        {job.status === 'on_the_way' ? (
+          <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+            <p className="flex items-center gap-2 font-medium">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  locationSharing.sharing ? 'animate-pulse bg-blue-600' : 'bg-blue-300'
+                }`}
+                aria-hidden="true"
+              />
+              {locationSharing.sharing
+                ? 'Live location is on. The customer can see you on the map.'
+                : 'Starting live location…'}
+            </p>
+            {locationSharing.problem ? (
+              <p className="mt-1 text-xs text-amber-800" role="status">
+                {locationSharing.problem}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         {job.status === 'accepted' ? (
           <div className="mt-3">

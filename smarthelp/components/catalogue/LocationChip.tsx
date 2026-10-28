@@ -1,9 +1,20 @@
 'use client';
 
 import { useState } from 'react';
-import { Crosshair, Loader2, MapPin, X } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import { Crosshair, Loader2, Map as MapIcon, MapPin, X } from 'lucide-react';
 import { usePublicLocation } from './PublicLocationContext';
 import type { LocationSummary } from '@/lib/catalogue';
+
+// Google Maps touches `window`; load the picker only when somebody asks for it.
+const AddressMapPicker = dynamic(() => import('@/components/map/AddressMapPicker'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-56 items-center justify-center rounded-lg bg-gray-100 text-xs text-gray-500">
+      Loading the map…
+    </div>
+  ),
+});
 
 /**
  * The location chip and the banner under it (§5.3, §5.4).
@@ -19,10 +30,11 @@ import type { LocationSummary } from '@/lib/catalogue';
  */
 
 export function LocationChip({ className = '' }: { className?: string }) {
-  const { area, summary, resolving, problem, setArea, locateMe, clear, hasLocation } =
+  const { area, summary, resolving, problem, setArea, setPoint, locateMe, clear, hasLocation } =
     usePublicLocation();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(area ?? '');
+  const [showMap, setShowMap] = useState(false);
 
   const label = summary?.localityName ?? (area ? area : hasLocation ? 'Your location' : 'Add location');
 
@@ -113,12 +125,39 @@ export function LocationChip({ className = '' }: { className?: string }) {
         </button>
         <button
           type="button"
-          onClick={() => setEditing(false)}
+          onClick={() => setShowMap((open) => !open)}
+          aria-expanded={showMap}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-blue-400"
+        >
+          <MapIcon className="h-4 w-4" aria-hidden="true" />
+          Map
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setShowMap(false);
+            setEditing(false);
+          }}
           className="text-sm text-gray-500 hover:text-gray-800"
         >
           Cancel
         </button>
       </div>
+      {showMap ? (
+        <div className="mt-3 w-[min(84vw,32rem)] rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+          <AddressMapPicker
+            title="Pick your area on the map"
+            hint="Search or drop a pin near you. We use that point to find professionals who cover your area."
+              onSelect={(selection: any) => {
+                const pickedArea = selection.area || selection.city || null;
+                setPoint({ area: pickedArea, lat: selection.lat, lng: selection.lng });
+                setDraft(pickedArea ?? '');
+                setShowMap(false);
+                setEditing(false);
+              }}
+          />
+        </div>
+      ) : null}
     </form>
   );
 }

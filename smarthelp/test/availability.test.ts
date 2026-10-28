@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeSlots,
+  emptyDayMessage,
   estimateInstant,
   etaLabel,
   formatClock,
@@ -269,6 +270,67 @@ describe('computeSlots', () => {
   });
 });
 
+describe('why a day is empty', () => {
+  it('has no reason on a day that has bookable slots', () => {
+    expect(slots().reason).toBeNull();
+  });
+
+  it('says nobody is eligible when no professional holds the skill', () => {
+    const day = slots({ professionals: [], eligibleCount: 0 });
+    expect(day.reason).toBe('no_eligible_professional');
+    // Another day would not help either, so the copy must not say it would.
+    expect(emptyDayMessage(day)).toBe(
+      'We do not have a professional for this service in your area yet, so there are no slots to show.'
+    );
+  });
+
+  it('says nobody is on shift when presence emptied the pool', () => {
+    // The professionals hold the skill and are eligible; they are simply not
+    // working right now, which is a different thing from not existing here.
+    const day = slots({ professionals: [], eligibleCount: 3 });
+    expect(day.reason).toBe('no_professional_on_shift');
+    expect(emptyDayMessage(day)).toContain('nobody is free for this service today');
+  });
+
+  it('says nobody is working that day when the weekday does not match', () => {
+    const day = slots({
+      professionals: [pro('p1', { windows: [{ weekday: 0, startMinute: 540, endMinute: 1080 }] })],
+    });
+    expect(day.reason).toBe('no_working_hours');
+    expect(emptyDayMessage(day)).toContain('nobody is working that day');
+  });
+
+  it('blames a full day for being full', () => {
+    const day = slots({ capacity: 0 });
+    expect(day.reason).toBe('at_capacity');
+    expect(emptyDayMessage(day)).toContain('that day is fully booked');
+  });
+
+  it('blames the notice period only when the notice period is what refused it', () => {
+    // 17:00 with a three-hour notice: every slot on the day is inside it.
+    const day = slots({ leadMinutes: 180, now: wallClockToInstant(WED, 1020, KOL) });
+    expect(day.bookableCount).toBe(0);
+    expect(day.reason).toBe('lead_time');
+    expect(emptyDayMessage(day)).toContain('bookings need 3 hr notice');
+  });
+
+  it('does not blame the notice period for a day it had nothing to do with', () => {
+    // The complaint this answers: a professional who was working that day, a
+    // service area with an hour's notice, and a slot list that said the
+    // notice was the reason nothing was on it.
+    const day = slots({ leadMinutes: 60, professionals: [] });
+    expect(day.leadMinutes).toBe(60);
+    expect(day.reason).toBe('no_eligible_professional');
+    expect(emptyDayMessage(day)).not.toContain('notice');
+  });
+
+  it('says the day has passed rather than quoting a notice of no minutes', () => {
+    const day = slots({ now: wallClockToInstant(WED, 1200, KOL) });
+    expect(day.reason).toBe('lead_time');
+    expect(emptyDayMessage(day)).toContain('every slot for this day has already passed');
+  });
+});
+
 describe('the per-day lead', () => {
   it('dispenses with the lead on the day itself', () => {
     // The dispatch path (Phase 5) broadcasts the moment a same-day booking is
@@ -311,6 +373,14 @@ describe('the instant estimate', () => {
     expect(estimate.start).toBeNull();
     expect(estimate.prosAvailable).toBe(0);
     expect(estimate.reason).toBe('at_capacity');
+  });
+
+  it('carries the day’s own reason, not the first slot’s', () => {
+    const now = wallClockToInstant(WED, 480, KOL);
+    const day = slots({ now, professionals: [], eligibleCount: 0 });
+    const estimate = estimateInstant(day, now);
+    expect(estimate.etaMinutes).toBeNull();
+    expect(estimate.reason).toBe('no_eligible_professional');
   });
 
   it('labels the estimate in words a person can read', () => {

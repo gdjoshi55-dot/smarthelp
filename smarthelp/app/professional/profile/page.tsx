@@ -9,6 +9,7 @@ import RoleShell from '@/components/auth/RoleShell';
 import { useAuth } from '@/contexts/AuthContext';
 import { ProfileApiError, updateMe } from '@/lib/profileClient';
 import { VERIFICATION_COPY } from '@/components/professional/verificationCopy';
+import ProfessionalAddressSection from '@/components/professional/ProfessionalAddressSection';
 
 const LOCALES: { value: string; label: string }[] = [
   { value: 'en-IN', label: 'English' },
@@ -184,6 +185,8 @@ function ProfessionalProfileManager() {
             </Link>
           </div>
         </section>
+
+        <ProfessionalAddressSection />
       </div>
 
       <div className="space-y-6">
